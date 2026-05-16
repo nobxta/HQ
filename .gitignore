@@ -1,0 +1,40 @@
+# Secrets and env
+.env
+
+# Sessions (contain auth data)
+sessions/
+
+# Logs
+logs/
+
+# Per-user storage (contains bot configs, tokens)
+data/
+
+# Node / JavaScript
+node_modules/
+frontend/node_modules/
+*.log
+
+# Next.js build output
+.next/
+out/
+
+# TypeScript
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

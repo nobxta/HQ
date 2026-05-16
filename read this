@@ -1,0 +1,5 @@
+so this script was supposed to be for adbot purposes with admin bot shop bot and user
+ controller bot without any errors if any bot happen errors that will be only for that bot 
+ , so the code is for adbot tool on telegram , with telethon library , and using mtproto 
+ and this code is mainly focues for the users who wants to promote there posts or messages in multiple groups
+ my tool use telegram sessions and share forwared or send the messages of my clients to the target groups 

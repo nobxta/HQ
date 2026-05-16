@@ -1,0 +1,273 @@
+i want this custom emoji thing in my bot for better ux
+like i attached many emoji ids use those 
+
+i just typed the text unprofeisnal for letting you know 
+but that are raw RawDataBot
+you have to enhance everything 
+and write a text proompt to enter in cursor with all those ids 
+## Method to send Premium Emoji in PTB (reliable way)
+
+### Step 1 — Get the `custom_emoji_id`
+
+* Send the premium emoji to **@RawDataBot**
+* Copy:
+
+```
+custom_emoji_id: 5247133031235329609
+```
+
+---
+
+### Step 2 — Prepare the outgoing text
+
+Telegram requires a **placeholder character** where the emoji will appear.
+
+Example:
+
+```python
+text = "Hello Admin 🙂"
+```
+
+The 🙂 is temporary and will be replaced visually by the premium emoji.
+
+---
+
+### Step 3 — Calculate the emoji position
+
+Offset = index where placeholder starts.
+
+```python
+offset = len("Hello Admin ")
+```
+
+Length always `2` for emoji entity.
+
+---
+
+### Step 4 — Attach entity when sending
+
+```python
+from telegram import MessageEntity
+
+await update.message.reply_text(
+    "Hello Admin 🙂",
+    entities=[
+        MessageEntity(
+            type="custom_emoji",
+            offset=len("Hello Admin "),
+            length=2,
+            custom_emoji_id="5247133031235329609"
+        )
+    ]
+)
+```
+
+Telegram overlays the premium emoji on that placeholder.
+
+---
+
+### Step 5 — Repeat anywhere in your big project
+
+Whenever sending any message:
+
+1. Add placeholder emoji at desired location
+2. Compute offset
+3. Attach `MessageEntity(custom_emoji)`
+4. Send message
+
+That’s the entire working method. No HTML parsing, no `<tg-emoji>` randomness, no pack permission guessing.
+
+---
+
+### Mental model (important)
+
+Telegram does **not insert emoji automatically**.
+It renders an emoji **over existing characters** using an entity.
+That’s why the placeholder step exists. Once this clicks, the whole system stops feeling magical and starts feeling like normal entity formatting.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+make it properly to add custom emoji in the code to use custom emoji in btos bcs telegrma not supports that so here is what to use where  what like crypto , cancelled , fake , real , pay , failed , creating , setting , select , plans , confirmed ,           """"      Nobi, [13-02-2026 02:24 AM]
+💵 Select Crypto
+
+Telegram Bot Raw, [13-02-2026 02:25 AM]
+{
+    "update_id": 851325599,
+    "message": {
+        "message_id": 4345523,
+        "from": {
+            "id": 5495140274,
+            "is_bot": false,
+            "first_name": "Nobi",
+            "username": "NobxTa",
+            "language_code": "en",
+            "is_premium": true
+        },
+        "chat": {
+            "id": 5495140274,
+            "first_name": "Nobi",
+            "username": "NobxTa",
+            "type": "private"
+        },
+        "date": 1770929699,
+        "text": "\ud83d\udcb5 Select Crypto",
+        "entities": [
+            {
+                "offset": 0,
+                "length": 2,
+                "type": "custom_emoji",
+                "custom_emoji_id": "6325541882663276963"
+            }
+        ]
+    }
+}         
+
+
+
+
+"text": "\u2764 Starter Plans\n\nBronze     | 1 Account   | $30 / week\n Silver       | 2 Accounts | $55 / week\n Gold         | 3 Accounts | $80 / week\n Diamond | 6 Accounts | $160 / week\n\n\ud83d\uddb1 Select a plan:",
+        "entities": [
+            {
+                "offset": 0,
+                "length": 1,
+                "type": "custom_emoji",
+                "custom_emoji_id": "5408892365869952851"
+            },
+            {
+                "offset": 2,
+                "length": 13,
+                "type": "bold"
+            },
+            {
+                "offset": 172,
+                "length": 2,
+                "type": "custom_emoji",
+                "custom_emoji_id": "5370621059051560318"
+            }
+        ]
+    }                   
+
+      "text": "\ud83e\udd2c when server down or adbot proccess quee in creation",
+        "entities": [
+            {
+                "offset": 0,
+                "length": 2,
+                "type": "custom_emoji",
+                "custom_emoji_id": "5276307163529092252"
+            }
+
+
+              "text": "\u231b\ud83d\udd04 \u2328 these  are loading",
+        "entities": [
+            {
+                "offset": 0,
+                "length": 1,
+                "type": "custom_emoji",
+                "custom_emoji_id": "5258113901106580375"
+            },
+            {
+                "offset": 1,
+                "length": 2,
+                "type": "custom_emoji",
+                "custom_emoji_id": "5454074580010295588"
+            },
+            {
+                "offset": 4,
+                "length": 1,
+                "type": "custom_emoji",
+                "custom_emoji_id": "5408995930416362034"
+            }              
+
+
+             "text": "and final before seelction of crypto it will also say a text , by paying youre agreeing to our terms and condition so this is trust emoij there \u2705",
+        "entities": [
+            {
+                "offset": 144,
+                "length": 1,
+                "type": "custom_emoji",
+                "custom_emoji_id": "6037169300144393580"
+            }               
+
+
+             "text": "\ud83d\udd29 gear revolving emoji , use it for wher setting up adbot",
+        "entities": [
+            {
+                "offset": 0,
+                "length": 2,
+                "type": "custom_emoji",
+                "custom_emoji_id": "5215327492738392838"
+            }            
+
+
+               "text": "\ud83d\uded2    its cart icon or order icon can show on there crypto selection page",
+        "entities": [
+            {
+                "offset": 0,
+                "length": 2,
+                "type": "custom_emoji",
+                "custom_emoji_id": "6017275445421018704"
+            }          
+
+               "text": "\ud83d\udc4b         this is hi emoji , hand moving wave like \" HEy , when user send /start we can welcome him with this Hi choose the option below",
+        "entities": [
+            {
+                "offset": 0,
+                "length": 2,
+                "type": "custom_emoji",
+                "custom_emoji_id": "5247133031235329609"
+            },
+            {
+                "offset": 75,
+                "length": 6,
+                "type": "bot_command"
+            } 
+
+
+                 "text": "\ud83d\udd50 this is dial emoji , watach moving around like time going",
+        "entities": [
+            {
+                "offset": 0,
+                "length": 2,
+                "type": "custom_emoji",
+                "custom_emoji_id": "5408910404732595664"
+            }       
+
+
+             "text": "\ud83d\ude80       something like rocket launching         can use while setting up the adbot for him like bot profile or create log gorup or , at that time we can use differnet emoji like this",
+        "entities": [
+            {
+                "offset": 0,
+                "length": 2,
+                "type": "custom_emoji",
+                "custom_emoji_id": "5258332798409783582"
+            }   
+
+
+              "text": "\ud83d\udcb5 Select Crypto",
+        "entities": [
+            {
+                "offset": 0,
+                "length": 2,
+                "type": "custom_emoji",
+                "custom_emoji_id": "6325541882663276963"
+            }        
+
+
+

@@ -1,0 +1,1074 @@
+"""Bot management endpoints: CRUD, start/stop, stats, logs, session management."""
+import asyncio
+import logging
+from pathlib import Path
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+
+from api.deps import get_current_admin, Pagination
+from api.services import wrappers
+from api.services.serializers import (
+    serialize_bot_summary,
+    serialize_bot_detail,
+    serialize_stats,
+    paginate,
+)
+from api.services.events import emit_dashboard_event
+from api.schemas import BotCreateRequest, BotUpdateRequest, BotControlResponse
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/bots", tags=["bots"], dependencies=[Depends(get_current_admin)])
+
+
+@router.get("/create-context")
+async def create_context():
+    """Return data needed for the creation wizard: free sessions, group files, existing tokens."""
+    pool = await wrappers.load_pool()
+    free_count = len(pool.get("free_sessions", []))
+
+    from code.config import GROUPS_DIR
+    group_files = []
+    for p in sorted(GROUPS_DIR.iterdir()):
+        if p.is_file() and p.suffix == ".txt":
+            content = await asyncio.to_thread(p.read_text, "utf-8", "replace")
+            lines = len([l for l in content.splitlines() if l.strip()])
+            group_files.append({"filename": p.name, "lines": lines})
+
+    data = await wrappers.load_adbot()
+    existing_tokens = list(data.get("bots", {}).keys())
+
+    return {
+        "free_sessions": free_count,
+        "group_files": group_files,
+        "existing_tokens": existing_tokens,
+        "max_sessions": min(free_count, 50),
+    }
+
+
+class ValidateTokenRequest(BaseModel):
+    bot_token: str
+
+
+@router.post("/validate-token")
+async def validate_token(body: ValidateTokenRequest):
+    """Validate a bot token and return the bot username."""
+    from code.utils import validate_bot_token
+    token = body.bot_token.strip()
+    if not token:
+        raise HTTPException(400, "Token is required")
+
+    data = await wrappers.load_adbot()
+    if token in data.get("bots", {}):
+        raise HTTPException(409, "This bot token is already registered")
+
+    ok, result = await validate_bot_token(token)
+    if not ok:
+        raise HTTPException(400, f"Invalid token: {result}")
+    return {"valid": True, "username": result}
+
+
+@router.get("")
+async def list_bots(
+    state: str = Query(None, description="Filter by state"),
+    mode: str = Query(None, description="Filter by mode"),
+    pagination: Pagination = Depends(),
+):
+    data = await wrappers.load_adbot()
+    bots = []
+    for token, cfg in data.get("bots", {}).items():
+        if state and cfg.get("state") != state:
+            continue
+        if mode and cfg.get("mode") != mode:
+            continue
+        bots.append(serialize_bot_summary(token, cfg))
+    bots.sort(key=lambda b: b.get("name", ""))
+    return paginate(bots, pagination.page, pagination.per_page)
+
+
+@router.get("/{name}")
+async def get_bot(name: str):
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' config not found")
+    return serialize_bot_detail(token, cfg)
+
+
+@router.post("", response_model=BotControlResponse)
+async def create_bot(body: BotCreateRequest):
+    from code.admin_ptb import submit_create_job
+    from code.config import ADMIN_USER_ID
+
+    form = {
+        "name": body.name,
+        "bot_token": body.bot_token,
+        "sessions_count": body.sessions_count,
+        "cycle": body.cycle,
+        "gap": body.gap,
+        "mode": body.mode,
+        "group_file": body.group_file,
+        "valid_till": body.valid_till,
+        "renewal_price": body.renewal_price,
+        "plan_name": body.plan_name,
+    }
+    try:
+        submit_create_job(chat_id=ADMIN_USER_ID, msg_id=0, form=form, web=True)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to enqueue creation: {e}")
+
+    await wrappers.log_admin_action("web_admin", "create_bot", target=body.name)
+    emit_dashboard_event("bot_creating", {"name": body.name})
+    return BotControlResponse(status="queued", message=f"Bot '{body.name}' creation queued")
+
+
+@router.patch("/{name}", response_model=BotControlResponse)
+async def update_bot(name: str, body: BotUpdateRequest):
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' config not found")
+
+    updated = False
+    if body.cycle is not None:
+        cfg["cycle"] = body.cycle
+        if "plan" in cfg:
+            cfg["plan"]["cycle"] = body.cycle
+        updated = True
+    if body.gap is not None:
+        cfg["gap"] = body.gap
+        if "plan" in cfg:
+            cfg["plan"]["gap"] = body.gap
+        updated = True
+    if body.group_file is not None:
+        cfg["group_file"] = body.group_file
+        updated = True
+    if body.valid_till is not None:
+        cfg["valid_till"] = body.valid_till
+        updated = True
+
+    if updated:
+        await wrappers.save_user_data(name, cfg)
+        await wrappers.log_admin_action("web_admin", "update_bot", target=name)
+
+    return BotControlResponse(status="updated", message=f"Bot '{name}' config updated")
+
+
+class ChatlistSetupRequest(BaseModel):
+    links: list[str]
+
+
+@router.put("/{name}/chatlist")
+async def admin_setup_chatlist(name: str, body: ChatlistSetupRequest):
+    """Admin: set up chatlist for a bot (join + scrape groups)."""
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' config not found")
+
+    links = [l.strip() for l in body.links if l.strip()][:2]
+    if not links:
+        cfg.pop("custom_chatlist", None)
+        await wrappers.save_user_data(name, cfg)
+        return {"status": "updated", "message": "Chatlist cleared", "groups": 0}
+
+    from code.chatlist import process_chatlist_setup
+    from api.services.events import emit_chatlist_progress
+
+    async def progress_cb(msg: str):
+        emit_chatlist_progress(name, msg, status="progress")
+
+    emit_chatlist_progress(name, "Starting chatlist setup...", status="progress")
+    success, message, count = await process_chatlist_setup(
+        bot_token=token,
+        user_name=name,
+        links=links,
+        cfg=cfg,
+        progress_cb=progress_cb,
+    )
+    await wrappers.save_user_data(name, cfg)
+    if not success:
+        emit_chatlist_progress(name, message, status="failed")
+        raise HTTPException(400, message)
+    emit_chatlist_progress(name, message, status="done")
+    await wrappers.log_admin_action("web_admin", "setup_chatlist", target=name)
+    return {"status": "updated", "message": message, "groups": count}
+
+
+@router.delete("/{name}/chatlist")
+async def admin_clear_chatlist(name: str):
+    """Admin: clear chatlist and revert to default group file."""
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' config not found")
+
+    from code.chatlist import clear_chatlist_config, default_group_file_for_mode
+    mode = (cfg.get("mode") or "Starter").strip()
+    default_gf = default_group_file_for_mode(mode)
+    clear_chatlist_config(cfg)
+    cfg["group_file"] = default_gf
+    await wrappers.save_user_data(name, cfg)
+    await wrappers.log_admin_action("web_admin", "clear_chatlist", target=name)
+    return {"status": "updated", "message": f"Reverted to {default_gf}", "group_file": default_gf}
+
+
+@router.get("/{name}/groups")
+async def admin_get_groups(name: str):
+    """Admin: read the group file for a bot with correct path resolution."""
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' config not found")
+    group_file = cfg.get("group_file", "")
+    if not group_file:
+        return {"filename": "", "content": "", "lines": 0, "groups": []}
+    from code.config import GROUPS_DIR
+    from code.chatlist import parse_group_line
+    filepath = GROUPS_DIR / group_file
+    if not filepath.is_file():
+        filepath = GROUPS_DIR / "user groups" / group_file
+    if not filepath.is_file():
+        return {"filename": group_file, "content": "", "lines": 0, "groups": []}
+    content = await asyncio.to_thread(filepath.read_text, "utf-8", "replace")
+    valid_lines = [l for l in content.splitlines() if l.strip()]
+    groups = [parse_group_line(l) for l in valid_lines]
+    return {"filename": group_file, "content": content, "lines": len(valid_lines), "groups": groups}
+
+
+class AdminUpdateGroups(BaseModel):
+    lines: list[str]
+
+
+@router.put("/{name}/groups")
+async def admin_update_groups(name: str, body: AdminUpdateGroups):
+    """Admin: update the group file contents directly."""
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' config not found")
+    group_file = cfg.get("group_file", "")
+    if not group_file:
+        raise HTTPException(400, "No group file configured. Set up a chatlist first.")
+    from code.config import GROUPS_DIR
+    filepath = GROUPS_DIR / group_file
+    if not filepath.is_file():
+        filepath = GROUPS_DIR / "user groups" / group_file
+    if not filepath.parent.is_dir():
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+    clean_lines = [l.strip() for l in body.lines if l.strip()]
+    await asyncio.to_thread(filepath.write_text, "\n".join(clean_lines) + "\n", "utf-8")
+    await wrappers.log_admin_action("web_admin", "update_groups", target=name)
+    return {"status": "updated", "lines": len(clean_lines)}
+
+
+@router.delete("/{name}", response_model=BotControlResponse)
+async def delete_bot(name: str, move_to: str = Query("free", pattern="^(free|dead)$")):
+    from code.admin_ptb import submit_main_loop_job
+    from code.config import ADMIN_USER_ID
+
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    submit_main_loop_job("delete_bot", (token, ADMIN_USER_ID, 0, move_to, name))
+    await wrappers.log_admin_action("web_admin", "delete_bot", target=name)
+    emit_dashboard_event("bot_deleted", {"name": name})
+    return BotControlResponse(status="queued", message=f"Bot '{name}' deletion queued")
+
+
+@router.post("/{name}/start", response_model=BotControlResponse)
+async def start_bot(name: str):
+    from api.services.events import emit_bot_control
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    emit_bot_control(name, "Initializing start...", status="progress", action="start")
+
+    async def update_status(msg: str):
+        emit_bot_control(name, msg, status="progress", action="start")
+
+    try:
+        result = await wrappers.start_posting(token, update_status=update_status)
+        if not result:
+            from code.users import _last_start_failure_reason
+            reason = _last_start_failure_reason.get(token, "unknown")
+            reason_map = {
+                "already_running": "Bot is already running",
+                "no_cfg": "Bot configuration not found",
+                "suspended": "Bot is suspended",
+                "no_sessions": "No sessions configured",
+                "no_valid_sessions": "No valid session files found",
+                "no_groups": "No groups assigned to any session",
+            }
+            msg = reason_map.get(reason, f"Start returned False ({reason})")
+            emit_bot_control(name, msg, status="failed", action="start")
+            return BotControlResponse(status="warning", message=msg)
+    except Exception as e:
+        emit_bot_control(name, f"Failed to start: {e}", status="failed", action="start")
+        raise HTTPException(500, f"Failed to start: {e}")
+
+    emit_bot_control(name, f"Bot '{name}' is now running", status="done", action="start")
+    await wrappers.log_admin_action("web_admin", "start_posting", target=name)
+    emit_dashboard_event("bot_started", {"name": name})
+    return BotControlResponse(status="started", message=f"Bot '{name}' posting started")
+
+
+@router.post("/{name}/stop", response_model=BotControlResponse)
+async def stop_bot(name: str):
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    try:
+        await wrappers.stop_posting(token)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to stop: {e}")
+
+    await wrappers.log_admin_action("web_admin", "stop_posting", target=name)
+    emit_dashboard_event("bot_stopped", {"name": name})
+    return BotControlResponse(status="stopped", message=f"Bot '{name}' posting stopped")
+
+
+@router.post("/{name}/restart", response_model=BotControlResponse)
+async def restart_bot(name: str):
+    from code.admin_ptb import submit_main_loop_job
+
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    submit_main_loop_job("restart_bot", (token,))
+    await wrappers.log_admin_action("web_admin", "restart_bot", target=name)
+    return BotControlResponse(status="queued", message=f"Bot '{name}' restart queued")
+
+
+@router.post("/{name}/suspend", response_model=BotControlResponse)
+async def suspend_bot(name: str):
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    success, msg = await wrappers.user_set_suspended(token, True)
+    if not success:
+        raise HTTPException(400, msg)
+
+    await wrappers.log_admin_action("web_admin", "suspend_bot", target=name)
+    return BotControlResponse(status="suspended", message=msg)
+
+
+@router.post("/{name}/resume", response_model=BotControlResponse)
+async def resume_bot(name: str):
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    success, msg = await wrappers.user_set_suspended(token, False)
+    if not success:
+        raise HTTPException(400, msg)
+
+    await wrappers.log_admin_action("web_admin", "resume_bot", target=name)
+    return BotControlResponse(status="resumed", message=msg)
+
+
+@router.get("/{name}/stats")
+async def get_bot_stats(name: str):
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    stats = await wrappers.get_stats_for_display(token)
+    return serialize_stats(stats)
+
+
+@router.get("/{name}/logs")
+async def get_bot_logs(name: str, lines: int = Query(100, ge=1, le=1000)):
+    from code.config import DATA_LOGS_DIR
+    log_path = DATA_LOGS_DIR / f"{name}.log"
+    if not log_path.is_file():
+        from code.utils import name_to_filename
+        log_path = DATA_LOGS_DIR / f"{name_to_filename(name)}.log"
+    if not log_path.is_file():
+        return {"lines": [], "total_lines": 0}
+
+    try:
+        content = await asyncio.to_thread(log_path.read_text, "utf-8", "replace")
+        all_lines = content.splitlines()
+        tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
+        return {"lines": tail, "total_lines": len(all_lines)}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to read logs: {e}")
+
+
+# ─────────────────────── Session Management ───────────────────────
+
+async def _connect_session(session_file: str):
+    """Connect a Telethon client for a session file. Returns (client, error_str)."""
+    from code.config import resolve_session_path, API_ID, API_HASH, PROXY
+    from telethon import TelegramClient
+
+    path = resolve_session_path(session_file)
+    if not path.is_file():
+        return None, "Session file not found"
+    try:
+        client = TelegramClient(str(path.with_suffix("")), API_ID, API_HASH, proxy=PROXY)
+        await client.connect()
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            return None, "Session not authorized (logged out / banned)"
+        return client, ""
+    except Exception as e:
+        return None, f"Connection failed: {str(e)[:150]}"
+
+
+@router.get("/{name}/sessions/detail")
+async def get_sessions_detail(name: str):
+    """Get detailed info for all sessions assigned to a bot, with live Telethon validation."""
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    sessions = cfg.get("sessions") or []
+    results = []
+
+    for s in sessions:
+        fn = s.get("file", "")
+        info = {
+            "file": fn,
+            "index": s.get("index", 0),
+            "real_name": s.get("real_name", ""),
+            "user_id": s.get("user_id", 0),
+            "status": "unknown",
+            "username": "",
+            "bio": "",
+            "phone": "",
+            "premium": False,
+            "restricted": False,
+            "error": "",
+        }
+
+        client, err = await _connect_session(fn)
+        if not client:
+            info["status"] = "dead"
+            info["error"] = err
+            results.append(info)
+            continue
+
+        try:
+            me = await client.get_me()
+            if me:
+                info["status"] = "active"
+                info["real_name"] = f"{me.first_name or ''} {me.last_name or ''}".strip()
+                info["username"] = me.username or ""
+                info["phone"] = me.phone or ""
+                info["user_id"] = me.id
+                info["premium"] = bool(getattr(me, "premium", False))
+                info["restricted"] = bool(getattr(me, "restricted", False))
+
+                # Get bio
+                try:
+                    from telethon.tl.functions.users import GetFullUserRequest
+                    full = await client(GetFullUserRequest(me.id))
+                    info["bio"] = getattr(full.full_user, "about", "") or ""
+                except Exception:
+                    pass
+            else:
+                info["status"] = "dead"
+                info["error"] = "Could not get user info"
+        except Exception as e:
+            info["status"] = "error"
+            info["error"] = str(e)[:150]
+        finally:
+            await client.disconnect()
+
+        # Update stored session info with fresh data
+        s["real_name"] = info["real_name"]
+        s["user_id"] = info["user_id"]
+        results.append(info)
+
+    # Save updated session info
+    await wrappers.save_user_data(name, cfg)
+
+    return {"sessions": results}
+
+
+class SessionProfileUpdate(BaseModel):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    bio: Optional[str] = None
+    username: Optional[str] = None
+
+
+@router.patch("/{name}/sessions/{session_file}/profile")
+async def update_session_profile(name: str, session_file: str, body: SessionProfileUpdate):
+    """Update a session's Telegram profile (name, bio, username) via Telethon."""
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    # Verify session belongs to this bot
+    sessions = cfg.get("sessions") or []
+    session_entry = next((s for s in sessions if s.get("file") == session_file), None)
+    if not session_entry:
+        raise HTTPException(404, f"Session '{session_file}' not assigned to '{name}'")
+
+    client, err = await _connect_session(session_file)
+    if not client:
+        raise HTTPException(400, f"Cannot connect: {err}")
+
+    changes = []
+    try:
+        # Update name / bio
+        if body.first_name is not None or body.last_name is not None or body.bio is not None:
+            from telethon.tl.functions.account import UpdateProfileRequest
+            kwargs = {}
+            if body.first_name is not None:
+                kwargs["first_name"] = body.first_name
+            if body.last_name is not None:
+                kwargs["last_name"] = body.last_name
+            if body.bio is not None:
+                kwargs["about"] = body.bio
+            if kwargs:
+                await client(UpdateProfileRequest(**kwargs))
+                changes.append("profile")
+
+        # Update username
+        if body.username is not None:
+            from telethon.tl.functions.account import UpdateUsernameRequest
+            await client(UpdateUsernameRequest(body.username))
+            changes.append("username")
+
+        # Refresh info
+        me = await client.get_me()
+        new_name = f"{me.first_name or ''} {me.last_name or ''}".strip()
+
+        # Update stored session info
+        session_entry["real_name"] = new_name
+        session_entry["user_id"] = me.id
+        await wrappers.save_user_data(name, cfg)
+
+        return {
+            "status": "updated",
+            "changes": changes,
+            "real_name": new_name,
+            "username": me.username or "",
+        }
+
+    except Exception as e:
+        error_msg = str(e)[:200]
+        # Friendly error messages
+        if "USERNAME_INVALID" in error_msg.upper():
+            error_msg = "Username is invalid (must be 5-32 chars, a-z, 0-9, underscores)"
+        elif "USERNAME_OCCUPIED" in error_msg.upper():
+            error_msg = "Username is already taken"
+        elif "USERNAME_NOT_MODIFIED" in error_msg.upper():
+            error_msg = "Username is already set to this value"
+        elif "FLOOD" in error_msg.upper():
+            error_msg = "Rate limited — try again later"
+        elif "FIRSTNAME_INVALID" in error_msg.upper():
+            error_msg = "First name is invalid"
+        raise HTTPException(400, error_msg)
+    finally:
+        await client.disconnect()
+
+
+@router.post("/{name}/sessions/{session_file}/validate")
+async def validate_bot_session(name: str, session_file: str):
+    """Validate a single session: connect, check auth, try sending to SavedMessages."""
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    sessions = cfg.get("sessions") or []
+    if not any(s.get("file") == session_file for s in sessions):
+        raise HTTPException(404, f"Session '{session_file}' not assigned to '{name}'")
+
+    from code.config import resolve_session_path
+    from code.utils import validate_session_with_reason
+    path = resolve_session_path(session_file)
+
+    valid, reason = await validate_session_with_reason(path)
+    status = "valid" if valid else "invalid"
+
+    # If invalid, update session list (it may have been moved to dead)
+    if not valid:
+        cfg["sessions"] = [s for s in cfg.get("sessions", []) if s.get("file") != session_file]
+        await wrappers.save_user_data(name, cfg)
+
+    return {"file": session_file, "status": status, "reason": reason}
+
+
+@router.post("/{name}/sessions/validate-all")
+async def validate_all_sessions(name: str):
+    """Validate ALL sessions: connect, check auth, try send to SavedMessages. Dead ones removed from bot.
+    Returns full info for each session (name, user_id, username, phone, status, reason)."""
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    from code.config import resolve_session_path, API_ID, API_HASH, PROXY
+    from telethon import TelegramClient
+    from telethon.tl.functions.users import GetFullUserRequest
+
+    sessions = list(cfg.get("sessions") or [])
+    results = []
+    dead_files = []
+
+    for s in sessions:
+        fn = s.get("file", "")
+        info = {
+            "file": fn,
+            "index": s.get("index", 0),
+            "real_name": s.get("real_name", ""),
+            "user_id": s.get("user_id"),
+            "username": "",
+            "phone": "",
+            "bio": "",
+            "premium": False,
+            "restricted": False,
+            "status": "unknown",
+            "reason": "",
+        }
+        path = resolve_session_path(fn)
+        if not path.is_file():
+            info["status"] = "dead"
+            info["reason"] = "Session file missing"
+            dead_files.append(fn)
+            results.append(info)
+            continue
+
+        try:
+            client = TelegramClient(str(path.with_suffix("")), API_ID, API_HASH, proxy=PROXY)
+            await client.connect()
+            if not await client.is_user_authorized():
+                await client.disconnect()
+                info["status"] = "dead"
+                info["reason"] = "Not authorized (logged out / banned)"
+                dead_files.append(fn)
+                results.append(info)
+                continue
+            # Try send to saved messages (full validation)
+            try:
+                await client.send_message("me", ".")
+            except Exception as send_err:
+                err_str = str(send_err)
+                # Check if it's a fatal error
+                from code.rpc_errors import SESSION_DEAD_ERRORS
+                if type(send_err) in SESSION_DEAD_ERRORS:
+                    await client.disconnect()
+                    info["status"] = "dead"
+                    info["reason"] = err_str[:150]
+                    dead_files.append(fn)
+                    results.append(info)
+                    continue
+                # Non-fatal (e.g. flood) - session still alive
+                info["reason"] = f"Send test failed: {err_str[:100]}"
+
+            # Get full info
+            me = await client.get_me()
+            if me:
+                info["status"] = "active"
+                info["real_name"] = f"{me.first_name or ''} {me.last_name or ''}".strip()
+                info["username"] = me.username or ""
+                info["phone"] = me.phone or ""
+                info["user_id"] = me.id
+                info["premium"] = bool(getattr(me, "premium", False))
+                info["restricted"] = bool(getattr(me, "restricted", False))
+                try:
+                    full = await client(GetFullUserRequest(me.id))
+                    info["bio"] = getattr(full.full_user, "about", "") or ""
+                except Exception:
+                    pass
+                # Update stored session entry
+                s["real_name"] = info["real_name"]
+                s["user_id"] = info["user_id"]
+            await client.disconnect()
+        except Exception as e:
+            info["status"] = "dead"
+            info["reason"] = str(e)[:150]
+            dead_files.append(fn)
+
+        results.append(info)
+
+    # Remove dead sessions from bot config
+    if dead_files:
+        cfg["sessions"] = [s for s in cfg.get("sessions", []) if s.get("file") not in dead_files]
+    await wrappers.save_user_data(name, cfg)
+
+    return {
+        "sessions": results,
+        "total": len(results),
+        "active": sum(1 for r in results if r["status"] == "active"),
+        "dead": len(dead_files),
+        "dead_removed": dead_files,
+    }
+
+
+@router.post("/{name}/sessions/spambot-check")
+async def spambot_check_sessions(name: str):
+    """Run SpamBot health check on all sessions assigned to this bot.
+    Moves LIMITED/FROZEN sessions out of free pool into correct buckets."""
+    import shutil
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    from code.repair import (
+        check_sessions_health_parallel, SPAM_ACTIVE,
+        SPAM_TEMP_LIMITED, SPAM_HARD_LIMITED, SPAM_FROZEN,
+    )
+    from code.config import SESSIONS_ACTIVE, SESSIONS_FROZEN as FROZEN_DIR, SESSIONS_LIMITED as LIMITED_DIR
+    from code.utils import load_pool, save_pool
+
+    session_files = [s.get("file") for s in cfg.get("sessions", []) if s.get("file")]
+
+    if not session_files:
+        return {"sessions": [], "total": 0}
+
+    statuses = await check_sessions_health_parallel(session_files)
+
+    pool = await asyncio.to_thread(load_pool)
+    moved_limited = []
+    moved_frozen = []
+
+    results = []
+    for s in cfg.get("sessions", []):
+        fn = s.get("file", "")
+        spam_status = statuses.get(fn, "UNKNOWN")
+        results.append({
+            "file": fn,
+            "real_name": s.get("real_name", ""),
+            "user_id": s.get("user_id"),
+            "spambot_status": spam_status,
+        })
+
+        # Move sessions to correct pool buckets based on status
+        if spam_status in (SPAM_TEMP_LIMITED, SPAM_HARD_LIMITED):
+            if fn in pool.get("free_sessions", []):
+                pool["free_sessions"] = [x for x in pool["free_sessions"] if x != fn]
+            if fn not in pool.get("limited_sessions", []):
+                pool.setdefault("limited_sessions", []).append(fn)
+            src = SESSIONS_ACTIVE / fn
+            if src.is_file():
+                dest = LIMITED_DIR / fn
+                try:
+                    await asyncio.to_thread(shutil.move, str(src), str(dest))
+                except OSError:
+                    pass
+            moved_limited.append(fn)
+
+        elif spam_status == SPAM_FROZEN:
+            if fn in pool.get("free_sessions", []):
+                pool["free_sessions"] = [x for x in pool["free_sessions"] if x != fn]
+            if fn not in pool.get("frozen_sessions", []):
+                pool.setdefault("frozen_sessions", []).append(fn)
+            src = SESSIONS_ACTIVE / fn
+            if src.is_file():
+                dest = FROZEN_DIR / fn
+                try:
+                    await asyncio.to_thread(shutil.move, str(src), str(dest))
+                except OSError:
+                    pass
+            moved_frozen.append(fn)
+
+    # Save pool if any sessions were moved
+    if moved_limited or moved_frozen:
+        await asyncio.to_thread(save_pool, pool)
+
+    return {
+        "sessions": results,
+        "total": len(results),
+        "active": sum(1 for r in results if r["spambot_status"] == SPAM_ACTIVE),
+        "limited": sum(1 for r in results if "LIMITED" in r["spambot_status"]),
+        "frozen": sum(1 for r in results if r["spambot_status"] == SPAM_FROZEN),
+        "moved_limited": moved_limited,
+        "moved_frozen": moved_frozen,
+    }
+
+
+@router.get("/{name}/sessions/info")
+async def get_sessions_info(name: str):
+    """Quick info check — just connects and gets user info (no send validation).
+    Faster than full validate, shows name/username/phone/premium/bio."""
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    from code.config import resolve_session_path, API_ID, API_HASH, PROXY
+    from telethon import TelegramClient
+    from telethon.tl.functions.users import GetFullUserRequest
+
+    sessions = cfg.get("sessions") or []
+    results = []
+
+    for s in sessions:
+        fn = s.get("file", "")
+        info = {
+            "file": fn,
+            "index": s.get("index", 0),
+            "real_name": s.get("real_name", ""),
+            "user_id": s.get("user_id"),
+            "username": "",
+            "phone": "",
+            "bio": "",
+            "premium": False,
+            "restricted": False,
+            "status": "unknown",
+            "error": "",
+        }
+
+        path = resolve_session_path(fn)
+        if not path.is_file():
+            info["status"] = "dead"
+            info["error"] = "Session file missing"
+            results.append(info)
+            continue
+
+        try:
+            client = TelegramClient(str(path.with_suffix("")), API_ID, API_HASH, proxy=PROXY)
+            await client.connect()
+            if not await client.is_user_authorized():
+                await client.disconnect()
+                info["status"] = "dead"
+                info["error"] = "Not authorized"
+                results.append(info)
+                continue
+
+            me = await client.get_me()
+            if me:
+                info["status"] = "active"
+                info["real_name"] = f"{me.first_name or ''} {me.last_name or ''}".strip()
+                info["username"] = me.username or ""
+                info["phone"] = me.phone or ""
+                info["user_id"] = me.id
+                info["premium"] = bool(getattr(me, "premium", False))
+                info["restricted"] = bool(getattr(me, "restricted", False))
+                try:
+                    full = await client(GetFullUserRequest(me.id))
+                    info["bio"] = getattr(full.full_user, "about", "") or ""
+                except Exception:
+                    pass
+                s["real_name"] = info["real_name"]
+                s["user_id"] = info["user_id"]
+            else:
+                info["status"] = "dead"
+                info["error"] = "Could not get user info"
+            await client.disconnect()
+        except Exception as e:
+            info["status"] = "error"
+            info["error"] = str(e)[:150]
+
+        results.append(info)
+
+    await wrappers.save_user_data(name, cfg)
+    return {"sessions": results}
+
+
+@router.post("/{name}/sessions/{session_file}/remove")
+async def remove_session_from_bot(name: str, session_file: str):
+    """Remove a session from the bot and return it to the free pool."""
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    sessions = cfg.get("sessions") or []
+    session_entry = next((s for s in sessions if s.get("file") == session_file), None)
+    if not session_entry:
+        raise HTTPException(404, f"Session '{session_file}' not assigned to '{name}'")
+
+    # Remove from bot
+    cfg["sessions"] = [s for s in sessions if s.get("file") != session_file]
+    await wrappers.save_user_data(name, cfg)
+
+    # Add back to free pool
+    from code.utils import load_pool, save_pool
+    pool = await asyncio.to_thread(load_pool)
+    if session_file not in pool.get("free_sessions", []):
+        pool.setdefault("free_sessions", []).append(session_file)
+        await asyncio.to_thread(save_pool, pool)
+
+    await wrappers.log_admin_action("web_admin", "remove_session", target=f"{session_file} from {name}")
+    return {"status": "removed", "file": session_file}
+
+
+class AddSessionRequest(BaseModel):
+    session_file: str
+
+
+@router.post("/{name}/sessions/add")
+async def add_session_to_bot(name: str, body: AddSessionRequest):
+    """Add a session from the free pool to the bot."""
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    fn = body.session_file
+    sessions = cfg.get("sessions") or []
+
+    # Check not already assigned
+    if any(s.get("file") == fn for s in sessions):
+        raise HTTPException(400, f"Session '{fn}' already assigned to this bot")
+
+    # Check it's in the free pool
+    from code.utils import load_pool, save_pool
+    pool = await asyncio.to_thread(load_pool)
+    if fn not in pool.get("free_sessions", []):
+        raise HTTPException(400, f"Session '{fn}' is not in the free pool")
+
+    # Remove from free pool
+    pool["free_sessions"] = [x for x in pool["free_sessions"] if x != fn]
+    await asyncio.to_thread(save_pool, pool)
+
+    # Get session info via Telethon
+    info = {"file": fn, "real_name": "", "user_id": 0, "index": len(sessions) + 1}
+    client, err = await _connect_session(fn)
+    if client:
+        try:
+            me = await client.get_me()
+            if me:
+                info["real_name"] = f"{me.first_name or ''} {me.last_name or ''}".strip()
+                info["user_id"] = me.id
+        except Exception:
+            pass
+        finally:
+            await client.disconnect()
+
+    # Add to bot
+    sessions.append(info)
+    cfg["sessions"] = sessions
+    await wrappers.save_user_data(name, cfg)
+
+    await wrappers.log_admin_action("web_admin", "add_session", target=f"{fn} to {name}")
+    return {"status": "added", "session": info}
+
+
+class ReplaceSessionRequest(BaseModel):
+    new_session_file: str
+
+
+@router.post("/{name}/sessions/{session_file}/replace")
+async def replace_session(name: str, session_file: str, body: ReplaceSessionRequest):
+    """Replace a session with a new one from the free pool. Old one goes to free pool."""
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    sessions = cfg.get("sessions") or []
+    old_entry = next((s for s in sessions if s.get("file") == session_file), None)
+    if not old_entry:
+        raise HTTPException(404, f"Session '{session_file}' not assigned to '{name}'")
+
+    new_fn = body.new_session_file
+    if any(s.get("file") == new_fn for s in sessions):
+        raise HTTPException(400, f"Session '{new_fn}' already assigned to this bot")
+
+    from code.utils import load_pool, save_pool
+    pool = await asyncio.to_thread(load_pool)
+    if new_fn not in pool.get("free_sessions", []):
+        raise HTTPException(400, f"Session '{new_fn}' is not in the free pool")
+
+    # Remove new from free pool
+    pool["free_sessions"] = [x for x in pool["free_sessions"] if x != new_fn]
+    # Return old to free pool
+    pool.setdefault("free_sessions", []).append(session_file)
+    await asyncio.to_thread(save_pool, pool)
+
+    # Get new session info
+    new_info = {"file": new_fn, "real_name": "", "user_id": 0, "index": old_entry.get("index", 1)}
+    client, err = await _connect_session(new_fn)
+    if client:
+        try:
+            me = await client.get_me()
+            if me:
+                new_info["real_name"] = f"{me.first_name or ''} {me.last_name or ''}".strip()
+                new_info["user_id"] = me.id
+        except Exception:
+            pass
+        finally:
+            await client.disconnect()
+
+    # Replace in list
+    cfg["sessions"] = [new_info if s.get("file") == session_file else s for s in sessions]
+    await wrappers.save_user_data(name, cfg)
+
+    await wrappers.log_admin_action("web_admin", "replace_session", target=f"{session_file} → {new_fn} on {name}")
+    return {"status": "replaced", "old": session_file, "new_session": new_info}
+
+
+@router.get("/{name}/sessions/available")
+async def get_available_sessions(name: str):
+    """Get list of sessions available in the free pool for adding/replacing."""
+    pool = await wrappers.load_pool()
+    free = pool.get("free_sessions", [])
+    return {"sessions": free, "count": len(free)}
+
+
+# ─────────────────────── Web Token & Login Info ───────────────────────
+
+@router.get("/{name}/web-access")
+async def get_web_access_info(name: str):
+    """Get web access code, last login info, and login history for a bot."""
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    return {
+        "web_token": cfg.get("web_token", ""),
+        "last_web_login": cfg.get("last_web_login"),
+        "web_login_history": cfg.get("web_login_history", []),
+    }
+
+
+class SetWebTokenBody(BaseModel):
+    web_token: Optional[str] = None  # None = auto-generate
+
+
+@router.post("/{name}/web-access/set-token")
+async def admin_set_web_token(name: str, body: SetWebTokenBody):
+    """Admin sets or resets the web access code for a bot."""
+    import random, string
+
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    if body.web_token and body.web_token.strip():
+        new_token = body.web_token.strip()
+        if len(new_token) < 4:
+            raise HTTPException(400, "Token must be at least 4 characters")
+        if len(new_token) > 32:
+            raise HTTPException(400, "Token must be at most 32 characters")
+    else:
+        chars = string.ascii_letters + string.digits
+        new_token = "".join(random.choices(chars, k=8))
+
+    # Check uniqueness across all bots
+    data = await wrappers.load_adbot()
+    for bt, bc in data.get("bots", {}).items():
+        if bc.get("name") != name and bc.get("web_token") == new_token:
+            raise HTTPException(400, "This code is already used by another bot")
+
+    # Find and update
+    for bt, bc in data.get("bots", {}).items():
+        if bc.get("name") == name:
+            bc["web_token"] = new_token
+            break
+    await wrappers.save_adbot(data)
+
+    await wrappers.log_admin_action("web_admin", "set_web_token", target=name)
+    return {"status": "updated", "web_token": new_token}

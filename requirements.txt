@@ -1,0 +1,10 @@
+telethon
+python-telegram-bot>=21.0
+python-dotenv
+aiofiles
+orjson
+PySocks
+psutil
+requests
+filelock
+socksio

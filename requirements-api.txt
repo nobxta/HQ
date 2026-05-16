@@ -1,0 +1,7 @@
+# Additional dependencies for the web API layer
+# Install: pip install -r requirements-api.txt
+fastapi
+uvicorn[standard]
+pyjwt
+bcrypt
+python-multipart

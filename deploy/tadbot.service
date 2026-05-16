@@ -1,0 +1,39 @@
+# systemd service for TAdbot (bots + API combined)
+# Place in: /etc/systemd/system/tadbot.service
+# Commands:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable tadbot
+#   sudo systemctl start tadbot
+#   sudo systemctl status tadbot
+#   sudo journalctl -u tadbot -f
+
+[Unit]
+Description=TAdbot Telegram AdBot System + API
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tadbot
+Group=tadbot
+WorkingDirectory=/opt/tadbot
+Environment=PATH=/opt/tadbot/venv/bin:/usr/local/bin:/usr/bin
+EnvironmentFile=/opt/tadbot/.env
+ExecStart=/opt/tadbot/venv/bin/python run_api.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/tadbot/data /opt/tadbot/sessions /opt/tadbot/logs /opt/tadbot/groups
+PrivateTmp=true
+
+# Resource limits
+LimitNOFILE=65535
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target
