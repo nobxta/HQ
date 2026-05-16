@@ -5,7 +5,7 @@
 sessions/
 
 # Logs
-logs/
+/logs/
 
 # Per-user storage (contains bot configs, tokens)
 data/
