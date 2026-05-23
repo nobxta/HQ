@@ -40,6 +40,7 @@ from .admin import (
 )
 from .users import create_user_bot
 from .utils import validate_bot_token, name_to_filename, get_token_by_name
+from .user_config import get_plan_mode
 from .repair import (
     repair_fix_log_group,
     repair_fix_config,
@@ -1702,7 +1703,7 @@ async def run_admin_bot_ptb() -> None:
             bot_name = get_name_by_token(token)
             cfg = load_user_data(bot_name) if bot_name else {}
             cl = get_chatlist_config(cfg) if cfg else {"links": [], "slugs": [], "active": False}
-            mode = (cfg.get("mode") or "Starter").strip()
+            mode = get_plan_mode(cfg)
             lines = [f"📂 Groups — {name}\n"]
             if cl["active"] and cl["links"]:
                 for li, link in enumerate(cl["links"]):
@@ -1820,7 +1821,7 @@ async def run_admin_bot_ptb() -> None:
                 await q.edit_message_text("Bot not found.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data="adb_groups:" + str(i))]]))
                 return
             cfg = load_user_data(bot_name)
-            mode = (cfg.get("mode") or "Starter").strip()
+            mode = get_plan_mode(cfg)
             default_gf = default_group_file_for_mode(mode)
             clear_chatlist_config(cfg)
             cfg["group_file"] = default_gf
@@ -2017,7 +2018,7 @@ async def run_admin_bot_ptb() -> None:
             bot_username = (cfg.get("bot_username") or "").strip() or "—"
             valid_till = (cfg.get("valid_till") or "").strip() or "—"
             plan_name = (cfg.get("plan_name") or "").strip() or "—"
-            mode = (cfg.get("mode") or "").strip() or "—"
+            mode = get_plan_mode(cfg) if cfg else "—"
             token_display = (token[:20] + "…") if len(token) > 20 else token
             sessions = [s.get("file") or "?" for s in cfg.get("sessions", []) if s.get("file")]
             sessions_line = ", ".join(sessions[:10]) if sessions else "—"

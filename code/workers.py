@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config
+from .user_config import get_plan_mode
 
 # Must import after config so worker process has correct paths
 from .users import (
@@ -362,7 +363,7 @@ async def worker_main_async(
             logger.warning("[worker-%s] skipping session with empty file: dict keys=%s", worker_id, list(session_info.keys()))
             continue
         global_ordinal = worker_id * SESSIONS_PER_WORKER + local_ord
-        mode = (config_snapshot.get("mode") or "Starter").strip()
+        mode = get_plan_mode(config_snapshot)
         if mode == "Enterprise":
             # First half start immediately, second half after 5 min. Each runs on its own time.
             half = max(1, total_sessions) // 2

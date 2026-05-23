@@ -4,6 +4,7 @@
 
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
+/* ─── Base ─── */
 body {
   @apply bg-dark-950 text-dark-200 font-sans antialiased;
   -webkit-tap-highlight-color: transparent;
@@ -11,25 +12,35 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Prevent overflow on mobile */
+html {
+  scroll-behavior: smooth;
+}
+
 html, body {
   overflow-x: hidden;
   max-width: 100vw;
 }
 
-/* Custom scrollbar */
+/* ─── Premium scrollbar ─── */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 ::-webkit-scrollbar-track {
   @apply bg-transparent;
 }
 ::-webkit-scrollbar-thumb {
-  @apply bg-dark-700 rounded-full;
+  @apply bg-dark-700/60 rounded-full;
+  transition: background 0.2s ease;
 }
 ::-webkit-scrollbar-thumb:hover {
-  @apply bg-dark-600;
+  @apply bg-dark-500/80;
+}
+
+/* Smooth scroll containers */
+.smooth-scroll {
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Hide scrollbar on filter bars */
@@ -42,22 +53,85 @@ html, body {
   scrollbar-width: none;
 }
 
-/* Smooth focus rings */
+/* ─── Focus rings ─── */
 *:focus-visible {
   @apply outline-none ring-2 ring-accent/40 ring-offset-1 ring-offset-dark-950;
 }
 
-/* Button active press */
+/* ─── Button press ─── */
 button:active:not(:disabled) {
   transform: scale(0.97);
+  transition: transform 0.1s ease;
 }
 
-/* Smooth transitions for interactive elements */
+/* ─── Smooth transitions for interactive elements ─── */
 a, button, input, select, textarea {
-  @apply transition-colors duration-200;
+  @apply transition-all duration-200 ease-out;
 }
 
-/* Log viewer */
+/* ─── Glass card utility ─── */
+@layer components {
+  .glass-card {
+    @apply rounded-2xl border border-white/[0.06] backdrop-blur-md;
+    background: linear-gradient(
+      135deg,
+      rgba(30, 30, 48, 0.7) 0%,
+      rgba(20, 20, 35, 0.8) 100%
+    );
+    box-shadow:
+      0 4px 24px rgba(0, 0, 0, 0.12),
+      inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+
+  .glass-card-hover {
+    @apply glass-card transition-all duration-300 ease-out;
+  }
+  .glass-card-hover:hover {
+    border-color: rgba(108, 92, 231, 0.15);
+    box-shadow:
+      0 8px 32px rgba(0, 0, 0, 0.18),
+      0 0 0 1px rgba(108, 92, 231, 0.08),
+      inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    transform: translateY(-1px);
+  }
+
+  .glass-stat {
+    @apply rounded-2xl border border-white/[0.06] backdrop-blur-md overflow-hidden relative;
+    background: linear-gradient(
+      145deg,
+      rgba(30, 30, 48, 0.6) 0%,
+      rgba(20, 20, 35, 0.8) 100%
+    );
+    box-shadow:
+      0 2px 16px rgba(0, 0, 0, 0.1),
+      inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+
+  /* Gradient text utility */
+  .gradient-text {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(135deg, #e0dcff 0%, #6c5ce7 100%);
+  }
+
+  /* Shimmer loading effect */
+  .shimmer-bg {
+    background: linear-gradient(
+      90deg,
+      rgba(255,255,255,0) 0%,
+      rgba(255,255,255,0.03) 50%,
+      rgba(255,255,255,0) 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 2s linear infinite;
+  }
+
+  /* Animated number counter */
+  .number-animate {
+    animation: numberTick 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+}
+
+/* ─── Log viewer ─── */
 .log-viewer {
   @apply font-mono text-xs leading-relaxed;
 }
@@ -71,9 +145,64 @@ a, button, input, select, textarea {
   @apply text-info;
 }
 
-/* Fix for mobile inputs zooming */
+/* ─── Animated progress bars ─── */
+.progress-bar-animated {
+  transition: width 1s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ─── Dot pulse (live indicator) ─── */
+@keyframes dotPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.8); }
+}
+.dot-pulse {
+  animation: dotPulse 1.5s ease-in-out infinite;
+}
+
+/* ─── Ring animation for circle progress ─── */
+@keyframes dashDraw {
+  from { stroke-dashoffset: var(--circumference); }
+  to { stroke-dashoffset: var(--target-offset); }
+}
+.ring-draw {
+  animation: dashDraw 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* ─── Subtle noise texture overlay ─── */
+.noise-bg::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0.015;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+/* ─── Mobile input zoom fix ─── */
 @media (max-width: 640px) {
   input, select, textarea {
     font-size: 16px !important;
   }
+}
+
+/* ─── Stagger animation classes ─── */
+.stagger-children > * {
+  opacity: 0;
+  animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+.stagger-children > *:nth-child(1) { animation-delay: 0.03s; }
+.stagger-children > *:nth-child(2) { animation-delay: 0.06s; }
+.stagger-children > *:nth-child(3) { animation-delay: 0.09s; }
+.stagger-children > *:nth-child(4) { animation-delay: 0.12s; }
+.stagger-children > *:nth-child(5) { animation-delay: 0.15s; }
+.stagger-children > *:nth-child(6) { animation-delay: 0.18s; }
+.stagger-children > *:nth-child(7) { animation-delay: 0.21s; }
+.stagger-children > *:nth-child(8) { animation-delay: 0.24s; }
+.stagger-children > *:nth-child(9) { animation-delay: 0.27s; }
+.stagger-children > *:nth-child(10) { animation-delay: 0.30s; }
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
 }

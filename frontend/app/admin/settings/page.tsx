@@ -9,7 +9,8 @@ import ConfirmModal from "@/components/ConfirmModal";
 import { PageSkeleton } from "@/components/ui/Skeleton";
 import {
   Wrench, AlertTriangle, Power, ShieldAlert, Activity, Clock,
-  StopCircle, PlayCircle, FolderOpen, Save, Link,
+  StopCircle, PlayCircle, FolderOpen, Save, Link, RefreshCw, DollarSign,
+  ArrowRightLeft,
 } from "lucide-react";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
@@ -30,6 +31,19 @@ export default function SettingsPage() {
     enterprise: ["", ""],
   });
   const [savingLinks, setSavingLinks] = useState(false);
+  // Replacement settings
+  const [repPrice, setRepPrice] = useState<number>(2.0);
+  const [savingRepPrice, setSavingRepPrice] = useState(false);
+  // Replacement queue
+  const [repQueue, setRepQueue] = useState<any>(null);
+  const [processingQueue, setProcessingQueue] = useState(false);
+
+  const loadRepQueue = async () => {
+    try {
+      const res = await api.get("/api/system/replacements");
+      setRepQueue(res.data);
+    } catch {}
+  };
 
   useEffect(() => {
     if (adminSettings?.chatlist_links) {
@@ -38,7 +52,36 @@ export default function SettingsPage() {
         enterprise: adminSettings.chatlist_links.enterprise || ["", ""],
       });
     }
+    if (adminSettings?.session_replacement_price !== undefined) {
+      setRepPrice(adminSettings.session_replacement_price);
+    }
   }, [adminSettings]);
+
+  useEffect(() => { loadRepQueue(); }, []);
+
+  const saveRepPrice = async () => {
+    setSavingRepPrice(true);
+    try {
+      await api.put("/api/system/admin-settings", { session_replacement_price: repPrice });
+      toast.success("Replacement price saved");
+      mutateSettings();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Failed to save");
+    }
+    setSavingRepPrice(false);
+  };
+
+  const processQueue = async () => {
+    setProcessingQueue(true);
+    try {
+      const res = await api.post("/api/system/replacements/process");
+      toast.success(`Processed: ${res.data.processed || 0} replacement(s)`);
+      loadRepQueue();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Failed to process queue");
+    }
+    setProcessingQueue(false);
+  };
 
   const saveChatlistLinks = async () => {
     setSavingLinks(true);
@@ -181,6 +224,109 @@ export default function SettingsPage() {
             </Button>
           </div>
         </div>
+      </Card>
+
+      {/* Session Replacement Settings */}
+      <Card>
+        <CardHeader>
+          <CardTitle><DollarSign className="h-4 w-4 inline mr-2" />Session Replacement Pricing</CardTitle>
+        </CardHeader>
+        <div className="space-y-4">
+          <p className="text-xs text-dark-500">
+            Price per session replacement when users exceed their free replacement quota.
+            Users pay this amount per session to get a new working session from the free pool.
+          </p>
+          <div className="flex items-end gap-3">
+            <div className="space-y-1.5 flex-1 max-w-xs">
+              <label className="block text-sm font-medium text-dark-300">Price per Session (USD)</label>
+              <input
+                type="number"
+                step="0.5"
+                min="0"
+                className="w-full rounded-lg border border-dark-600 bg-dark-950 px-3 py-2 text-sm text-dark-200 focus:outline-none focus:ring-2 focus:ring-accent/40"
+                value={repPrice}
+                onChange={(e) => setRepPrice(parseFloat(e.target.value) || 0)}
+              />
+            </div>
+            <Button size="sm" onClick={saveRepPrice} loading={savingRepPrice}>
+              <Save className="h-3.5 w-3.5" /> Save
+            </Button>
+          </div>
+        </div>
+      </Card>
+
+      {/* Replacement Queue */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between w-full">
+            <CardTitle><ArrowRightLeft className="h-4 w-4 inline mr-2" />Replacement Queue</CardTitle>
+            <div className="flex gap-2">
+              <Button size="sm" variant="secondary" onClick={loadRepQueue}>
+                <RefreshCw className="h-3.5 w-3.5" /> Refresh
+              </Button>
+              {repQueue?.total_awaiting > 0 && (
+                <Button size="sm" onClick={processQueue} loading={processingQueue}>
+                  Process Queue ({repQueue.total_awaiting})
+                </Button>
+              )}
+            </div>
+          </div>
+        </CardHeader>
+        {repQueue ? (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="rounded-lg border border-dark-700 bg-dark-800/50 p-3 text-center">
+                <p className="text-lg font-bold text-dark-100">{repQueue.total_pending}</p>
+                <p className="text-xs text-dark-500">Pending</p>
+              </div>
+              <div className="rounded-lg border border-warning/30 bg-warning/5 p-3 text-center">
+                <p className="text-lg font-bold text-warning">{repQueue.total_awaiting}</p>
+                <p className="text-xs text-dark-500">Awaiting Sessions</p>
+              </div>
+              <div className="rounded-lg border border-dark-700 bg-dark-800/50 p-3 text-center">
+                <p className="text-lg font-bold text-dark-100">{repQueue.completed_recent?.length || 0}</p>
+                <p className="text-xs text-dark-500">Recently Completed</p>
+              </div>
+              <div className="rounded-lg border border-dark-700 bg-dark-800/50 p-3 text-center">
+                <p className="text-lg font-bold text-dark-100">{repQueue.queue?.filter((e: any) => e.free_replacement).length || 0}</p>
+                <p className="text-xs text-dark-500">Free Replacements</p>
+              </div>
+            </div>
+
+            {(repQueue.queue || []).length > 0 && (
+              <Table>
+                <Thead>
+                  <tr>
+                    <Th>Bot</Th>
+                    <Th>Session</Th>
+                    <Th>Status</Th>
+                    <Th>Type</Th>
+                    <Th>Spam Status</Th>
+                    <Th>Created</Th>
+                  </tr>
+                </Thead>
+                <Tbody>
+                  {(repQueue.queue || []).map((e: any) => (
+                    <Tr key={e.id}>
+                      <Td className="font-medium">{e.bot_name}</Td>
+                      <Td className="text-xs font-mono">{e.real_name || e.session_file}</Td>
+                      <Td><Badge status={e.status === "ready" ? "active" : e.status === "awaiting_session" ? "waiting" : e.status} /></Td>
+                      <Td>{e.free_replacement ? <span className="text-success text-xs font-medium">FREE</span> : <span className="text-xs">${e.price_usd?.toFixed(2)}</span>}</Td>
+                      <Td><span className={`text-xs font-medium ${e.spam_status === "FROZEN" ? "text-danger" : e.spam_status === "HARD_LIMITED" ? "text-danger" : "text-warning"}`}>{e.spam_status}</span></Td>
+                      <Td className="text-xs">{e.created_at ? new Date(e.created_at).toLocaleDateString() : "—"}</Td>
+                    </Tr>
+                  ))}
+                </Tbody>
+              </Table>
+            )}
+
+            {(repQueue.queue || []).length === 0 && (
+              <p className="text-sm text-dark-500 text-center py-4">No pending replacements</p>
+            )}
+          </div>
+        ) : (
+          <p className="text-sm text-dark-500">Loading queue…</p>
+        )}
       </Card>
 
       {/* Workers health */}

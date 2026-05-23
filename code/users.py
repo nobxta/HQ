@@ -8,6 +8,7 @@ import random
 import re
 import shutil
 import tempfile
+import threading
 import time
 import zipfile
 from collections import deque
@@ -27,6 +28,7 @@ except ImportError:
 from . import config
 from . import bot_ptb
 from . import notify
+from .user_config import get_plan_mode
 from .maintenance import (
     MAINTENANCE_MESSAGE,
     add_to_maintenance_queue,
@@ -41,6 +43,14 @@ from .repair import (
     repair_fix_sessions,
     repair_replace_session,
 )
+from .replacement import (
+    check_and_flag_failing_sessions,
+    create_replacement_request,
+    get_free_replacements_remaining,
+    get_pending_replacements_for_bot,
+    get_session_replacement_price,
+    process_ready_replacements,
+)
 
 # Log-group messages are sent via python-telegram-bot (PTB) using the AdBot's bot token, not Telethon.
 # Queue items: (bot_token, msg, parse_mode) or (bot_token, msg, parse_mode, buttons).
@@ -54,6 +64,10 @@ _activation_message: dict[str, tuple[int, int]] = {}
 bot_runtime_state: dict[str, dict] = {}
 # When _start_posting returns False, reason for Run UI: "no_sessions" | "no_valid_sessions" | "no_groups" | "suspended" | "no_cfg" | None
 _last_start_failure_reason: dict[str, str] = {}
+# Pending health check tokens: set of bot_tokens that need async SpamBot check
+_pending_health_checks: set[str] = set()
+_health_check_lock = threading.Lock()
+_health_check_bg_task: asyncio.Task | None = None
 
 
 def enqueue_log(
@@ -326,6 +340,13 @@ CB_STATS_ANALYZE = b"stats_analyze"
 CB_STATS_RESET = b"stats_reset"
 CB_STATS_RESET_CONFIRM = b"stats_reset_ok"
 PREFIX_STATS_SESSION = b"stats_ps:"
+# Session replacement callbacks
+CB_REP_FREE = b"rep_free"         # Replace free sessions
+CB_REP_PAY = b"rep_pay"           # Pay & replace
+CB_REP_SKIP = b"rep_skip"         # Skip / continue without
+CB_REP_CONFIRM_FREE = b"rep_cf"   # Confirm free replacement
+PREFIX_REP_CRYPTO = b"rep_cry:"   # rep_cry:USDT_TRC20 — crypto selection for replacement payment
+CB_REP_STATUS = b"rep_status"     # Check replacement status
 
 # Posting: asyncio tasks on main loop (legacy); bot_token -> (stop_event, [asyncio.Task, ...], [session_file, ...])
 _posting_handles: dict[str, tuple[asyncio.Event, list[asyncio.Task], list[str]]] = {}
@@ -863,22 +884,53 @@ def _stats_buffer_event(bot_token: str, session_file: str, success: bool, ts: fl
         d["failed"] = d.get("failed", 0) + 1
 
 
-def _increment_cycle_count_in_stats(bot_token: str, session_file: str) -> None:
-    """Increment cycles count for session in data/stats/<name>.json only (no user JSON). Used when cycle_done is processed."""
+def _increment_cycle_count_in_stats(
+    bot_token: str,
+    session_file: str,
+    *,
+    posts_success: int = 0,
+    posts_failed: int = 0,
+    posts_skipped: int = 0,
+    posts_attempted: int = 0,
+    cycle_duration_sec: float = 0.0,
+    cycle_ts: float = 0.0,
+) -> None:
+    """Increment cycles count and record per-cycle details in data/stats/<name>.json."""
     name = get_name_by_token(bot_token)
     if not name:
         return
     st = load_stats(name)
     if not st or not isinstance(st, dict):
         st = _default_stats_data()
+    now = time.time()
     session_stats = dict(st.get("session_stats") or {})
     entry = dict(session_stats.get(session_file) or {"lifetime_sent": 0, "lifetime_failed": 0, "last24h_buckets": []})
     entry["cycles"] = int(entry.get("cycles", 0)) + 1
+    entry["last_cycle_ts"] = cycle_ts or now
+    entry["last_cycle_success"] = posts_success
+    entry["last_cycle_failed"] = posts_failed
+    entry["last_cycle_skipped"] = posts_skipped
+    entry["last_cycle_attempted"] = posts_attempted
+    entry["last_cycle_duration_sec"] = round(cycle_duration_sec, 1)
+    durations = entry.get("cycle_durations", [])
+    if cycle_duration_sec > 0:
+        durations.append(round(cycle_duration_sec, 1))
+        if len(durations) > 50:
+            durations = durations[-50:]
+    entry["cycle_durations"] = durations
+    entry["avg_cycle_duration_sec"] = round(sum(durations) / len(durations), 1) if durations else 0.0
+    best = entry.get("best_cycle_success", 0)
+    if posts_success > best:
+        entry["best_cycle_success"] = posts_success
+        entry["best_cycle_ts"] = cycle_ts or now
     session_stats[session_file] = entry
     st["session_stats"] = session_stats
     st.setdefault("lifetime_sent", 0)
     st.setdefault("lifetime_failed", 0)
-    st.setdefault("created_at", time.time())
+    st.setdefault("created_at", now)
+    st["last_cycle_ts"] = cycle_ts or now
+    st["last_cycle_session"] = session_file
+    st["total_cycles"] = int(st.get("total_cycles", 0)) + 1
     save_stats(name, st)
 
 
@@ -1033,7 +1085,22 @@ def _get_stats_for_display(bot_token: str) -> dict:
                 if ts >= now - RECENT_EVENTS_WINDOW_SEC:
                     _add_event_to_buckets(buckets, int(ts // 3600), bool(ev.get("success")))
         sent_24, failed_24 = _sum_buckets(buckets)
-        session_stats[sess] = {"lifetime_sent": ls, "lifetime_failed": lf, "last24h_sent": sent_24, "last24h_failed": failed_24}
+        session_stats[sess] = {
+            "lifetime_sent": ls,
+            "lifetime_failed": lf,
+            "last24h_sent": sent_24,
+            "last24h_failed": failed_24,
+            "cycles": int(entry.get("cycles", 0)),
+            "last_cycle_ts": entry.get("last_cycle_ts", 0),
+            "last_cycle_success": int(entry.get("last_cycle_success", 0)),
+            "last_cycle_failed": int(entry.get("last_cycle_failed", 0)),
+            "last_cycle_skipped": int(entry.get("last_cycle_skipped", 0)),
+            "last_cycle_attempted": int(entry.get("last_cycle_attempted", 0)),
+            "last_cycle_duration_sec": entry.get("last_cycle_duration_sec", 0),
+            "avg_cycle_duration_sec": entry.get("avg_cycle_duration_sec", 0),
+            "best_cycle_success": int(entry.get("best_cycle_success", 0)),
+            "best_cycle_ts": entry.get("best_cycle_ts", 0),
+        }
     global_buckets = list(st.get("last24h_buckets") or [])
     if p and p.get("pending_events"):
         for ev in p["pending_events"]:
@@ -1049,6 +1116,9 @@ def _get_stats_for_display(bot_token: str) -> dict:
         "last24h_sent": sent_24,
         "last24h_failed": failed_24,
         "last24h_buckets": global_buckets,
+        "total_cycles": int(st.get("total_cycles", 0)),
+        "last_cycle_ts": st.get("last_cycle_ts", 0),
+        "last_cycle_session": st.get("last_cycle_session", ""),
     }
 
 
@@ -1387,7 +1457,7 @@ def _assigned_groups_for_session(
         return [], len(all_groups)
     if not all_groups:
         return [], 0
-    mode = (cfg.get("mode") or "Starter").strip()
+    mode = get_plan_mode(cfg)
     if mode != "Enterprise":
         from .chatlist import STARTER_MAX_GROUPS
         capped = all_groups[:STARTER_MAX_GROUPS] if len(all_groups) > STARTER_MAX_GROUPS else all_groups
@@ -1737,9 +1807,10 @@ async def _async_session_loop(
         # Enterprise: first half start at 0, second half after 5 min. Never skip so sessions don't all post at once.
         if stagger_sec > 0:
             if report_user_log:
+                _stagger_cfg = get_config() if get_config else {}
                 report_user_log(
                     f"[Stagger] session={session_file} waiting {int(stagger_sec)}s before first cycle "
-                    f"(Enterprise: second half of sessions start after {int(stagger_sec)}s)"
+                    f"(mode={get_plan_mode(_stagger_cfg)}: staggered start after {int(stagger_sec)}s)"
                 )
             logger.info("[Stagger] session=%s waiting %.0fs before first cycle", session_file, stagger_sec)
             await asyncio.sleep(stagger_sec)
@@ -1990,7 +2061,7 @@ async def _async_session_loop(
 
             client.add_event_handler(_on_incoming_dm, events.NewMessage(incoming=True))
             assigned, total_groups = _assigned_groups_for_session(bot_token, cfg, session_file, session_ordinal, total_workers)
-            mode = (cfg.get("mode") or "Starter").strip()
+            mode = get_plan_mode(cfg)
 
             # --- DETERMINISTIC ENTERPRISE SCHEDULING ---
             # Enterprise: each session processes ONLY its shard. No rollover, no backlog.
@@ -2466,6 +2537,7 @@ async def _async_session_loop(
                     posts_success=posts_success_cycle, posts_failed=posts_failed_cycle, posts_skipped=posts_skipped_cycle,
                     posts_attempted=posts_attempted_cycle,
                     posts_skipped_cooldown=posts_skipped_cooldown, posts_skipped_floodwait=posts_skipped_floodwait,
+                    cycle_duration_sec=cycle_duration_sec,
                 )
             else:
                 _persist_last_cycle_at(bot_token, session_file, scheduled_run_ts)
@@ -2575,7 +2647,7 @@ def _build_worker_config_snapshot(
         "groups_dir": str(config.GROUPS_DIR),
         "message_text": cfg.get("message_text", "Hello"),
         "post_links": _get_post_links_list(cfg),
-        "mode": (cfg.get("mode") or "Starter").strip(),
+        "mode": get_plan_mode(cfg),
         "log_group": cfg.get("log_group") or "",
         "log_file": log_file or "",
         "valid_till": cfg.get("valid_till") or "",
@@ -2595,6 +2667,94 @@ def _build_worker_config_snapshot(
         "excluded_groups": excluded,
         "auto_prune_dead_groups": bool(cfg.get("auto_prune_dead_groups", False)),
     }
+
+
+def _schedule_session_health_check(bot_token: str) -> None:
+    """Schedule an async SpamBot health check for a bot's failing sessions.
+    Non-blocking: just adds to set, processed by background loop."""
+    with _health_check_lock:
+        _pending_health_checks.add(bot_token)
+
+
+async def _run_session_health_check(bot_token: str) -> None:
+    """Run SpamBot health check for failing sessions of a bot, create replacement requests,
+    and notify the user via their controller bot with inline buttons."""
+    try:
+        flagged = await check_and_flag_failing_sessions(bot_token)
+        if not flagged:
+            return
+        cfg = _get_cfg(bot_token)
+        if not cfg:
+            return
+        name = cfg.get("name", "")
+        owner_id = cfg.get("owner_id") or 0
+        existing_pending = get_pending_replacements_for_bot(bot_token)
+        existing_files = {e["session_file"] for e in existing_pending}
+        new_flagged = [f for f in flagged if f["session_file"] not in existing_files]
+        if not new_flagged:
+            return
+        free_remaining = get_free_replacements_remaining(cfg)
+        entries = create_replacement_request(
+            bot_token=bot_token,
+            bot_name=name,
+            owner_id=owner_id,
+            sessions=new_flagged,
+            free_count=free_remaining,
+        )
+        if not entries:
+            return
+        free_entries = [e for e in entries if e.get("free_replacement")]
+        paid_entries = [e for e in entries if not e.get("free_replacement")]
+        price_per = get_session_replacement_price()
+        lines = ["⚠️ <b>Session Health Alert</b>\n"]
+        for e in entries:
+            status_emoji = "🔴" if e["spam_status"] in ("FROZEN", "HARD_LIMITED") else "🟡"
+            free_tag = " (FREE replacement)" if e["free_replacement"] else f" (${price_per:.2f})"
+            lines.append(f"{status_emoji} {e['real_name']} — {e['spam_status']}{free_tag}")
+        if free_entries:
+            lines.append(f"\n✅ {len(free_entries)} free replacement(s) available")
+        if paid_entries:
+            total = sum(float(e.get("price_usd", 0)) for e in paid_entries)
+            lines.append(f"\n💰 {len(paid_entries)} paid replacement(s): ${total:.2f}")
+        lines.append("\nChoose an action below:")
+        text = "\n".join(lines)
+        buttons = []
+        if free_entries:
+            buttons.append([Button.inline(f"✅ Replace Free ({len(free_entries)})", CB_REP_FREE)])
+        if paid_entries:
+            total = sum(float(e.get("price_usd", 0)) for e in paid_entries)
+            buttons.append([Button.inline(f"💳 Pay ${total:.2f} & Replace", CB_REP_PAY)])
+        buttons.append([Button.inline("⏭ Skip / Continue Without", CB_REP_SKIP)])
+        # Send to log group with buttons
+        enqueue_log(bot_token, text, parse_mode="html", buttons=[])
+        # Send directly to owner via controller bot
+        bot_client = BOT_CLIENTS.get(bot_token)
+        if bot_client and owner_id:
+            try:
+                await bot_client.send_message(
+                    owner_id, text, parse_mode="html",
+                    buttons=buttons,
+                )
+            except Exception as e:
+                logger.warning("[Replacement] Failed to send notification to owner %s: %s", owner_id, e)
+    except Exception as e:
+        logger.exception("[Replacement] Health check failed for %s: %s", bot_token[:20], e)
+
+
+async def _health_check_background_loop() -> None:
+    """Background loop that processes pending health checks every 60s."""
+    while True:
+        await asyncio.sleep(60)
+        tokens_to_check: list[str] = []
+        with _health_check_lock:
+            tokens_to_check = list(_pending_health_checks)
+            _pending_health_checks.clear()
+        for token in tokens_to_check:
+            try:
+                await _run_session_health_check(token)
+            except Exception as e:
+                logger.warning("[HealthCheck] Error for %s: %s", token[:20], e)
+            await asyncio.sleep(5)
 
 
 def _apply_worker_result(msg: dict) -> None:
@@ -2632,7 +2792,21 @@ def _apply_worker_result(msg: dict) -> None:
                 )
         if session_file is not None and timestamp is not None:
             _worker_first_cycle_or_post.add((bot_token, session_file))
-            _increment_cycle_count_in_stats(bot_token, session_file)
+            _cd_success = int(msg.get("posts_success") or 0)
+            _cd_failed = int(msg.get("posts_failed") or 0)
+            _cd_skipped = int(msg.get("posts_skipped") or 0)
+            _cd_attempted = int(msg.get("posts_attempted") or 0)
+            if not _cd_failed and _cd_attempted > _cd_success + _cd_skipped:
+                _cd_failed = _cd_attempted - _cd_success - _cd_skipped
+            _increment_cycle_count_in_stats(
+                bot_token, session_file,
+                posts_success=_cd_success,
+                posts_failed=_cd_failed,
+                posts_skipped=_cd_skipped,
+                posts_attempted=_cd_attempted,
+                cycle_duration_sec=float(msg.get("cycle_duration_sec") or 0),
+                cycle_ts=timestamp,
+            )
             cfg = _get_cfg(bot_token)
             if cfg and cfg.get("state") == "activating":
                 _save_bot_config(bot_token, lambda c: c.update({"state": "running"}))
@@ -2664,6 +2838,9 @@ def _apply_worker_result(msg: dict) -> None:
                         cmd_q.put({"cmd": "config_patch", "patch": patch})
                     except Exception:
                         pass
+            # Auto-detect failing sessions: if 90%+ failure, schedule SpamBot check
+            if _cd_attempted > 0 and _cd_failed / _cd_attempted >= 0.90 and _cd_success <= 1:
+                _schedule_session_health_check(bot_token)
         # Stats: no longer updated from cycle_done; all increments happen on post_attempt (batched).
     elif msg_type == "cycle_failed":
         # Do not permanently exclude on a single zero-post cycle; retry on next cycle.
@@ -3296,7 +3473,7 @@ async def _start_posting(
         if len(groups_for_sess) == 0:
             logger.warning(
                 "[posting] session assigned ZERO groups: session=%s (group_file=%s mode=%s); excluding from this run",
-                session_file, cfg.get("group_file"), cfg.get("mode"),
+                session_file, cfg.get("group_file"), get_plan_mode(cfg),
             )
             continue
         valid_sessions_with_groups.append(s)
@@ -3313,6 +3490,10 @@ async def _start_posting(
         _worker_result_handler_task = asyncio.create_task(_worker_result_handler_async())
     if _stats_flush_task is None or _stats_flush_task.done():
         _stats_flush_task = asyncio.create_task(_stats_flush_loop())
+    global _health_check_bg_task
+    if not hasattr(_apply_worker_result, '_hc_started'):
+        _health_check_bg_task = asyncio.create_task(_health_check_background_loop())
+        _apply_worker_result._hc_started = True
     if update_status:
         try:
             await update_status("Checking sessions...")
@@ -3352,7 +3533,7 @@ async def _start_posting(
             if len(groups_for_session) == 0:
                 logger.warning(
                     "[posting] session assigned ZERO groups: bot=%s worker_id=%s session=%s (group_file=%s mode=%s); session will run but never post",
-                    cfg.get("name") or bot_token[:20], worker_id, session_file, cfg.get("group_file"), cfg.get("mode"),
+                    cfg.get("name") or bot_token[:20], worker_id, session_file, cfg.get("group_file"), get_plan_mode(cfg),
                 )
     if update_status:
         try:
@@ -3397,7 +3578,7 @@ async def _start_posting(
             logger.debug("Status update failed: %s", e)
     now = time.time()
     total_sessions = len(valid_sessions)
-    mode = (cfg.get("mode") or "Starter").strip()
+    mode = get_plan_mode(cfg)
     for _proc, _cmd_q, w_id, sess_chunk in workers_list:
         sf = _session_file_from_chunk(sess_chunk)
         _session_worker_registry[(bot_token, sf)] = w_id
@@ -3425,7 +3606,7 @@ async def _start_posting(
     bot_runtime_state[bot_token]["started_ts"] = time.time()
     logger.info("[AdBotLifecycle] STARTED bot=%s workers=%s", cfg.get("name") or bot_token[:20], len(workers_list))
     enqueue_log(bot_token, "AdBot started")
-    mode = (cfg.get("mode") or "Starter").strip()
+    mode = get_plan_mode(cfg)
     cycle_sec = max(config.MIN_CYCLE_SEC, int(cfg.get("cycle", 3600)))
     if mode == "Enterprise" and total_sessions > 1:
         half = max(1, total_sessions) // 2
@@ -4048,6 +4229,207 @@ async def create_user_bot(bot_token: str) -> None:
             msg = await repair_replace_session(bot_token, fn, status)
             try:
                 await event.edit(msg, buttons=[[Button.inline("Back", CB_FIX_BACK)]])
+            except MessageNotModifiedError:
+                pass
+            return
+        # ── Session Replacement Callbacks ──
+        if raw == CB_REP_FREE:
+            await event.answer()
+            pending = get_pending_replacements_for_bot(bot_token)
+            free_entries = [e for e in pending if e.get("free_replacement") and e.get("status") == "ready"]
+            if not free_entries:
+                try:
+                    await event.edit("No free replacements available.", buttons=[[Button.inline("Back", CB_FIX_BACK)]])
+                except MessageNotModifiedError:
+                    pass
+                return
+            try:
+                await event.edit(f"Processing {len(free_entries)} free replacement(s)…")
+            except MessageNotModifiedError:
+                pass
+            results = await process_ready_replacements()
+            completed = [r for r in results if r.get("result") == "replaced"]
+            queued = [r for r in results if r.get("result") == "queued_no_sessions"]
+            lines = [f"✅ {len(completed)} session(s) replaced successfully."]
+            for r in completed:
+                lines.append(f"  • {r.get('real_name', '?')} → {r.get('new_session_file', '?')}")
+            if queued:
+                lines.append(f"\n⏳ {len(queued)} queued (no free sessions in pool).\nAdmin has been notified.")
+            try:
+                await event.edit("\n".join(lines), buttons=[[Button.inline("OK", CB_FIX_BACK)]])
+            except MessageNotModifiedError:
+                pass
+            return
+        if raw == CB_REP_PAY:
+            await event.answer()
+            pending = get_pending_replacements_for_bot(bot_token)
+            paid_entries = [e for e in pending if not e.get("free_replacement") and e.get("status") == "pending_payment"]
+            if not paid_entries:
+                try:
+                    await event.edit("No paid replacements pending.", buttons=[[Button.inline("Back", CB_FIX_BACK)]])
+                except MessageNotModifiedError:
+                    pass
+                return
+            from .shop.payment_constants import SUPPORTED_PAY_CURRENCIES
+            crypto_buttons = []
+            for code, label in [("USDT_TRC20", "USDT (TRC20)"), ("BTC", "Bitcoin"), ("LTC", "Litecoin"), ("ETH", "Ethereum")]:
+                if code in SUPPORTED_PAY_CURRENCIES:
+                    crypto_buttons.append([Button.inline(f"💰 {label}", PREFIX_REP_CRYPTO + code.encode())])
+            crypto_buttons.append([Button.inline("Cancel", CB_REP_SKIP)])
+            total = sum(float(e.get("price_usd", 0)) for e in paid_entries)
+            try:
+                await event.edit(
+                    f"💳 <b>Session Replacement Payment</b>\n\n"
+                    f"Sessions to replace: {len(paid_entries)}\n"
+                    f"Total: <b>${total:.2f}</b>\n\n"
+                    f"Select payment method:",
+                    parse_mode="html",
+                    buttons=crypto_buttons,
+                )
+            except MessageNotModifiedError:
+                pass
+            return
+        if raw and raw.startswith(PREFIX_REP_CRYPTO):
+            await event.answer()
+            currency = raw[len(PREFIX_REP_CRYPTO):].decode("utf-8", errors="replace")
+            pending = get_pending_replacements_for_bot(bot_token)
+            paid_entries = [e for e in pending if not e.get("free_replacement") and e.get("status") == "pending_payment"]
+            if not paid_entries:
+                try:
+                    await event.edit("No paid replacements pending.", buttons=[[Button.inline("Back", CB_FIX_BACK)]])
+                except MessageNotModifiedError:
+                    pass
+                return
+            # ── Dev mode: auto-confirm payment and process immediately ──
+            if getattr(config, "PAYMENT_DEV_MODE", False):
+                from .replacement import mark_replacement_paid
+                for e in paid_entries:
+                    mark_replacement_paid(e["id"], payment_id=f"dev_{e['id']}")
+                try:
+                    await event.edit("🧪 <b>DEV MODE</b> — Payment auto-confirmed!\nProcessing replacements…", parse_mode="html")
+                except MessageNotModifiedError:
+                    pass
+                results = await process_ready_replacements()
+                completed = [r for r in results if r.get("result") == "replaced"]
+                queued = [r for r in results if r.get("result") == "queued_no_sessions"]
+                lines = [f"✅ {len(completed)} replaced."]
+                for r in completed:
+                    lines.append(f"  • {r.get('real_name', '?')} → {r.get('new_session_file', '?')}")
+                if queued:
+                    lines.append(f"\n⏳ {len(queued)} queued — admin notified.")
+                try:
+                    await event.edit("\n".join(lines), buttons=[[Button.inline("OK", CB_FIX_BACK)]])
+                except MessageNotModifiedError:
+                    pass
+                return
+
+            from .replacement import generate_replacement_invoice_data
+            invoice_data = generate_replacement_invoice_data(paid_entries, currency=currency)
+            if not invoice_data:
+                try:
+                    await event.edit("Failed to generate invoice. Try a different currency.", buttons=[[Button.inline("Back", CB_REP_PAY)]])
+                except MessageNotModifiedError:
+                    pass
+                return
+            inv = invoice_data["invoice"]
+            pay_address = inv.get("pay_address", "")
+            pay_amount = inv.get("pay_amount", 0)
+            pay_currency = inv.get("pay_currency", currency).upper()
+            total_usd = invoice_data["total_usd"]
+            count = invoice_data["count"]
+            text = (
+                f"💳 <b>Session Replacement Invoice</b>\n\n"
+                f"Sessions: {count}\n"
+                f"Total: <b>${total_usd:.2f}</b>\n\n"
+                f"Send exactly:\n"
+                f"<code>{pay_amount} {pay_currency}</code>\n\n"
+                f"To address:\n"
+                f"<code>{pay_address}</code>\n\n"
+                f"⏰ Valid for 12 hours.\n"
+                f"Payment will be detected automatically."
+            )
+            try:
+                await event.edit(text, parse_mode="html", buttons=[
+                    [Button.inline("🔄 Check Payment", CB_REP_STATUS)],
+                    [Button.inline("Cancel", CB_REP_SKIP)],
+                ])
+            except MessageNotModifiedError:
+                pass
+            return
+        if raw == CB_REP_STATUS:
+            await event.answer("Checking payment…")
+            pending = get_pending_replacements_for_bot(bot_token)
+            paid_pending = [e for e in pending if e.get("status") == "pending_payment" and e.get("payment_id")]
+            if not paid_pending:
+                ready = [e for e in pending if e.get("status") == "ready"]
+                if ready:
+                    try:
+                        await event.edit("✅ Payment confirmed! Processing replacements…")
+                    except MessageNotModifiedError:
+                        pass
+                    results = await process_ready_replacements()
+                    completed = [r for r in results if r.get("result") == "replaced"]
+                    queued = [r for r in results if r.get("result") == "queued_no_sessions"]
+                    lines = [f"✅ {len(completed)} replaced."]
+                    for r in completed:
+                        lines.append(f"  • {r.get('real_name', '?')} → {r.get('new_session_file', '?')}")
+                    if queued:
+                        lines.append(f"\n⏳ {len(queued)} queued — admin notified.")
+                    try:
+                        await event.edit("\n".join(lines), buttons=[[Button.inline("OK", CB_FIX_BACK)]])
+                    except MessageNotModifiedError:
+                        pass
+                else:
+                    try:
+                        await event.edit("No pending payments found.", buttons=[[Button.inline("Back", CB_FIX_BACK)]])
+                    except MessageNotModifiedError:
+                        pass
+                return
+            entry_ids = [e["id"] for e in paid_pending]
+            from .replacement import check_replacement_payment
+            paid = check_replacement_payment(entry_ids)
+            if paid:
+                try:
+                    await event.edit("✅ Payment confirmed! Processing replacements…")
+                except MessageNotModifiedError:
+                    pass
+                results = await process_ready_replacements()
+                completed = [r for r in results if r.get("result") == "replaced"]
+                queued = [r for r in results if r.get("result") == "queued_no_sessions"]
+                lines = [f"✅ {len(completed)} replaced."]
+                for r in completed:
+                    lines.append(f"  • {r.get('real_name', '?')} → {r.get('new_session_file', '?')}")
+                if queued:
+                    lines.append(f"\n⏳ {len(queued)} queued — admin notified.")
+                try:
+                    await event.edit("\n".join(lines), buttons=[[Button.inline("OK", CB_FIX_BACK)]])
+                except MessageNotModifiedError:
+                    pass
+            else:
+                try:
+                    await event.edit(
+                        "⏳ Payment not yet detected. Please wait and try again.",
+                        buttons=[
+                            [Button.inline("🔄 Check Again", CB_REP_STATUS)],
+                            [Button.inline("Cancel", CB_REP_SKIP)],
+                        ],
+                    )
+                except MessageNotModifiedError:
+                    pass
+            return
+        if raw == CB_REP_SKIP:
+            await event.answer()
+            from .replacement import cancel_replacement
+            pending = get_pending_replacements_for_bot(bot_token)
+            for e in pending:
+                if e.get("status") in ("pending_payment",):
+                    cancel_replacement(e["id"])
+            try:
+                await event.edit(
+                    "⚠️ Replacement skipped. Some sessions may not work in assigned groups.\n"
+                    "You can replace them later via the /fix menu.",
+                    buttons=[[Button.inline("OK", CB_FIX_BACK)]],
+                )
             except MessageNotModifiedError:
                 pass
             return
@@ -4724,7 +5106,7 @@ async def create_user_bot(bot_token: str) -> None:
             if not cfg:
                 await event.answer("Config not found.", alert=True)
                 return
-            current = (cfg.get("mode") or "Starter").strip()
+            current = get_plan_mode(cfg)
             buttons = [
                 [Button.inline("Starter" + (" ✓" if current == "Starter" else ""), PREFIX_MODE + b"starter"), Button.inline("Enterprise" + (" ✓" if current == "Enterprise" else ""), PREFIX_MODE + b"enterprise")],
                 [Button.inline("‹ Back to Config", CB_BACK_CONFIG)],
@@ -5354,7 +5736,7 @@ async def create_user_bot(bot_token: str) -> None:
             await event.reply("No valid group IDs found in the file. Format: `-1001234567890` or `-1001234567890 | 34`", parse_mode="md")
             return
         from .chatlist import save_custom_groups, custom_group_filename, MAX_GROUPS_PER_CHATLIST, STARTER_MAX_GROUPS
-        mode = (cfg.get("mode") or "Starter").strip()
+        mode = get_plan_mode(cfg)
         limit = STARTER_MAX_GROUPS if mode == "Starter" else MAX_GROUPS_PER_CHATLIST * 2
         if len(valid_lines) > limit:
             valid_lines = valid_lines[:limit]
@@ -5812,7 +6194,7 @@ async def create_user_bot(bot_token: str) -> None:
                 await event.reply("Bot config not found.")
             return
         # No arg: show inline buttons
-        current = (cfg.get("mode") or "Starter").strip()
+        current = get_plan_mode(cfg)
         buttons = [
             [
                 Button.inline("Starter" + (" ✓" if current == "Starter" else ""), PREFIX_MODE + b"starter"),

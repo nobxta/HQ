@@ -945,7 +945,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 user_id=user_id,
                 plan_id=st.get("plan_id", ""),
                 plan_name=plan_name,
-                plan_mode=st.get("mode", "starter"),
+                plan_mode=(st.get("mode") or "starter").strip().capitalize(),
                 duration_days=st["duration_days"],
                 amount_usd=st["amount_usd"],
                 payment_id=f"DEV_{order_id}",
@@ -997,7 +997,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "user_id": user_id,
             "plan_id": st.get("plan_id", ""),
             "plan_name": plan_name,
-            "plan_mode": st.get("mode", "starter"),
+            "plan_mode": (st.get("mode") or "starter").strip().capitalize(),
             "duration_days": st["duration_days"],
             "amount": invoice.get("pay_amount"),
             "amount_usd": st["amount_usd"],
@@ -1060,7 +1060,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 user_id=user_id,
                 plan_id=st.get("plan_id", ""),
                 plan_name=plan_name,
-                plan_mode=st.get("mode", "starter"),
+                plan_mode=(st.get("mode") or "starter").strip().capitalize(),
                 duration_days=st["duration_days"],
                 amount_usd=st["amount_usd"],
                 payment_id=f"DEV_{order_id}",
@@ -1115,7 +1115,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "user_id": user_id,
             "plan_id": st.get("plan_id", ""),
             "plan_name": plan_name,
-            "plan_mode": st.get("mode", "starter"),
+            "plan_mode": (st.get("mode") or "starter").strip().capitalize(),
             "duration_days": st["duration_days"],
             "amount": invoice.get("pay_amount"),
             "amount_usd": st["amount_usd"],
@@ -1233,7 +1233,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         valid_till = valid_end.strftime("%d/%m/%Y")
         renewal_price = str(order.get("amount_usd", 0))
         from ..chatlist import default_group_file_for_mode
-        _plan_mode = order.get("plan_mode", "starter").title()
+        _plan_mode = (order.get("plan_mode") or "starter").strip().capitalize()
         group_file = default_group_file_for_mode(_plan_mode)
         if not (config.GROUPS_DIR / group_file).exists():
             group_file = "Starter.txt"
@@ -1325,7 +1325,7 @@ async def recreate_pending_order(order_id: str) -> tuple[bool, str]:
     valid_till = valid_end.strftime("%d/%m/%Y")
     renewal_price = str(order.get("amount_usd", 0))
     from ..chatlist import default_group_file_for_mode
-    _plan_mode = order.get("plan_mode", "starter").title()
+    _plan_mode = (order.get("plan_mode") or "starter").strip().capitalize()
     group_file = default_group_file_for_mode(_plan_mode)
     if not (config.GROUPS_DIR / group_file).exists():
         group_file = "Starter.txt"

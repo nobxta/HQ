@@ -73,6 +73,7 @@ _CREATE_GROUP_RETRYABLE = (
 )
 from .users import _stop_posting, create_user_bot, _workers_alive, disconnect_and_remove_controller_bot
 from .utils import add_admin_alert, delete_bot_from_storage, get_name_by_token, get_session_user, join_chat_by_link, load_adbot, load_pool, name_to_filename, register_for_shutdown, save_adbot, save_pool, save_user_data, validate_bot_token, validate_session
+from .user_config import get_plan_mode
 
 logger = logging.getLogger(__name__)
 
@@ -718,7 +719,7 @@ async def _core_create_adbot_async(
     cycle = max(1, int(form.get("cycle", 3600)))
     gap = max(1, int(form.get("gap", 5)))
     valid_till = form.get("valid_till", "")
-    mode = form.get("mode", "Starter")
+    mode = (form.get("mode") or "Starter").strip().capitalize()
     group_file = form.get("group_file", "Starter.txt")
     creation_tmp_path = config.DATA_DIR / "_creation_tmp_bot"
 
@@ -952,7 +953,7 @@ async def _core_create_adbot_async(
             suffix += 1
         plan_name = str(form.get("plan_name") or "Custom").strip()
         renewal_price = str(form.get("renewal_price") or "0").strip()
-        plan_mode = str(form.get("mode") or "Starter").strip()
+        plan_mode = str(form.get("mode") or "Starter").strip().capitalize()
         session_count_val = int(form.get("sessions_count") or len(assigned))
         authorized = []
         if form.get("source") == "shop" and form.get("user_id") is not None:
@@ -997,6 +998,8 @@ async def _core_create_adbot_async(
             "plan_mode": plan_mode,
             "session_count": session_count_val,
             "plan": plan,
+            "free_replacements_limit": int(plan.get("free_replacements", 0)) if isinstance(plan, dict) else 0,
+            "replacements_used": 0,
             "history": history,
             "stats": build_stats_section(),
             "transactions": [],
@@ -1780,7 +1783,7 @@ async def run_admin_bot() -> None:
             bot_username = (cfg.get("bot_username") or "").strip() or "—"
             valid_till = (cfg.get("valid_till") or "").strip() or "—"
             plan_name = (cfg.get("plan_name") or "").strip() or "—"
-            mode = (cfg.get("mode") or "").strip() or "—"
+            mode = get_plan_mode(cfg) if cfg else "—"
             token_display = (bot_token[:20] + "…") if len(bot_token) > 20 else bot_token
             sessions = [s.get("file") or "?" for s in cfg.get("sessions", []) if s.get("file")]
             sessions_line = ", ".join(sessions[:10]) if sessions else "—"

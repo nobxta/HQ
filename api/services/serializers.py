@@ -103,6 +103,8 @@ def serialize_plan(plan: dict) -> dict:
         "gap": plan.get("gap", 0),
         "price_week": plan.get("price_week", 0),
         "price_month": plan.get("price_month", 0),
+        "group_file": plan.get("group_file", ""),
+        "free_replacements": plan.get("free_replacements", 0),
     }
 
 
@@ -112,6 +114,9 @@ def serialize_stats(stats: dict) -> dict:
         "lifetime_sent": stats.get("lifetime_sent", stats.get("total_posts_sent", 0)),
         "lifetime_failed": stats.get("lifetime_failed", stats.get("total_posts_failed", 0)),
         "cycles": stats.get("cycles", 0),
+        "total_cycles": stats.get("total_cycles", 0),
+        "last_cycle_ts": stats.get("last_cycle_ts", 0),
+        "last_cycle_session": stats.get("last_cycle_session", ""),
         "session_stats": stats.get("session_stats", stats.get("sessions", {})),
         "hourly_buckets": stats.get("hourly_buckets", []),
     }

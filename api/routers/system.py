@@ -113,6 +113,7 @@ async def get_admin_settings():
             "starter": ["", ""],
             "enterprise": ["", ""],
         }),
+        "session_replacement_price": settings.get("session_replacement_price", 2.0),
     }
 
 
@@ -141,9 +142,50 @@ async def update_admin_settings(body: dict):
         except Exception:
             pass
 
+    if "session_replacement_price" in body:
+        try:
+            settings["session_replacement_price"] = float(body["session_replacement_price"])
+        except (ValueError, TypeError):
+            pass
+
     await asyncio.to_thread(_save_admin_settings, settings)
     await wrappers.log_admin_action("web_admin", "update_admin_settings")
     return {"status": "updated"}
+
+
+# ── Replacement Queue ──
+
+@router.get("/replacements")
+async def get_replacement_queue():
+    from code.replacement import load_replacement_queue
+    queue = await asyncio.to_thread(load_replacement_queue)
+    pending = [e for e in queue if e.get("status") not in ("completed", "cancelled")]
+    completed = [e for e in queue if e.get("status") == "completed"]
+    awaiting = [e for e in queue if e.get("status") == "awaiting_session"]
+    return {
+        "queue": pending,
+        "awaiting_sessions": awaiting,
+        "completed_recent": completed[-20:],
+        "total_pending": len(pending),
+        "total_awaiting": len(awaiting),
+    }
+
+
+@router.post("/replacements/process")
+async def process_replacement_queue():
+    from code.replacement import process_queue_by_admin
+    result = await process_queue_by_admin()
+    await wrappers.log_admin_action("web_admin", "process_replacement_queue")
+    return result
+
+
+@router.post("/replacements/{entry_id}/cancel")
+async def cancel_replacement_entry(entry_id: str):
+    from code.replacement import cancel_replacement
+    ok = cancel_replacement(entry_id)
+    if not ok:
+        raise HTTPException(404, "Replacement entry not found")
+    return {"status": "cancelled"}
 
 
 @router.get("/audit")

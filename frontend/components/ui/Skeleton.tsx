@@ -38,9 +38,9 @@ export function TableSkeleton({ rows = 5, cols = 4 }: { rows?: number; cols?: nu
 
 export function PageSkeleton() {
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="space-y-6 animate-fade-in" suppressHydrationWarning>
       <Skeleton className="h-8 w-48" />
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4" suppressHydrationWarning>
         {[1, 2, 3, 4].map((i) => <CardSkeleton key={i} />)}
       </div>
       <TableSkeleton />

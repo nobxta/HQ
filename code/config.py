@@ -125,6 +125,7 @@ DATA_TEMPPAY_FILE = DATA_DIR / "temppay.json"
 DATA_NOW_SUPPORTED_FILE = DATA_DIR / "now_supported.json"
 DATA_MAINTENANCE_FILE = DATA_DIR / "maintenance.json"
 DATA_MAINTENANCE_QUEUE_FILE = DATA_DIR / "maintenance_notify_queue.json"
+DATA_REPLACEMENT_QUEUE_FILE = DATA_DIR / "replacement_queue.json"
 DATA_BROADCAST_LOG_FILE = DATA_DIR / "broadcast_log.json"
 DATA_BROADCAST_USERS_FILE = DATA_DIR / "broadcast_users.json"
 # Per-user stats (counts only; no event list). Keeps config small.

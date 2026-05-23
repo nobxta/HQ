@@ -163,6 +163,53 @@ async def move_session(filename: str, body: dict):
     return {"status": "moved", "message": msg}
 
 
+@router.get("/starred")
+async def get_starred():
+    pool = await wrappers.load_pool()
+    return {"starred": pool.get("starred_sessions", [])}
+
+
+@router.post("/{filename}/star")
+async def star_session(filename: str):
+    pool = await wrappers.load_pool()
+    starred = pool.setdefault("starred_sessions", [])
+    if filename not in starred:
+        starred.append(filename)
+        await wrappers.save_pool(pool)
+    return {"starred": True, "filename": filename}
+
+
+@router.delete("/{filename}/star")
+async def unstar_session(filename: str):
+    pool = await wrappers.load_pool()
+    starred = pool.setdefault("starred_sessions", [])
+    if filename in starred:
+        starred.remove(filename)
+        await wrappers.save_pool(pool)
+    return {"starred": False, "filename": filename}
+
+
+@router.post("/bulk-move")
+async def bulk_move_sessions(body: dict):
+    filenames = body.get("filenames", [])
+    from_bucket = body.get("from_bucket", "")
+    to_bucket = body.get("to_bucket", "")
+    if not filenames or not from_bucket or not to_bucket:
+        raise HTTPException(400, "filenames, from_bucket and to_bucket required")
+
+    moved = []
+    failed = []
+    for fn in filenames:
+        success, msg = await wrappers.session_move(fn, from_bucket, to_bucket)
+        if success:
+            moved.append(fn)
+        else:
+            failed.append({"file": fn, "error": msg})
+
+    await wrappers.log_admin_action("web_admin", "bulk_move", target=f"{len(moved)} sessions: {from_bucket} → {to_bucket}")
+    return {"moved": len(moved), "failed": len(failed), "failed_details": failed}
+
+
 @router.post("/validate")
 async def validate_sessions(body: dict = None):
     """Validate selected sessions (or all free). Returns full info + status per session.

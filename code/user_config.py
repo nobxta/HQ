@@ -86,13 +86,16 @@ def merge_for_save(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[s
 
 
 def get_plan_mode(cfg: dict[str, Any]) -> str:
-    """Canonical read for plan mode: plan.mode > mode > plan_mode. Default 'Starter'."""
+    """Canonical read for plan mode: plan.mode > mode > plan_mode. Default 'Starter'.
+    Normalises to title-case ('enterprise' -> 'Enterprise') so comparisons are safe."""
     if not cfg:
         return "Starter"
     plan = cfg.get("plan") or {}
     if isinstance(plan, dict) and plan.get("mode"):
-        return str(plan.get("mode", "Starter")).strip()
-    return (cfg.get("mode") or cfg.get("plan_mode") or "Starter").strip()
+        raw = str(plan.get("mode", "Starter")).strip()
+    else:
+        raw = (cfg.get("mode") or cfg.get("plan_mode") or "Starter").strip()
+    return raw.capitalize()
 
 
 def _default_stats() -> dict[str, Any]:
@@ -121,7 +124,7 @@ def migrate_user_config(data: dict[str, Any]) -> dict[str, Any]:
         out["plan"] = {}
     plan = out["plan"]
     plan.setdefault("name", (out.get("plan_name") or "").strip())
-    mode_val = (out.get("mode") or out.get("plan_mode") or "Starter").strip()
+    mode_val = (out.get("mode") or out.get("plan_mode") or "Starter").strip().capitalize()
     plan.setdefault("mode", mode_val)
     plan.setdefault("cycle", max(MIN_CYCLE_SEC, int(out.get("cycle", 3600))))
     plan.setdefault("gap", max(0, int(out.get("gap", 5))))
@@ -185,14 +188,14 @@ def ensure_legacy_compatibility(cfg: dict[str, Any]) -> None:
         cfg["plan"] = plan
     # Sync top-level mode/cycle/gap into plan so /config and commands actually persist
     if cfg.get("mode") is not None:
-        plan["mode"] = (cfg.get("mode") or "Starter").strip() or "Starter"
+        plan["mode"] = (cfg.get("mode") or "Starter").strip().capitalize()
     if cfg.get("cycle") is not None:
         plan["cycle"] = max(MIN_CYCLE_SEC, int(cfg.get("cycle", 3600)))
     if cfg.get("gap") is not None:
         plan["gap"] = max(0, int(cfg.get("gap", 5)))
-    # Now sync plan -> top-level for legacy readers
-    cfg["mode"] = plan.get("mode") or cfg.get("mode") or "Starter"
-    cfg["plan_mode"] = plan.get("plan_mode") or plan.get("mode") or cfg.get("plan_mode") or "Starter"
+    # Now sync plan -> top-level for legacy readers (normalise case)
+    cfg["mode"] = (plan.get("mode") or cfg.get("mode") or "Starter").strip().capitalize()
+    cfg["plan_mode"] = (plan.get("plan_mode") or plan.get("mode") or cfg.get("plan_mode") or "Starter").strip().capitalize()
     if "cycle" in plan:
         cfg["cycle"] = plan["cycle"]
     if "gap" in plan:

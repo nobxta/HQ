@@ -41,6 +41,13 @@ def _temppay_path() -> Path:
     return getattr(config, "DATA_TEMPPAY_FILE", config.DATA_DIR / "temppay.json")
 
 
+def save_plans(plans: dict[str, list[dict[str, Any]]]) -> None:
+    """Save plans to data/plans.json. Overwrites existing file."""
+    path = _plans_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(plans, indent=2), encoding="utf-8")
+
+
 def load_plans() -> dict[str, list[dict[str, Any]]]:
     """Load plans from data/plans.json. Returns {starter: [...], enterprise: [...]}."""
     path = _plans_path()
@@ -282,7 +289,7 @@ def order_from_temppay_entry(entry: dict[str, Any], status: str = "confirming") 
         "user_id": entry.get("user_id"),
         "plan_id": entry.get("plan_id", ""),
         "plan_name": entry.get("plan_name", ""),
-        "plan_mode": entry.get("plan_mode", "starter"),
+        "plan_mode": (entry.get("plan_mode") or "starter").strip().capitalize(),
         "duration_days": int(entry.get("duration_days") or 0),
         "amount_usd": float(entry.get("amount_usd") or 0),
         "payment_id": (entry.get("invoice_id") or entry.get("payment_id") or "").strip(),

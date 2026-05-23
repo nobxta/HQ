@@ -45,6 +45,38 @@ export interface DashboardStats {
     create_worker_ok: boolean;
     payment_worker_ok: boolean;
   };
+  posting: {
+    total_sent: number;
+    total_failed: number;
+    today_sent: number;
+    today_failed: number;
+    hourly: Array<{ hour_ts: number; sent: number; failed: number }>;
+  };
+  renewals_soon: Array<{
+    name: string;
+    valid_till: string;
+    days_left: number;
+    plan_name: string;
+    renewal_price: number;
+    expired: boolean;
+  }>;
+  top_failing: Array<{
+    name: string;
+    lifetime_sent: number;
+    lifetime_failed: number;
+    today_sent: number;
+    today_failed: number;
+  }>;
+  recent_orders: Array<{
+    order_id: string;
+    user_id?: number;
+    status: string;
+    order_type: string;
+    plan_name: string;
+    amount_usd: number;
+    created_at: string;
+    paid_at: string;
+  }>;
 }
 
 export interface Alert {
@@ -84,11 +116,34 @@ export interface BotDetail extends BotSummary {
   [key: string]: unknown;
 }
 
+export interface SessionCycleStats {
+  lifetime_sent: number;
+  lifetime_failed: number;
+  last24h_sent?: number;
+  last24h_failed?: number;
+  cycles: number;
+  last_cycle_ts: number;
+  last_cycle_success: number;
+  last_cycle_failed: number;
+  last_cycle_skipped: number;
+  last_cycle_attempted: number;
+  last_cycle_duration_sec: number;
+  avg_cycle_duration_sec: number;
+  best_cycle_success: number;
+  best_cycle_ts: number;
+  sent?: number;
+  failed?: number;
+  flood_until?: number;
+}
+
 export interface BotStats {
   lifetime_sent: number;
   lifetime_failed: number;
   cycles: number;
-  session_stats: Record<string, { sent: number; failed: number; flood_until?: number }>;
+  total_cycles: number;
+  last_cycle_ts: number;
+  last_cycle_session: string;
+  session_stats: Record<string, SessionCycleStats>;
   hourly_buckets: Array<{ hour: string; sent: number; failed: number }>;
 }
 
@@ -158,16 +213,14 @@ export interface GroupFile {
 
 // ── Plans ──
 export interface PlanInfo {
-  name: string;
-  mode: string;
+  id: string;
   sessions: number;
   cycle: number;
   gap: number;
-  price_usd: number;
-  duration_days: number;
+  price_week: number;
+  price_month: number;
   group_file?: string;
-  label?: string;
-  [key: string]: unknown;
+  free_replacements: number;
 }
 
 // ── Broadcast ──

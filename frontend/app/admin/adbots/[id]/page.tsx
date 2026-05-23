@@ -469,42 +469,59 @@ function StatsTab({ name }: { name: string }) {
         {Object.keys(sessions).length === 0 ? (
           <p className="text-sm text-dark-500">No session stats recorded yet</p>
         ) : (
+          <div className="overflow-x-auto">
           <Table>
             <Thead>
               <tr>
                 <Th>Session</Th>
                 <Th>Sent</Th>
                 <Th>Failed</Th>
-                <Th>Success Rate</Th>
-                <Th>Flood Until</Th>
+                <Th>Rate</Th>
+                <Th>Cycles</Th>
+                <Th>Avg Duration</Th>
+                <Th>Last Cycle</Th>
+                <Th>Best Cycle</Th>
               </tr>
             </Thead>
             <Tbody>
               {Object.entries(sessions).map(([sess, s]: [string, any]) => {
-                const total = (s.sent || 0) + (s.failed || 0);
-                const rate = total > 0 ? ((s.sent || 0) / total * 100).toFixed(1) : "—";
+                const sent = s.lifetime_sent || s.sent || 0;
+                const failed = s.lifetime_failed || s.failed || 0;
+                const total = sent + failed;
+                const rate = total > 0 ? ((sent) / total * 100).toFixed(1) : "—";
+                const cycles = s.cycles || 0;
+                const avgDur = s.avg_cycle_duration_sec || 0;
+                const lastSuccess = s.last_cycle_success || 0;
+                const lastAttempted = s.last_cycle_attempted || 0;
+                const lastDur = s.last_cycle_duration_sec || 0;
+                const lastTs = s.last_cycle_ts || 0;
+                const bestSuccess = s.best_cycle_success || 0;
                 return (
                   <Tr key={sess}>
-                    <Td className="font-mono text-xs">{sess}</Td>
-                    <Td className="text-success font-medium">{s.sent || 0}</Td>
-                    <Td className="text-danger font-medium">{s.failed || 0}</Td>
+                    <Td className="font-mono text-xs">{sess.replace(".session", "")}</Td>
+                    <Td className="text-success font-medium">{sent}</Td>
+                    <Td className="text-danger font-medium">{failed}</Td>
                     <Td>
                       <span className={Number(rate) > 80 ? "text-success" : Number(rate) > 50 ? "text-warning" : "text-danger"}>
                         {rate}{rate !== "—" ? "%" : ""}
                       </span>
                     </Td>
+                    <Td className="text-accent font-medium">{cycles}</Td>
+                    <Td className="text-xs text-dark-300">{avgDur > 0 ? `${Math.round(avgDur)}s` : "—"}</Td>
                     <Td className="text-xs">
-                      {s.flood_until ? (
-                        <span className="text-warning">{formatDateTime(s.flood_until)}</span>
-                      ) : (
-                        <span className="text-dark-500">Clear</span>
-                      )}
+                      {lastTs > 0 ? (
+                        <span className="text-dark-300" title={new Date(lastTs * 1000).toLocaleString()}>
+                          {lastSuccess}/{lastAttempted} in {Math.round(lastDur)}s
+                        </span>
+                      ) : <span className="text-dark-500">—</span>}
                     </Td>
+                    <Td className="text-xs text-accent">{bestSuccess > 0 ? `${bestSuccess} sent` : "—"}</Td>
                   </Tr>
                 );
               })}
             </Tbody>
           </Table>
+          </div>
         )}
       </Card>
     </div>

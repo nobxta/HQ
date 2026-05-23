@@ -60,6 +60,7 @@ except Exception:
     InviteRequestSentError = type("InviteRequestSentError", (Exception,), {})
 
 from . import config
+from .user_config import get_plan_mode
 
 logger = logging.getLogger(__name__)
 
@@ -809,7 +810,7 @@ async def process_chatlist_setup(
     if not sessions:
         return False, "No sessions configured. Cannot process chatlist.", 0
 
-    mode = (cfg.get("mode") or "Starter").strip()
+    mode = get_plan_mode(cfg)
     total_sessions = sum(1 for s in sessions if s.get("file"))
 
     # Step 1: Connect first available session

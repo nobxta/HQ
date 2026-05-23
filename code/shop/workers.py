@@ -596,6 +596,19 @@ def extend_valid_till_for_bot(bot_token: str, duration_days: int, order_id: str 
         cfg["last_renewal_at"] = now_iso
         cfg["last_renewal_days"] = duration_days
         append_renewal_to_history(cfg, at=now_iso, days=duration_days, order_id=order_id, source="renewal")
+        # Reset free replacement quota on renewal
+        try:
+            from ..replacement import _reset_free_replacements_on_renewal
+            from ..shop.storage import load_plans
+            plan_name = cfg.get("plan_name") or cfg.get("plan", {}).get("id", "")
+            mode = (cfg.get("mode") or "starter").lower()
+            plans = load_plans()
+            plan_list = plans.get(mode, [])
+            matched_plan = next((p for p in plan_list if p.get("id") == plan_name), None)
+            if matched_plan:
+                _reset_free_replacements_on_renewal(cfg, matched_plan)
+        except Exception:
+            pass
         save_user_data(name, cfg)
         return True
     except Exception:
@@ -713,7 +726,7 @@ async def run_payment_reconciliation() -> int:
             "gap": int(plan_obj.get("gap", 5)),
             "valid_till": valid_till,
             "duration_days": int(o.get("duration_days", 7)),
-            "mode": (o.get("plan_mode") or "starter").title(),
+            "mode": (o.get("plan_mode") or "starter").strip().capitalize(),
             "group_file": group_file,
             "plan_name": (o.get("plan_name") or ""),
             "renewal_price": str(o.get("amount_usd", 0)),

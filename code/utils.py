@@ -114,8 +114,10 @@ def load_user_data(name: str) -> dict[str, Any] | None:
         data = _loads(raw)
         if not isinstance(data, dict):
             return None
-        from .user_config import migrate_user_config
-        return migrate_user_config(data)
+        from .user_config import migrate_user_config, ensure_legacy_compatibility
+        data = migrate_user_config(data)
+        ensure_legacy_compatibility(data)
+        return data
     except Exception as e:
         logger.warning("Could not load user data %s: %s", safe, e)
         return None
