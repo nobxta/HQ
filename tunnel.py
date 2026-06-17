@@ -129,7 +129,9 @@ def _start_tunnel() -> None:
     """Launch the tunnel as a background subprocess forwarding to the local API."""
     global _proc
     port = os.getenv("SERVER_PORT", "8000")
-    local_url = f"http://localhost:{port}"
+    # Use 127.0.0.1 (not "localhost") so cloudflared connects over IPv4 — uvicorn
+    # binds 0.0.0.0 (IPv4 only); "localhost" can resolve to IPv6 ::1 → connection refused.
+    local_url = f"http://127.0.0.1:{port}"
     _log(f"Starting tunnel: {DOMAIN} -> {local_url}")
     _proc = subprocess.Popen(
         [
