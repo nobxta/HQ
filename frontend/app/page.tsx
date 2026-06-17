@@ -363,6 +363,21 @@ export default function LandingPage() {
   const [planTab, setPlanTab] = useState<"starter" | "enterprise">("starter");
   const [openFaq, setOpenFaq] = useState<number | null>(null);
   const [buyPlan, setBuyPlan] = useState<PurchasePlan | null>(null);
+  const [resumeOrder, setResumeOrder] = useState<any>(null);
+
+  // Resume an in-progress payment after a page refresh
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("hqadz_pending_purchase");
+      if (saved) {
+        const p = JSON.parse(saved);
+        if (p?.order?.order_id && p?.plan && p?.currency) {
+          setResumeOrder({ order: p.order, currency: p.currency });
+          setBuyPlan(p.plan);
+        }
+      }
+    } catch { /* ignore */ }
+  }, []);
 
   useEffect(() => {
     axios.get(`${API}/api/portal/plans`).then(r => setPlans(r.data)).catch(() => {
@@ -712,17 +727,21 @@ export default function LandingPage() {
                   </ul>
 
                   <button
-                    onClick={() => setBuyPlan({
-                      id: plan.id,
-                      label,
-                      mode: planTab,
-                      billing,
-                      price,
-                      reach: meta.reach,
-                      posts: meta.posts,
-                      replacements: plan.free_replacements === -1 ? "Unlimited" : `${plan.free_replacements} free`,
-                      durationDays: billing === "month" ? 30 : 7,
-                    })}
+                    onClick={() => {
+                      try { localStorage.removeItem("hqadz_pending_purchase"); } catch {}
+                      setResumeOrder(null);
+                      setBuyPlan({
+                        id: plan.id,
+                        label,
+                        mode: planTab,
+                        billing,
+                        price,
+                        reach: meta.reach,
+                        posts: meta.posts,
+                        replacements: plan.free_replacements === -1 ? "Unlimited" : `${plan.free_replacements} free`,
+                        durationDays: billing === "month" ? 30 : 7,
+                      });
+                    }}
                     className={`mt-6 w-full inline-flex items-center justify-center text-[13px] font-medium px-4 py-2.5 rounded-md transition-all duration-150 cursor-pointer ${
                       isPopular ? "text-white hover:opacity-90" : "text-[#c9c9cf] border border-[#1f1f22] hover:border-[#3d3d44] hover:text-white"
                     }`}
@@ -832,7 +851,7 @@ export default function LandingPage() {
         </div>
       </footer>
 
-      {buyPlan && <PurchaseFlow plan={buyPlan} onClose={() => setBuyPlan(null)} />}
+      {buyPlan && <PurchaseFlow plan={buyPlan} resume={resumeOrder} onClose={() => { setBuyPlan(null); setResumeOrder(null); }} />}
 
       <style jsx global>{`
         @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap");

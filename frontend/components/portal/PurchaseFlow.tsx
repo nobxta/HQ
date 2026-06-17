@@ -36,10 +36,13 @@ interface OrderData {
 
 interface StatusData {
   status: string; payment_confirmed: boolean; amount_received: number; pay_amount: number;
-  underpaid: boolean; tx_hash: string; queued: boolean;
+  underpaid: boolean; remaining?: number; expired?: boolean; tx_hash: string; queued: boolean;
   creation: { state: string; percent: number }; access_token: string;
   bot_username: string; bot_name: string;
 }
+
+/* localStorage key so an in-progress payment survives a page refresh */
+const STORE_KEY = "hqadz_pending_purchase";
 
 type Step = "details" | "checkout" | "crypto" | "review" | "pay" | "creating";
 
@@ -80,7 +83,7 @@ const CREATION_STEPS = [
   "Your login is ready",
 ];
 
-export default function PurchaseFlow({ plan, onClose }: { plan: PurchasePlan; onClose: () => void }) {
+export default function PurchaseFlow({ plan, onClose, resume }: { plan: PurchasePlan; onClose: () => void; resume?: { order: OrderData; currency: CryptoCurrency } | null }) {
   const [step, setStep] = useState<Step>("details");
 
   // reference details
@@ -172,6 +175,7 @@ export default function PurchaseFlow({ plan, onClose }: { plan: PurchasePlan; on
       }, { timeout: 30000 });
       setOrder(r.data);
       setStep("pay");
+      try { localStorage.setItem(STORE_KEY, JSON.stringify({ order: r.data, currency: selected, plan })); } catch {}
       startPolling(r.data.order_id);
     } catch (e: any) {
       // Surface the real cause so it's debuggable instead of a generic message.
@@ -201,6 +205,7 @@ export default function PurchaseFlow({ plan, onClose }: { plan: PurchasePlan; on
         setStatus(r.data);
         if (r.data?.payment_confirmed) {
           setStep("creating");
+          try { localStorage.removeItem(STORE_KEY); } catch {}
           if (pollRef.current) clearInterval(pollRef.current);
           // keep polling slower for creation completion + access token
           pollRef.current = setInterval(async () => {
@@ -218,6 +223,23 @@ export default function PurchaseFlow({ plan, onClose }: { plan: PurchasePlan; on
     poll();
     pollRef.current = setInterval(poll, 15000);
   }, []);
+
+  /* close = clear the saved order so a refresh won't reopen it */
+  const close = useCallback(() => {
+    try { localStorage.removeItem(STORE_KEY); } catch {}
+    onClose();
+  }, [onClose]);
+
+  /* restore an in-progress payment after a page refresh */
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current || !resume?.order || !resume?.currency) return;
+    restoredRef.current = true;
+    setOrder(resume.order);
+    setSelected(resume.currency);
+    setStep("pay");
+    startPolling(resume.order.order_id);
+  }, [resume, startPolling]);
 
   /* countdown */
   useEffect(() => {
@@ -278,7 +300,7 @@ export default function PurchaseFlow({ plan, onClose }: { plan: PurchasePlan; on
               <p className="text-[11px] text-[#5d5d66] leading-tight">${price}/{per} · {plan.durationDays} days</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-[#8b8b93] hover:text-white transition-colors" aria-label="Close">
+          <button onClick={close} className="text-[#8b8b93] hover:text-white transition-colors" aria-label="Close">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -516,20 +538,37 @@ export default function PurchaseFlow({ plan, onClose }: { plan: PurchasePlan; on
                 </p>
               </div>
 
-              {/* status */}
-              <div className="rounded-lg border border-[#1f1f22] bg-[#101012] px-4 py-3 flex items-center gap-3">
-                <Loader2 className="w-4 h-4 animate-spin" style={{ color: TG }} />
-                <div className="flex-1">
-                  <p className="text-[12px] text-white">Waiting for payment…</p>
-                  <p className="text-[11px] text-[#5d5d66]">
-                    {status?.underpaid
-                      ? `Received ${status.amount_received} ${order.pay_currency} — please send the rest.`
-                      : status?.amount_received
-                      ? `Received ${status.amount_received} ${order.pay_currency} — confirming…`
-                      : "Detected automatically once it lands."}
+              {/* status: expired → partial → waiting */}
+              {(status?.expired || timeLeft === "Expired") ? (
+                <div className="rounded-lg border border-red-500/20 bg-red-500/[0.06] px-4 py-3">
+                  <p className="text-[13px] font-medium text-red-400">Payment window expired</p>
+                  <p className="text-[12px] text-[#8b8b93] mt-1">This invoice closed. Start a new order to get a fresh address &amp; amount.</p>
+                  <button
+                    onClick={() => { try { localStorage.removeItem(STORE_KEY); } catch {}; if (pollRef.current) clearInterval(pollRef.current); setOrder(null); setStatus(null); setStep("crypto"); }}
+                    className="mt-2.5 text-[12px] font-medium inline-flex items-center gap-1" style={{ color: TG }}
+                  >
+                    Start over <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ) : status?.underpaid ? (
+                <div className="rounded-lg border border-amber-500/25 bg-amber-500/[0.07] px-4 py-3">
+                  <p className="text-[13px] font-medium text-amber-400">Partial payment received</p>
+                  <p className="text-[12px] text-[#c9c9cf] mt-1 leading-relaxed">
+                    You&apos;ve sent <b className="text-white tabular-nums">{status.amount_received} {order.pay_currency}</b>. Send{" "}
+                    <b className="text-white tabular-nums">{status.remaining ?? (order.pay_amount - status.amount_received)} {order.pay_currency}</b> more to the <b>same address</b> above to complete your order.
                   </p>
                 </div>
-              </div>
+              ) : (
+                <div className="rounded-lg border border-[#1f1f22] bg-[#101012] px-4 py-3 flex items-center gap-3">
+                  <Loader2 className="w-4 h-4 animate-spin" style={{ color: TG }} />
+                  <div className="flex-1">
+                    <p className="text-[12px] text-white">Waiting for payment…</p>
+                    <p className="text-[11px] text-[#5d5d66]">
+                      {status?.amount_received ? `Received ${status.amount_received} ${order.pay_currency} — confirming…` : "Detected automatically once it lands."}
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

@@ -2203,14 +2203,21 @@ async def portal_purchase_status(order_id: str):
 
     status = order.get("status", "payment_waiting")
     confirmed = status in ("paid", "creating", "pending_creation", "completed")
+    amount_received = float(order.get("amount_received", 0) or 0)
+    pay_amount = float(order.get("pay_amount") or 0)
+    waiting = status in ("payment_waiting", "confirming")
+    underpaid = waiting and amount_received > 0 and amount_received < pay_amount
+    expired = status in ("expired", "cancelled", "failed")
 
     return {
         "order_id": order_id,
         "status": status,
         "payment_confirmed": confirmed,
-        "amount_received": order.get("amount_received", 0) or 0,
-        "pay_amount": order.get("pay_amount") or 0,
-        "underpaid": False,
+        "amount_received": amount_received,
+        "pay_amount": pay_amount,
+        "remaining": round(pay_amount - amount_received, 8) if underpaid else 0,
+        "underpaid": underpaid,
+        "expired": expired,
         "tx_hash": order.get("tx_hash", "") or "",
         "queued": bool(order.get("queued")) and not order.get("bot_token"),
         "creation": _creation_progress(order),
@@ -2261,8 +2268,34 @@ async def nowpayments_ipn(request: Request):
     pstatus = (data.get("payment_status") or "").lower()
     logger.info("[IPN] payment_id=%s status=%s", payment_id, pstatus)
 
-    # Only act on terminal success states. waiting / partially_paid / failed / expired
-    # are acked and ignored (the user retries; nothing to provision).
+    from code.shop.storage import get_order_by_payment_id, update_order, update_order_status
+
+    # Underpayment: record what was received so the UI can show "paid X, send Y more".
+    if pstatus == "partially_paid":
+        order = get_order_by_payment_id(payment_id)
+        if order:
+            update_order(order["order_id"], {
+                "amount_received": float(data.get("actually_paid") or data.get("amount_received") or 0),
+                "partial": True,
+            })
+        return {"ok": True}
+
+    # Invoice expired / failed: stop the order and release the reserved bot token.
+    if pstatus in ("expired", "failed", "refunded"):
+        order = get_order_by_payment_id(payment_id)
+        if order and order.get("status") in ("payment_waiting", "confirming"):
+            try:
+                update_order_status(order["order_id"], "expired" if pstatus == "expired" else "cancelled")
+            except Exception:
+                pass
+            try:
+                from code.shop import token_pool
+                token_pool.release_order(order["order_id"])
+            except Exception:
+                pass
+        return {"ok": True}
+
+    # Terminal success → confirm + provision.
     if pstatus in ("confirmed", "finished", "sent"):
         details = {
             "payment_status": "confirmed",
