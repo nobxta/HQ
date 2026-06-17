@@ -224,11 +224,17 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
     pollRef.current = setInterval(poll, 15000);
   }, []);
 
-  /* close = clear the saved order so a refresh won't reopen it */
-  const close = useCallback(() => {
+  /* close handling: warn before discarding an in-progress invoice */
+  const [confirmClose, setConfirmClose] = useState(false);
+  const doClose = useCallback(() => {
     try { localStorage.removeItem(STORE_KEY); } catch {}
     onClose();
   }, [onClose]);
+  const requestClose = useCallback(() => {
+    // Warn only when there's an unpaid invoice on screen (real session to lose)
+    if (step === "pay" && order && !status?.payment_confirmed && !status?.expired) setConfirmClose(true);
+    else doClose();
+  }, [step, order, status, doClose]);
 
   /* restore an in-progress payment after a page refresh */
   const restoredRef = useRef(false);
@@ -300,7 +306,7 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
               <p className="text-[11px] text-[#5d5d66] leading-tight">${price}/{per} · {plan.durationDays} days</p>
             </div>
           </div>
-          <button onClick={close} className="text-[#8b8b93] hover:text-white transition-colors" aria-label="Close">
+          <button onClick={requestClose} className="text-[#8b8b93] hover:text-white transition-colors" aria-label="Close">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -637,6 +643,29 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
         </div>
       </div>
 
+      {/* Cancel/close confirmation */}
+      {confirmClose && (
+        <div className="absolute inset-0 z-[110] flex items-center justify-center p-6" style={{ background: "rgba(0,0,0,0.65)" }}>
+          <div className="w-full max-w-xs rounded-xl border border-[#1f1f22] bg-[#0e0e10] p-5 text-center">
+            <div className="w-10 h-10 rounded-full flex items-center justify-center mx-auto mb-3" style={{ background: "rgba(245,158,11,0.12)" }}>
+              <AlertTriangle className="w-5 h-5 text-amber-500" />
+            </div>
+            <p className="text-[14px] font-semibold text-white">Cancel this payment?</p>
+            <p className="text-[12px] text-[#8b8b93] mt-1.5 leading-relaxed">
+              Your invoice will be discarded. If you&apos;ve already sent crypto, don&apos;t cancel — it will still be detected and your bot created.
+            </p>
+            <div className="mt-4 flex gap-2">
+              <button onClick={() => setConfirmClose(false)} className="flex-1 py-2 rounded-md text-[13px] font-medium text-white transition-opacity hover:opacity-90" style={{ background: TG }}>
+                Keep paying
+              </button>
+              <button onClick={doClose} className="flex-1 py-2 rounded-md text-[13px] font-medium text-[#c9c9cf] border border-[#1f1f22] hover:text-white hover:border-[#3d3d44] transition-colors">
+                Cancel anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <style jsx global>{`
         .pf-scroll::-webkit-scrollbar { width: 5px; }
         .pf-scroll::-webkit-scrollbar-thumb { background: #27272a; border-radius: 9999px; }
@@ -657,11 +686,10 @@ function Row({ label, value, muted, accent }: { label: string; value: string; mu
 
 function CoinLogo({ c, size }: { c: CryptoCurrency; size: number }) {
   const [failed, setFailed] = useState(false);
-  const apiLogo = c.logo?.startsWith("/coin-img/") ? `${API}${c.logo}` : c.logo;
-  // Public colored crypto-icon CDN keyed by lowercase symbol; reliable without backend.
-  const cdn = `https://cdn.jsdelivr.net/gh/atomiclabs/cryptocurrency-icons@1a63530be6e374711a8554f31b17e4cb92c25fa5/128/color/${c.symbol.toLowerCase()}.png`;
-  const src = apiLogo || cdn;
-  if (failed || !src) {
+  // Public colored crypto-icon CDN keyed by lowercase symbol; reliable and backend-independent.
+  // (The backend's /coin-img proxy 404s on the API host, so we don't use c.logo here.)
+  const src = `https://cdn.jsdelivr.net/gh/atomiclabs/cryptocurrency-icons@1a63530be6e374711a8554f31b17e4cb92c25fa5/128/color/${c.symbol.toLowerCase()}.png`;
+  if (failed) {
     const color = COIN_COLORS[c.symbol] || TG;
     return (
       <span className="rounded-full flex items-center justify-center text-[9px] font-bold flex-shrink-0"
