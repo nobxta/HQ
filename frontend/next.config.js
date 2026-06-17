@@ -7,6 +7,10 @@ const nextConfig = {
         source: "/api/backend/:path*",
         destination: `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/:path*`,
       },
+      {
+        source: "/coin-img/:path*",
+        destination: "https://coin-images.coingecko.com/:path*",
+      },
     ];
   },
 };

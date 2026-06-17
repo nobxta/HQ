@@ -39,6 +39,42 @@ MIN_CYCLES_BEFORE_CHECK = 3
 CHECK_COOLDOWN_SEC = 1800
 
 
+def _notify_user(entry: dict, event: str, **kw):
+    """Send a portal notification to the bot owner."""
+    try:
+        from api.routers.user_portal import add_portal_notification
+        bot_name = entry.get("bot_name", "")
+        real_name = (entry.get("real_name") or entry.get("session_file", "")).replace(".session", "")
+        if event == "replaced":
+            new_file = kw.get("new_file", "").replace(".session", "")
+            add_portal_notification(
+                bot_name,
+                title="Session Replaced ✓",
+                message=f"{real_name} was replaced with {new_file}. The new session is live and working.",
+                type="success",
+                icon="swap",
+            )
+        elif event == "queued":
+            add_portal_notification(
+                bot_name,
+                title="Replacement Queued",
+                message=f"{real_name} is queued for replacement but no sessions are available right now. Admin has been notified.",
+                type="warning",
+                icon="clock",
+            )
+        elif event == "failed":
+            error = kw.get("error", "Unknown error")
+            add_portal_notification(
+                bot_name,
+                title="Replacement Failed",
+                message=f"Could not replace {real_name}: {error}. It will be retried when sessions are available.",
+                type="error",
+                icon="alert",
+            )
+    except Exception as exc:
+        logger.warning("Failed to send portal notification: %s", exc)
+
+
 def _queue_path() -> Path:
     return config.DATA_REPLACEMENT_QUEUE_FILE
 
@@ -313,12 +349,17 @@ async def process_ready_replacements() -> list[dict[str, Any]]:
                 f"Replacement for {entry['bot_name']} session {entry['session_file']} queued — no free sessions available. Add sessions to pool.",
             )
             results.append({**entry, "result": "queued_no_sessions"})
+            _notify_user(entry, "queued")
             continue
 
         bot_token = entry["bot_token"]
         old_file = entry["session_file"]
         spam_status = entry.get("spam_status", "UNKNOWN")
-        msg = await repair_replace_session(bot_token, old_file, spam_status)
+        try:
+            msg = await repair_replace_session(bot_token, old_file, spam_status)
+        except Exception as exc:
+            logger.error("repair_replace_session crashed for %s: %s", old_file, exc, exc_info=True)
+            msg = f"Session swap failed: {exc}"
         if "Replaced" in msg:
             new_file = msg.split("with ")[-1].rstrip(".")
             update_replacement_status(
@@ -335,10 +376,14 @@ async def process_ready_replacements() -> list[dict[str, Any]]:
             free_count -= 1
             results.append({**entry, "result": "replaced", "new_session_file": new_file})
 
+            # Notify user
+            _notify_user(entry, "replaced", new_file=new_file)
+
             await _join_chatlist_for_new_session(bot_token, new_file)
         else:
             update_replacement_status(entry["id"], "awaiting_session")
             results.append({**entry, "result": "failed", "error": msg})
+            _notify_user(entry, "failed", error=msg)
 
     return results
 
@@ -444,19 +489,28 @@ def check_replacement_payment(entry_ids: list[str]) -> bool:
 
 
 async def process_queue_by_admin() -> dict[str, Any]:
-    """Admin action: process all queued replacements that are awaiting sessions."""
+    """Admin action: process all queued replacements (ready + awaiting_session)."""
     pool = load_pool()
     free_count = len(pool.get("free_sessions", []))
     if free_count <= 0:
         return {"processed": 0, "error": "No free sessions in pool"}
     with _queue_lock:
         queue = load_replacement_queue()
-        awaiting = [e for e in queue if e.get("status") == "awaiting_session"]
-    if not awaiting:
+        # Pick up BOTH "awaiting_session" AND "ready" entries
+        processable = [e for e in queue if e.get("status") in ("awaiting_session", "ready")]
+    if not processable:
         return {"processed": 0, "message": "No queued replacements"}
-    for e in awaiting:
-        e["status"] = "ready"
-        update_replacement_status(e["id"], "ready")
+    # Mark all as "ready" so process_ready_replacements picks them up
+    for e in processable:
+        if e["status"] != "ready":
+            update_replacement_status(e["id"], "ready")
     results = await process_ready_replacements()
     completed = [r for r in results if r.get("result") == "replaced"]
-    return {"processed": len(completed), "total": len(awaiting), "results": results}
+    failed = [r for r in results if r.get("result") == "failed"]
+    return {
+        "processed": len(completed),
+        "failed": len(failed),
+        "total": len(processable),
+        "results": results,
+        "errors": [r.get("error", "") for r in failed] if failed else [],
+    }

@@ -15,11 +15,23 @@ import {
 import { formatDate } from "@/lib/utils";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 /* ─────────────────────── types ─────────────────────── */
 
 type ControlStep = { message: string; status: "progress" | "done" | "failed"; time: number };
 type MiniLog = { type: "success" | "failure" | "flood"; group: string; error?: string; time?: string };
+
+type PreStartSession = {
+  session_file: string; real_name: string; status: string;
+  severity: string; reason: string; diag_status: string | null;
+  diag_ts: number | null; failure_rate: number;
+  lifetime_sent: number; lifetime_failed: number;
+};
+type PreStartCheck = {
+  ok: boolean; healthy: number; dead: number; total: number;
+  sessions: PreStartSession[];
+};
 
 type FailingSession = {
   session_file: string; real_name: string; failure_rate: number;
@@ -169,6 +181,10 @@ export default function UserDashboard() {
   const [showPopup, setShowPopup] = useState(false);
   const popupShown = useRef(false);
   const [mounted, setMounted] = useState(false);
+  const [preStartCheck, setPreStartCheck] = useState<PreStartCheck | null>(null);
+  const [showPreStart, setShowPreStart] = useState(false);
+  const [preStartLoading, setPreStartLoading] = useState(false);
+  const router = useRouter();
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -254,7 +270,29 @@ export default function UserDashboard() {
     ws.onclose = () => { wsRef.current = null; };
   });
 
-  const doAction = async (act: string) => {
+  const doAction = async (act: string, skipPreCheck = false) => {
+    // Pre-start health check — only for "start" action
+    if (act === "start" && !skipPreCheck) {
+      setPreStartLoading(true);
+      try {
+        const { data } = await portalApi.get(
+          `/api/portal/bot/${encodeURIComponent(bot.name)}/pre-start-check?telegram_id=${session?.telegram_id}`
+        );
+        const check = data as PreStartCheck;
+        if (!check.ok) {
+          // Found issues — show modal instead of starting
+          setPreStartCheck(check);
+          setShowPreStart(true);
+          setPreStartLoading(false);
+          return;
+        }
+        // All healthy — proceed with start
+      } catch {
+        // Pre-check failed — proceed anyway (don't block user)
+      }
+      setPreStartLoading(false);
+    }
+
     setActionLoading(act); setControlAction(act); setControlSteps([]);
     try {
       await connectWs();
@@ -331,6 +369,107 @@ export default function UserDashboard() {
         </div>
       </Modal>
 
+      {/* ═══════════ Pre-Start Health Check Modal ═══════════ */}
+      <Modal open={showPreStart} onClose={() => setShowPreStart(false)} size="md">
+        <div className="space-y-4">
+          {/* Header */}
+          <div className="flex items-start gap-3">
+            <div className="p-2.5 rounded-xl bg-warning/10 border border-warning/20 shrink-0">
+              <ShieldAlert className="h-6 w-6 text-warning" />
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-dark-100">Session Issues Detected</h2>
+              <p className="text-sm text-dark-400 mt-0.5">
+                {preStartCheck?.dead || 0} of {preStartCheck?.total || 0} session{(preStartCheck?.total || 0) !== 1 ? "s" : ""} {(preStartCheck?.dead || 0) === 1 ? "is" : "are"} dead or banned.
+                {(preStartCheck?.healthy || 0) > 0 && ` ${preStartCheck?.healthy} still healthy.`}
+              </p>
+            </div>
+          </div>
+
+          {/* Session list */}
+          <div className="space-y-1.5 max-h-[240px] overflow-y-auto">
+            {preStartCheck?.sessions?.map((s) => {
+              const isBad = s.status === "dead" || s.status === "failing";
+              const isWarn = s.status === "warning";
+              const isUnknown = s.status === "unknown";
+              return (
+                <div key={s.session_file} className={`flex items-center gap-3 rounded-xl px-3 py-2.5 border ${
+                  isBad ? "border-danger/15 bg-danger/[0.04]" :
+                  isWarn ? "border-warning/15 bg-warning/[0.04]" :
+                  isUnknown ? "border-dark-700/30 bg-dark-800/20" :
+                  "border-success/15 bg-success/[0.04]"
+                }`}>
+                  <div className={`h-8 w-8 rounded-lg flex items-center justify-center shrink-0 ${
+                    isBad ? "bg-danger/15" : isWarn ? "bg-warning/15" : isUnknown ? "bg-dark-700/30" : "bg-success/15"
+                  }`}>
+                    {isBad ? <XCircle className="h-4 w-4 text-danger" /> :
+                     isWarn ? <AlertTriangle className="h-4 w-4 text-warning" /> :
+                     isUnknown ? <Clock className="h-4 w-4 text-dark-400" /> :
+                     <CheckCircle className="h-4 w-4 text-success" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-[13px] font-semibold ${isBad ? "text-danger" : isWarn ? "text-warning" : "text-dark-200"}`}>
+                      {s.real_name}
+                    </p>
+                    <p className="text-[10px] text-dark-500 truncate">{s.reason}</p>
+                  </div>
+                  <span className={`text-[10px] font-bold shrink-0 px-2 py-0.5 rounded-full ${
+                    isBad ? "bg-danger/10 text-danger" :
+                    isWarn ? "bg-warning/10 text-warning" :
+                    isUnknown ? "bg-dark-700/30 text-dark-400" :
+                    "bg-success/10 text-success"
+                  }`}>
+                    {s.status === "dead" ? "DEAD" : s.status === "failing" ? "FAILING" : s.status === "warning" ? "LIMITED" : s.status === "unknown" ? "UNCHECKED" : "OK"}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Info box */}
+          {(preStartCheck?.healthy || 0) > 0 && (
+            <div className="flex items-start gap-2 rounded-lg bg-accent/5 border border-accent/20 p-3">
+              <Zap className="h-4 w-4 text-accent shrink-0 mt-0.5" />
+              <p className="text-xs text-dark-300">
+                You can still start with <b className="text-accent">{preStartCheck?.healthy}</b> healthy session{(preStartCheck?.healthy || 0) !== 1 ? "s" : ""}. Dead sessions will be skipped automatically.
+              </p>
+            </div>
+          )}
+
+          {/* Action buttons */}
+          <div className="flex flex-col gap-2 pt-1">
+            {/* Go to Accounts */}
+            <button
+              onClick={() => { setShowPreStart(false); router.push("/user/accounts"); }}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-accent/10 border border-accent/20 hover:bg-accent/20 text-accent text-sm font-semibold transition-all"
+            >
+              <ExternalLink className="h-4 w-4" />
+              Go to Accounts — Replace Sessions
+            </button>
+
+            {/* Start with healthy sessions */}
+            {(preStartCheck?.healthy || 0) > 0 && (
+              <button
+                onClick={() => { setShowPreStart(false); doAction("start", true); }}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-success/10 border border-success/20 hover:bg-success/20 text-success text-sm font-semibold transition-all"
+              >
+                <Play className="h-4 w-4" />
+                Start Anyway with {preStartCheck?.healthy} Session{(preStartCheck?.healthy || 0) !== 1 ? "s" : ""}
+              </button>
+            )}
+
+            {/* Cancel */}
+            <button
+              onClick={() => setShowPreStart(false)}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-dark-800/50 border border-dark-700/30 hover:bg-dark-700/50 text-dark-300 text-sm font-medium transition-all"
+            >
+              <Clock className="h-4 w-4" />
+              Wait for Replacement
+            </button>
+          </div>
+        </div>
+      </Modal>
+
       {/* ═══════════ HERO WELCOME BANNER ═══════════ */}
       <div className="relative mb-5 rounded-[20px] overflow-hidden animate-fade-in noise-bg"
         style={{
@@ -386,14 +525,14 @@ export default function UserDashboard() {
           </div>
 
           {/* Start / Stop button */}
-          <button onClick={() => doAction(running ? "stop" : "start")} disabled={!!actionLoading}
+          <button onClick={() => doAction(running ? "stop" : "start")} disabled={!!actionLoading || preStartLoading}
             className={`shrink-0 flex items-center gap-2.5 rounded-2xl px-7 py-3.5 text-sm font-bold border transition-all duration-300 disabled:opacity-50 ${
               running
                 ? "bg-danger/10 text-danger border-danger/20 hover:bg-danger/20 hover:shadow-lg hover:shadow-danger/10"
                 : "bg-success/10 text-success border-success/20 hover:bg-success/20 hover:shadow-lg hover:shadow-success/10"
             }`}>
-            {actionLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : running ? <Square className="h-5 w-5" /> : <Play className="h-5 w-5" />}
-            {running ? "Stop Bot" : "Start Bot"}
+            {(actionLoading || preStartLoading) ? <Loader2 className="h-5 w-5 animate-spin" /> : running ? <Square className="h-5 w-5" /> : <Play className="h-5 w-5" />}
+            {preStartLoading ? "Checking..." : running ? "Stop Bot" : "Start Bot"}
           </button>
         </div>
       </div>

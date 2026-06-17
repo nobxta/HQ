@@ -472,6 +472,13 @@ if __name__ == "__main__":
     _enable_api = os.getenv("ENABLE_WEB_API", "1").strip().lower() in ("1", "true", "yes")
 
     if _enable_api:
+        # Auto-start the Cloudflare Tunnel (api.hqadz.io). Fail-open: never blocks the API.
+        try:
+            import tunnel
+            tunnel.start()
+        except Exception as _tunnel_exc:
+            print(f"[tunnel] startup skipped: {_tunnel_exc}", flush=True)
+
         import uvicorn
         from api.app import app as _fastapi_app
         from api.utils import get_api_port, get_api_host

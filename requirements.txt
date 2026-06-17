@@ -8,3 +8,11 @@ psutil
 requests
 filelock
 socksio
+
+# Web API (FastAPI server in api/, started from main.py)
+fastapi
+uvicorn
+websockets
+python-multipart
+PyJWT
+bcrypt

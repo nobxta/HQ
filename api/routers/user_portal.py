@@ -24,6 +24,15 @@ def _generate_web_token(length: int = 8) -> str:
 router = APIRouter(prefix="/api/portal", tags=["portal"])
 
 
+class PortalSupportTicketRequest(BaseModel):
+    session_file: str
+    session_name: str
+    issue_type: str  # "healthy_but_failing", "other"
+    message: str
+    diag_status: Optional[str] = None
+    fail_rate: Optional[float] = None
+
+
 class PortalLoginRequest(BaseModel):
     telegram_id: int
     bot_name: str
@@ -97,7 +106,7 @@ async def _get_user_bot(telegram_id: int, bot_name: str):
     """Find a bot the user is authorized on."""
     data = await wrappers.load_adbot()
     for token, cfg in data.get("bots", {}).items():
-        if cfg.get("name") != bot_name:
+        if (cfg.get("name") or "").lower() != bot_name.lower():
             continue
         authorized = cfg.get("authorized", [])
         owner_id = cfg.get("owner_id")
@@ -129,7 +138,7 @@ async def portal_login(body: PortalLoginRequest):
 
     found = False
     for token, cfg in bots:
-        if cfg.get("name") == body.bot_name:
+        if (cfg.get("name") or "").lower() == body.bot_name.lower():
             found = True
             break
 
@@ -1018,6 +1027,7 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
     _BAD_STATUSES = {"FROZEN", "HARD_LIMITED", "TEMP_LIMITED", "DEAD"}
     sessions_cfg = cfg.get("sessions", [])
     valid_sessions = []
+    unchecked_sessions = []  # sessions with no diagnosis — we'll live-check them
     for sf in body.session_files:
         if sf in failing_map:
             # Stats say it's failing
@@ -1037,7 +1047,74 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
                 "spam_status": diag_statuses[sf],
             })
         else:
-            _log.info("  Session %s: not failing (stats or diagnosis). Skipping.", sf)
+            # No stats or diagnosis — collect for live check
+            unchecked_sessions.append(sf)
+            _log.info("  Session %s: no stats/diagnosis, will live-check.", sf)
+
+    # ── Quick live validation for unchecked sessions ──
+    if unchecked_sessions:
+        _log.info("  Live-checking %d unchecked sessions...", len(unchecked_sessions))
+        for sf in unchecked_sessions:
+            path = app_config.SESSIONS_ACTIVE / sf
+            is_dead = False
+            dead_reason = ""
+            if not path.is_file():
+                is_dead = True
+                dead_reason = "file_missing"
+            else:
+                try:
+                    from telethon import TelegramClient
+                    client = TelegramClient(
+                        str(path.with_suffix("")), app_config.API_ID, app_config.API_HASH, proxy=app_config.PROXY
+                    )
+                    try:
+                        await asyncio.wait_for(client.connect(), timeout=8.0)
+                        authorized = await asyncio.wait_for(client.is_user_authorized(), timeout=5.0)
+                        if not authorized:
+                            is_dead = True
+                            dead_reason = "UNAUTHORIZED"
+                    except Exception as e:
+                        err = str(e).lower()
+                        if any(w in err for w in ("deactivated", "banned", "frozen", "revoked", "unregistered")):
+                            is_dead = True
+                            dead_reason = "FROZEN"
+                        elif "authkey" in type(e).__name__.lower():
+                            is_dead = True
+                            dead_reason = "REVOKED"
+                        # else: connection error, don't assume dead
+                    finally:
+                        try:
+                            await client.disconnect()
+                        except Exception:
+                            pass
+                except asyncio.TimeoutError:
+                    pass  # timeout — don't assume dead
+                except Exception:
+                    pass
+
+            if is_dead:
+                real_name = sf
+                for s in sessions_cfg:
+                    if isinstance(s, dict) and s.get("file") == sf:
+                        real_name = s.get("real_name", sf)
+                        break
+                valid_sessions.append({
+                    "session_file": sf,
+                    "real_name": real_name,
+                    "failure_rate": 1.0,
+                    "spam_status": dead_reason or "DEAD",
+                })
+                _log.info("  Session %s: LIVE CHECK = DEAD (%s) — allowing replace", sf, dead_reason)
+                # Save diagnosis
+                if _name:
+                    import time as _t
+                    _ss.setdefault(sf, {})["_last_spam_status"] = "DEAD"
+                    _ss[sf]["_last_health_check_ts"] = _t.time()
+                    _st["session_stats"] = _ss
+                    from code.utils import save_stats as _save_stats
+                    _save_stats(_name, _st)
+            else:
+                _log.info("  Session %s: LIVE CHECK = ALIVE. Skipping.", sf)
 
     if not valid_sessions:
         _log.warning("  No valid failing sessions. Requested: %s, Failing: %s, Diagnosed: %s",
@@ -1080,6 +1157,7 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
         for e in entries:
             if e.get("status") == "pending_payment":
                 mark_replacement_paid(e["id"], payment_id=f"dev_portal_{e['id']}")
+                e["status"] = "ready"  # reflect in response
                 _log.info("  [DEV] Auto-confirmed paid entry %s", e["id"])
 
     # ── AUTO-PROCESS free replacements immediately ──
@@ -1287,3 +1365,923 @@ async def portal_get_account_info(
         raise HTTPException(500, f"Could not fetch account info: {e}")
     finally:
         await client.disconnect()
+
+
+# ── Portal Notifications ──────────────────────────────────────────────────────
+
+import time as _time
+import json as _json
+
+def _notif_path(bot_name: str):
+    from code import config
+    return config.DATA_DIR / "notifications" / f"{bot_name.lower()}.json"
+
+
+def _load_notifs(bot_name: str) -> list[dict]:
+    p = _notif_path(bot_name)
+    if not p.exists():
+        return []
+    try:
+        data = _json.loads(p.read_text("utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_notifs(bot_name: str, notifs: list[dict]):
+    p = _notif_path(bot_name)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_json.dumps(notifs[-50:], indent=2), "utf-8")  # keep last 50
+
+
+def add_portal_notification(
+    bot_name: str,
+    title: str,
+    message: str,
+    type: str = "info",  # info, success, warning, error
+    icon: str = "",
+):
+    """Add a notification for a user's bot portal.
+    Called from replacement system, admin actions, etc."""
+    notifs = _load_notifs(bot_name)
+    notifs.append({
+        "id": f"{int(_time.time()*1000)}_{len(notifs)}",
+        "title": title,
+        "message": message,
+        "type": type,
+        "icon": icon,
+        "ts": _time.time(),
+        "read": False,
+    })
+    _save_notifs(bot_name, notifs)
+
+
+@router.get("/bot/{bot_name}/notifications")
+async def portal_get_notifications(bot_name: str, telegram_id: int = Query(...)):
+    """Get notifications for user's bot portal."""
+    await _get_user_bot(telegram_id, bot_name)  # auth check
+    notifs = _load_notifs(bot_name)
+    unread = sum(1 for n in notifs if not n.get("read"))
+    return {
+        "notifications": list(reversed(notifs[-30:])),  # newest first
+        "unread_count": unread,
+    }
+
+
+@router.post("/bot/{bot_name}/notifications/read")
+async def portal_mark_notifications_read(bot_name: str, telegram_id: int = Query(...)):
+    """Mark all notifications as read."""
+    await _get_user_bot(telegram_id, bot_name)
+    notifs = _load_notifs(bot_name)
+    for n in notifs:
+        n["read"] = True
+    _save_notifs(bot_name, notifs)
+    return {"marked": len(notifs)}
+
+
+@router.post("/bot/{bot_name}/notifications/{notif_id}/dismiss")
+async def portal_dismiss_notification(bot_name: str, notif_id: str, telegram_id: int = Query(...)):
+    """Dismiss (delete) a single notification."""
+    await _get_user_bot(telegram_id, bot_name)
+    notifs = _load_notifs(bot_name)
+    notifs = [n for n in notifs if n.get("id") != notif_id]
+    _save_notifs(bot_name, notifs)
+    return {"dismissed": True}
+
+
+# ── Replacement Crypto Payment ───────────────────────────────────────────────
+
+class ReplacementPayRequest(BaseModel):
+    entry_id: str
+    currency: str  # internal code e.g. "BTC", "USDT_TRC20"
+
+
+@router.post("/bot/{bot_name}/replacement/pay")
+async def portal_replacement_create_invoice(
+    bot_name: str, body: ReplacementPayRequest, telegram_id: int = Query(...)
+):
+    """Create a NOWPayments invoice for a pending_payment replacement entry."""
+    await _get_user_bot(telegram_id, bot_name)
+
+    from code.replacement import load_replacement_queue, save_replacement_queue, _queue_lock
+    from code.shop.payment import create_invoice
+    from code.shop.payment_constants import SUPPORTED_PAY_CURRENCIES
+
+    with _queue_lock:
+        queue = load_replacement_queue()
+        entry = None
+        for e in queue:
+            if e.get("id") == body.entry_id:
+                entry = e
+                break
+        if not entry:
+            raise HTTPException(404, "Replacement entry not found")
+        if entry.get("status") not in ("pending_payment",):
+            if entry.get("status") == "ready":
+                raise HTTPException(400, "This replacement is already paid and queued for processing. No payment needed.")
+            elif entry.get("status") == "completed":
+                raise HTTPException(400, "This replacement has already been completed.")
+            raise HTTPException(400, f"Entry status is '{entry.get('status')}', expected 'pending_payment'")
+        if entry.get("bot_name", "").lower() != bot_name.lower():
+            raise HTTPException(403, "Entry does not belong to this bot")
+
+        amount_usd = float(entry.get("price_usd", 2.0))
+        order_id = entry["id"]
+
+        # Validate currency
+        if body.currency.upper() not in SUPPORTED_PAY_CURRENCIES:
+            raise HTTPException(
+                400,
+                f"Unsupported currency: {body.currency}. Supported: {', '.join(sorted(SUPPORTED_PAY_CURRENCIES.keys()))}"
+            )
+
+    # Create invoice (outside lock - network call)
+    invoice = create_invoice(
+        amount_usd=amount_usd,
+        currency=body.currency.upper(),
+        order_id=order_id,
+        description=f"Session replacement: {entry.get('real_name', entry.get('session_file', ''))}",
+    )
+
+    if invoice.get("_invoice_failed"):
+        reason = invoice.get("_reason", "unknown")
+        raise HTTPException(502, f"Failed to create payment invoice: {reason}")
+
+    # Save invoice data onto the entry
+    with _queue_lock:
+        queue = load_replacement_queue()
+        for e in queue:
+            if e.get("id") == body.entry_id:
+                e["payment_id"] = invoice.get("payment_id", "")
+                e["invoice_data"] = {
+                    "pay_address": invoice.get("pay_address", ""),
+                    "pay_amount": invoice.get("pay_amount", 0),
+                    "pay_currency": invoice.get("pay_currency", ""),
+                    "invoice_expiry": invoice.get("invoice_expiry", ""),
+                    "invoice_expires_at": invoice.get("invoice_expires_at", ""),
+                }
+                e["status"] = "pending_payment"  # stays pending until confirmed
+                break
+        save_replacement_queue(queue)
+
+    return {
+        "payment_id": invoice.get("payment_id", ""),
+        "pay_address": invoice.get("pay_address", ""),
+        "pay_amount": invoice.get("pay_amount", 0),
+        "pay_currency": invoice.get("pay_currency", ""),
+        "amount_usd": amount_usd,
+        "invoice_expiry": invoice.get("invoice_expiry", ""),
+        "invoice_expires_at": invoice.get("invoice_expires_at", ""),
+        "entry_id": body.entry_id,
+    }
+
+
+@router.get("/bot/{bot_name}/replacement/{entry_id}/status")
+async def portal_replacement_payment_status(
+    bot_name: str, entry_id: str, telegram_id: int = Query(...)
+):
+    """Poll payment status for a replacement entry."""
+    await _get_user_bot(telegram_id, bot_name)
+
+    from code.replacement import load_replacement_queue, mark_replacement_paid, _queue_lock
+    from code.shop.payment import get_payment_details
+    from code.shop.explorer import build_explorer_link, normalize_network_for_explorer
+
+    queue = load_replacement_queue()
+    entry = None
+    for e in queue:
+        if e.get("id") == entry_id:
+            entry = e
+            break
+    if not entry:
+        raise HTTPException(404, "Replacement entry not found")
+    if entry.get("bot_name", "").lower() != bot_name.lower():
+        raise HTTPException(403, "Entry does not belong to this bot")
+
+    # If already paid/ready/completed, return immediately
+    if entry.get("status") in ("ready", "completed", "awaiting_session"):
+        return {
+            "status": entry["status"],
+            "payment_confirmed": True,
+            "entry_id": entry_id,
+        }
+
+    payment_id = entry.get("payment_id", "")
+    if not payment_id:
+        return {
+            "status": "pending_payment",
+            "payment_confirmed": False,
+            "message": "No invoice created yet",
+            "entry_id": entry_id,
+        }
+
+    # Poll NOWPayments
+    details = get_payment_details(payment_id)
+    if details is None:
+        return {
+            "status": "pending_payment",
+            "payment_confirmed": False,
+            "message": "Waiting for payment...",
+            "entry_id": entry_id,
+        }
+
+    pay_status = (details.get("payment_status") or "waiting").lower()
+    amount_received = float(details.get("amount_received") or 0)
+    pay_amount = float(details.get("pay_amount") or 0)
+    tx_hash = details.get("tx_hash", "")
+    network = details.get("network", "")
+    pay_currency = details.get("pay_currency", "")
+
+    explorer_link = None
+    if tx_hash:
+        net_key = normalize_network_for_explorer(pay_currency, network)
+        explorer_link = build_explorer_link(net_key, tx_hash)
+
+    if pay_status == "confirmed":
+        # Mark as paid and transition to ready
+        mark_replacement_paid(entry_id, payment_id=payment_id)
+        add_portal_notification(
+            bot_name,
+            title="Payment Confirmed ✓",
+            message=f"Payment received for {entry.get('real_name', entry.get('session_file', ''))}. Replacement will be processed shortly.",
+            type="success",
+            icon="swap",
+        )
+        # Auto-process immediately
+        try:
+            from code.replacement import process_ready_replacements
+            import asyncio
+            await asyncio.to_thread(lambda: asyncio.run(process_ready_replacements()))
+        except Exception as exc:
+            logger.warning("Auto-process after payment failed: %s", exc)
+
+        return {
+            "status": "ready",
+            "payment_confirmed": True,
+            "amount_received": amount_received,
+            "tx_hash": tx_hash,
+            "explorer_link": explorer_link,
+            "entry_id": entry_id,
+        }
+
+    return {
+        "status": "pending_payment",
+        "payment_confirmed": False,
+        "payment_status": pay_status,
+        "amount_received": amount_received,
+        "pay_amount": pay_amount,
+        "tx_hash": tx_hash,
+        "explorer_link": explorer_link,
+        "message": "Waiting for payment confirmation..." if pay_status == "waiting" else f"Status: {pay_status}",
+        "entry_id": entry_id,
+    }
+
+
+@router.get("/crypto/currencies")
+async def portal_get_crypto_currencies():
+    """Return supported crypto currencies with CoinGecko logos and live prices.
+    No auth required — public endpoint for the payment UI."""
+    import requests as _requests
+
+    from code.shop.payment_constants import SUPPORTED_PAY_CURRENCIES
+
+    # CoinGecko ID mapping for each internal code
+    COINGECKO_IDS = {
+        "BTC": "bitcoin",
+        "ETH": "ethereum",
+        "LTC": "litecoin",
+        "XMR": "monero",
+        "TRX": "tron",
+        "DOGE": "dogecoin",
+        "XRP": "ripple",
+        "SOL": "solana",
+        "BNB": "binancecoin",
+        "MATIC": "matic-network",
+        "ADA": "cardano",
+        "TON": "the-open-network",
+        "USDT_TRC20": "tether",
+        "USDT_BEP20": "tether",
+        "USDT_ERC20": "tether",
+        "USDT_SOL": "tether",
+        "USDT_ARB": "tether",
+        "USDC_BEP20": "usd-coin",
+        "USDC_ERC20": "usd-coin",
+        "USDC_SOL": "usd-coin",
+        "USDC_MATIC": "usd-coin",
+        "USDC_ARB": "usd-coin",
+    }
+
+    NETWORK_LABELS = {
+        "USDT_TRC20": "TRC-20", "USDT_BEP20": "BEP-20", "USDT_ERC20": "ERC-20",
+        "USDT_SOL": "Solana", "USDT_ARB": "Arbitrum",
+        "USDC_BEP20": "BEP-20", "USDC_ERC20": "ERC-20", "USDC_SOL": "Solana",
+        "USDC_MATIC": "Polygon", "USDC_ARB": "Arbitrum",
+    }
+
+    DISPLAY_NAMES = {
+        "BTC": "Bitcoin", "ETH": "Ethereum", "LTC": "Litecoin",
+        "XMR": "Monero", "TRX": "TRON", "DOGE": "Dogecoin",
+        "XRP": "Ripple", "SOL": "Solana", "BNB": "BNB",
+        "MATIC": "Polygon", "ADA": "Cardano", "TON": "TON",
+        "USDT_TRC20": "Tether", "USDT_BEP20": "Tether", "USDT_ERC20": "Tether",
+        "USDT_SOL": "Tether", "USDT_ARB": "Tether",
+        "USDC_BEP20": "USD Coin", "USDC_ERC20": "USD Coin", "USDC_SOL": "USD Coin",
+        "USDC_MATIC": "USD Coin", "USDC_ARB": "USD Coin",
+    }
+
+    SYMBOLS = {
+        "BTC": "BTC", "ETH": "ETH", "LTC": "LTC", "XMR": "XMR",
+        "TRX": "TRX", "DOGE": "DOGE", "XRP": "XRP", "SOL": "SOL",
+        "BNB": "BNB", "MATIC": "MATIC", "ADA": "ADA", "TON": "TON",
+        "USDT_TRC20": "USDT", "USDT_BEP20": "USDT", "USDT_ERC20": "USDT",
+        "USDT_SOL": "USDT", "USDT_ARB": "USDT",
+        "USDC_BEP20": "USDC", "USDC_ERC20": "USDC", "USDC_SOL": "USDC",
+        "USDC_MATIC": "USDC", "USDC_ARB": "USDC",
+    }
+
+    # Fetch from CoinGecko (free API, no key needed)
+    unique_ids = list(set(COINGECKO_IDS.values()))
+    prices: dict = {}
+    logos: dict = {}
+    try:
+        url = "https://api.coingecko.com/api/v3/coins/markets"
+        resp = _requests.get(url, params={
+            "vs_currency": "usd",
+            "ids": ",".join(unique_ids),
+            "order": "market_cap_desc",
+            "per_page": 50,
+            "page": 1,
+            "sparkline": "false",
+        }, timeout=10)
+        if resp.status_code == 200:
+            for coin in resp.json():
+                cid = coin.get("id", "")
+                prices[cid] = coin.get("current_price", 0)
+                logos[cid] = coin.get("image", "")
+    except Exception as exc:
+        logger.warning("CoinGecko fetch failed: %s", exc)
+
+    # Build response
+    currencies = []
+    for internal_code in SUPPORTED_PAY_CURRENCIES:
+        cg_id = COINGECKO_IDS.get(internal_code, "")
+        network = NETWORK_LABELS.get(internal_code, "")
+        is_stablecoin = internal_code.startswith("USDT") or internal_code.startswith("USDC")
+        currencies.append({
+            "code": internal_code,
+            "symbol": SYMBOLS.get(internal_code, internal_code),
+            "name": DISPLAY_NAMES.get(internal_code, internal_code),
+            "network": network,
+            "logo": (logos.get(cg_id, "") or "").replace("https://coin-images.coingecko.com/", "/coin-img/"),
+            "price_usd": prices.get(cg_id, 1.0 if is_stablecoin else 0),
+            "is_stablecoin": is_stablecoin,
+        })
+
+    return {"currencies": currencies}
+
+
+# ─────────────── Pre-start session health check ───────────────
+@router.get("/bot/{bot_name}/pre-start-check")
+async def portal_pre_start_check(bot_name: str, telegram_id: int = Query(...)):
+    """Live pre-start health check: connects to Telegram to validate each session.
+    Returns per-session alive/dead status so the user knows before starting."""
+    import time as _time
+    bot_token, cfg = await _get_user_bot(telegram_id, bot_name)
+
+    from code.utils import load_stats, get_name_by_token, save_stats
+    from code import config as app_config
+    name = get_name_by_token(bot_token)
+
+    sessions_cfg = cfg.get("sessions", [])
+    if not sessions_cfg:
+        return {"ok": False, "reason": "no_sessions", "sessions": [], "healthy": 0, "dead": 0, "total": 0}
+
+    # Load existing stats for enrichment
+    bot_stats = {}
+    st = None
+    if name:
+        st = load_stats(name) or {}
+        bot_stats = st.get("session_stats", {})
+
+    # ── Live validation: connect to Telegram for each session ──
+    async def _validate_session(fn: str):
+        """Non-destructive: connect + is_user_authorized, no file moves."""
+        path = app_config.SESSIONS_ACTIVE / fn
+        if not path.is_file():
+            return fn, False, "file_missing"
+        try:
+            from telethon import TelegramClient
+            client = TelegramClient(
+                str(path.with_suffix("")), app_config.API_ID, app_config.API_HASH, proxy=app_config.PROXY
+            )
+            try:
+                await client.connect()
+                if not await client.is_user_authorized():
+                    return fn, False, "UNAUTHORIZED"
+                return fn, True, ""
+            except Exception as e:
+                err = str(e).lower()
+                if "deactivated" in err or "banned" in err or "frozen" in err:
+                    return fn, False, "FROZEN"
+                if "revoked" in err or "unregistered" in err or "authkey" in type(e).__name__.lower():
+                    return fn, False, "REVOKED"
+                return fn, False, str(e)[:60]
+            finally:
+                await client.disconnect()
+        except Exception as e:
+            return fn, False, str(e)[:60]
+
+    # Run all validations in parallel with timeout
+    import asyncio
+    tasks = []
+    for s in sessions_cfg:
+        sf = s.get("file") if isinstance(s, dict) else s
+        tasks.append(asyncio.wait_for(_validate_session(sf), timeout=12.0))
+
+    raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    results = []
+    healthy_count = 0
+    dead_count = 0
+
+    for i, s in enumerate(sessions_cfg):
+        sf = s.get("file") if isinstance(s, dict) else s
+        real_name = (s.get("real_name", sf) if isinstance(s, dict) else sf).replace(".session", "")
+        ss = bot_stats.get(sf, {})
+        lt_sent = int(ss.get("lifetime_sent", 0))
+        lt_failed = int(ss.get("lifetime_failed", 0))
+
+        # Parse validation result
+        r = raw_results[i]
+        if isinstance(r, Exception):
+            # Timeout or unexpected error — assume alive
+            alive, reason_str = True, ""
+            status, severity, reason = "healthy", "ok", "Session check timed out (assumed OK)"
+            healthy_count += 1
+        elif isinstance(r, tuple):
+            _, alive, reason_str = r
+            if alive:
+                status, severity, reason = "healthy", "ok", "Session is alive and authorized"
+                healthy_count += 1
+            else:
+                dead_count += 1
+                if reason_str in ("FROZEN",):
+                    status, severity, reason = "dead", "critical", "Account is frozen/banned by Telegram"
+                elif reason_str in ("REVOKED", "UNAUTHORIZED"):
+                    status, severity, reason = "dead", "critical", "Session logged out or revoked"
+                elif reason_str == "file_missing":
+                    status, severity, reason = "dead", "critical", "Session file not found on server"
+                else:
+                    status, severity, reason = "dead", "critical", f"Session failed: {reason_str}"
+        else:
+            alive = True
+            status, severity, reason = "healthy", "ok", "Session appears healthy"
+            healthy_count += 1
+
+        # Save diagnosis result into stats
+        if st is not None and name:
+            session_stats = st.setdefault("session_stats", {})
+            ss2 = session_stats.get(sf, {})
+            ss2["_last_health_check_ts"] = _time.time()
+            if not alive:
+                ss2["_last_spam_status"] = "DEAD" if reason_str != "FROZEN" else "FROZEN"
+            session_stats[sf] = ss2
+
+        results.append({
+            "session_file": sf,
+            "real_name": real_name,
+            "status": status,
+            "severity": severity,
+            "reason": reason,
+            "lifetime_sent": lt_sent,
+            "lifetime_failed": lt_failed,
+        })
+
+    # Persist diagnosis results
+    if st is not None and name:
+        save_stats(name, st)
+
+    total = len(sessions_cfg)
+    return {
+        "ok": dead_count == 0,
+        "healthy": healthy_count,
+        "dead": dead_count,
+        "total": total,
+        "sessions": results,
+    }
+
+
+# ══════════════════════════════════════════════════════════
+#  SUPPORT TICKETS
+# ══════════════════════════════════════════════════════════
+
+SUPPORT_TICKETS_FILE = __import__("pathlib").Path("data/support_tickets.json")
+
+
+def _load_tickets() -> list[dict]:
+    import json
+    if SUPPORT_TICKETS_FILE.is_file():
+        try:
+            return json.loads(SUPPORT_TICKETS_FILE.read_text("utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def _save_tickets(tickets: list[dict]):
+    import json
+    SUPPORT_TICKETS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SUPPORT_TICKETS_FILE.write_text(json.dumps(tickets, indent=2, default=str), "utf-8")
+
+
+@router.post("/bot/{bot_name}/support-ticket")
+async def portal_create_support_ticket(
+    bot_name: str,
+    body: PortalSupportTicketRequest,
+    telegram_id: int = Query(...),
+):
+    """Create a support ticket for a session issue."""
+    import time, uuid
+    bot_token, cfg = await _get_user_bot(telegram_id, bot_name)
+
+    # Verify session belongs to this bot
+    sessions_cfg = cfg.get("sessions", [])
+    valid = False
+    for s in sessions_cfg:
+        sf = s.get("file") if isinstance(s, dict) else s
+        if sf == body.session_file:
+            valid = True
+            break
+    if not valid:
+        raise HTTPException(400, "Session does not belong to this bot")
+
+    ticket = {
+        "id": str(uuid.uuid4())[:8],
+        "bot_name": bot_name,
+        "telegram_id": telegram_id,
+        "session_file": body.session_file,
+        "session_name": body.session_name,
+        "issue_type": body.issue_type,
+        "diag_status": body.diag_status,
+        "fail_rate": body.fail_rate,
+        "message": body.message[:1000],  # limit message length
+        "status": "open",
+        "created_at": time.time(),
+        "admin_reply": None,
+    }
+
+    tickets = _load_tickets()
+    tickets.insert(0, ticket)
+    _save_tickets(tickets)
+
+    logger.info("Support ticket created: %s by telegram_id=%s bot=%s session=%s",
+                ticket["id"], telegram_id, bot_name, body.session_file)
+
+    return {"ok": True, "ticket_id": ticket["id"], "message": "Support ticket submitted. Admin will review it."}
+
+
+@router.get("/bot/{bot_name}/support-tickets")
+async def portal_get_support_tickets(bot_name: str, telegram_id: int = Query(...)):
+    """Get support tickets for a user's bot."""
+    await _get_user_bot(telegram_id, bot_name)
+    tickets = _load_tickets()
+    user_tickets = [t for t in tickets if t.get("bot_name") == bot_name and t.get("telegram_id") == telegram_id]
+    return {"tickets": user_tickets}
+
+
+# ── Admin endpoints for support tickets ──
+
+@router.get("/admin/support-tickets")
+async def admin_list_support_tickets():
+    """List all support tickets (admin only — auth handled by admin session)."""
+    tickets = _load_tickets()
+    return {"tickets": tickets, "total": len(tickets), "open": sum(1 for t in tickets if t.get("status") == "open")}
+
+
+@router.patch("/admin/support-tickets/{ticket_id}")
+async def admin_update_support_ticket(ticket_id: str, status: str = Query(None), reply: str = Query(None)):
+    """Update a support ticket — close it or add admin reply."""
+    import time
+    tickets = _load_tickets()
+    for t in tickets:
+        if t.get("id") == ticket_id:
+            if status:
+                t["status"] = status
+            if reply:
+                t["admin_reply"] = reply
+                t["replied_at"] = time.time()
+            _save_tickets(tickets)
+            return {"ok": True, "ticket": t}
+    raise HTTPException(404, "Ticket not found")
+
+
+# ════════════════════════════════════════════════════════════════════
+#  WEB PURCHASE FLOW  (buy a new AdBot from the website)
+#  Frontend drives the UI; backend creates the NOWPayments invoice,
+#  reserves a pooled @BotFather token, stores the order, and on payment
+#  hands off to the existing creation pipeline (orders.json + worker).
+# ════════════════════════════════════════════════════════════════════
+
+class PurchaseReference(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    telegram_username: Optional[str] = None
+    telegram_id: Optional[int] = None
+
+
+class PurchaseCreateRequest(BaseModel):
+    plan_id: str
+    plan_mode: str                 # "starter" | "enterprise"
+    billing: str                   # "week" | "month"
+    currency: str                  # e.g. "BTC", "USDT_TRC20"
+    reference: Optional[PurchaseReference] = None
+    coupon: Optional[str] = None
+
+
+class CouponValidateRequest(BaseModel):
+    code: str
+
+
+class BotTokenAddRequest(BaseModel):
+    tokens: list[str]
+
+
+def _load_coupons() -> dict:
+    """Optional coupon store at data/coupons.json: { "CODE": {"percent": 10, "active": true} }."""
+    import json
+    from code import config as appcfg
+    path = appcfg.DATA_DIR / "coupons.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _coupon_percent(code: Optional[str]) -> float:
+    if not code:
+        return 0.0
+    c = _load_coupons().get(code.strip().upper())
+    if c and c.get("active", True):
+        try:
+            return max(0.0, min(90.0, float(c.get("percent", 0))))
+        except Exception:
+            return 0.0
+    return 0.0
+
+
+def _find_plan(plan_mode: str, plan_id: str):
+    """Return (plan_dict, mode) or (None, None)."""
+    from code.shop.storage import load_plans
+    plans = load_plans()
+    mode = (plan_mode or "").strip().lower()
+    for p in plans.get(mode, []):
+        if p.get("id") == plan_id:
+            return p, mode
+    for m, lst in plans.items():
+        for p in lst:
+            if p.get("id") == plan_id:
+                return p, m
+    return None, None
+
+
+def _creation_progress(order: dict) -> dict:
+    """High-level creation state for the web UI to animate the build log."""
+    status = order.get("status", "payment_waiting")
+    if status == "completed":
+        return {"state": "completed", "percent": 100}
+    if status in ("creating",):
+        return {"state": "creating", "percent": 70}
+    if status == "pending_creation":
+        return {"state": "queued" if not order.get("bot_token") else "creating", "percent": 40}
+    if status == "paid":
+        return {"state": "starting", "percent": 15}
+    if status in ("failed", "cancelled", "expired", "invoice_failed"):
+        return {"state": "failed", "percent": 0}
+    return {"state": "awaiting_payment", "percent": 0}
+
+
+def _confirm_purchase(order: dict) -> None:
+    """Mark a web order paid and hand it to the creation pipeline."""
+    from datetime import datetime
+    from code.shop.storage import update_order_status
+    from code.shop import token_pool
+    oid = order["order_id"]
+    now = datetime.utcnow().isoformat() + "Z"
+    if order.get("status") not in ("paid", "pending_creation", "creating", "completed"):
+        update_order_status(oid, "paid", paid_at=now)
+    tok = (order.get("bot_token") or "").strip()
+    try:
+        from code.utils import add_admin_alert
+    except Exception:
+        add_admin_alert = None
+    if tok:
+        token_pool.mark_assigned(oid)
+        try:
+            update_order_status(oid, "pending_creation")
+        except Exception:
+            pass
+        if add_admin_alert:
+            add_admin_alert("web_purchase", f"Web order {oid} paid — create AdBot ({order.get('plan_name')}) for {order.get('bot_name')}.")
+    else:
+        # No pooled token available → queue. Admin adds a token then recreates.
+        if add_admin_alert:
+            add_admin_alert("web_purchase_queued", f"Web order {oid} paid but NO bot token in pool — add a token, then recreate.")
+
+
+@router.post("/coupon/validate")
+async def portal_coupon_validate(body: CouponValidateRequest):
+    pct = _coupon_percent(body.code)
+    return {"valid": pct > 0, "code": body.code.strip().upper(), "percent": pct}
+
+
+@router.post("/purchase/create")
+async def portal_purchase_create(body: PurchaseCreateRequest):
+    """Create a web purchase: NOWPayments invoice + reserve a pooled bot token + store order."""
+    from code.shop.storage import create_order, update_order
+    from code.shop.payment import create_invoice
+    from code.shop import token_pool
+
+    plan, mode = _find_plan(body.plan_mode, body.plan_id)
+    if not plan:
+        raise HTTPException(404, "Plan not found")
+    if body.billing not in ("week", "month"):
+        raise HTTPException(400, "billing must be 'week' or 'month'")
+    if not (body.currency or "").strip():
+        raise HTTPException(400, "currency is required")
+
+    base = float(plan.get("price_month" if body.billing == "month" else "price_week", 0) or 0)
+    if base <= 0:
+        raise HTTPException(400, "Plan price is not configured")
+    pct = _coupon_percent(body.coupon)
+    amount = round(base * (1 - pct / 100.0), 2)
+    duration_days = 30 if body.billing == "month" else 7
+
+    ref = body.reference or PurchaseReference()
+    display = (ref.name or ref.telegram_username or ref.email or "").strip()
+    user_id = int(ref.telegram_id) if ref.telegram_id else 0
+    plan_name = plan.get("name") or body.plan_id.capitalize()
+
+    order = create_order(
+        user_id=user_id,
+        plan_id=body.plan_id,
+        plan_name=plan_name,
+        plan_mode=mode,
+        duration_days=duration_days,
+        amount_usd=amount,
+        payment_id="",
+        currency=body.currency,
+    )
+    order_id = order["order_id"]
+    if not display:
+        display = f"USER{order_id[:4].upper()}"
+
+    reserved = token_pool.reserve_token(order_id)
+
+    invoice = create_invoice(
+        amount_usd=amount, currency=body.currency, order_id=order_id,
+        description=f"AdBot {plan_name} ({duration_days}d)",
+    )
+    if invoice.get("_invoice_failed"):
+        token_pool.release_order(order_id)
+        update_order(order_id, {"status": "invoice_failed"})
+        reason = invoice.get("_reason", "")
+        raise HTTPException(400, "Selected payment method is temporarily unavailable." if reason == "unavailable"
+                            else "Invoice creation failed. Try another currency.")
+
+    update_order(order_id, {
+        "payment_id": invoice.get("payment_id", ""),
+        "pay_address": invoice.get("pay_address") or "",
+        "pay_amount": invoice.get("pay_amount"),
+        "pay_currency": (invoice.get("pay_currency") or body.currency).upper(),
+        "invoice_expiry": invoice.get("invoice_expiry") or "",
+        "invoice_expires_at": invoice.get("invoice_expires_at") or "",
+        "bot_name": display,
+        "ref_name": ref.name or "",
+        "ref_email": ref.email or "",
+        "ref_username": ref.telegram_username or "",
+        "coupon": (body.coupon or "").strip().upper(),
+        "coupon_percent": pct,
+        "base_amount_usd": base,
+        "source": "web",
+        "queued": reserved is None,
+        "bot_token": (reserved or {}).get("token", ""),
+        "bot_username": (reserved or {}).get("username", ""),
+    })
+
+    return {
+        "order_id": order_id,
+        "plan_id": body.plan_id,
+        "plan_name": plan_name,
+        "plan_mode": mode,
+        "billing": body.billing,
+        "duration_days": duration_days,
+        "display_name": display,
+        "base_amount_usd": base,
+        "coupon": (body.coupon or "").strip().upper(),
+        "coupon_percent": pct,
+        "amount_usd": amount,
+        "pay_address": invoice.get("pay_address") or "",
+        "pay_amount": invoice.get("pay_amount"),
+        "pay_currency": (invoice.get("pay_currency") or body.currency).upper(),
+        "invoice_expires_at": invoice.get("invoice_expires_at") or "",
+        "queued": reserved is None,
+    }
+
+
+@router.get("/purchase/{order_id}/status")
+async def portal_purchase_status(order_id: str):
+    """Poll a web purchase: payment status → creation state → access token when ready."""
+    from code.shop.storage import get_order, update_order_status
+    from code.shop.payment import get_payment_details
+
+    order = get_order(order_id)
+    if not order:
+        raise HTTPException(404, "Order not found")
+
+    status = order.get("status", "payment_waiting")
+    payment_id = order.get("payment_id", "")
+    amount_received = 0.0
+    pay_amount = order.get("pay_amount") or 0
+    tx_hash = ""
+
+    if payment_id and status in ("payment_waiting", "confirming"):
+        d = get_payment_details(payment_id)
+        if d:
+            amount_received = d.get("amount_received", 0) or 0
+            pay_amount = d.get("pay_amount") or pay_amount
+            tx_hash = d.get("tx_hash", "")
+            pstatus = (d.get("payment_status") or "waiting").lower()
+            if pstatus == "confirmed":
+                _confirm_purchase(order)
+                order = get_order(order_id) or order
+                status = order.get("status", status)
+            elif pstatus == "confirming" and status == "payment_waiting":
+                try:
+                    update_order_status(order_id, "confirming")
+                    status = "confirming"
+                except Exception:
+                    pass
+
+    confirmed = status in ("paid", "creating", "pending_creation", "completed")
+    underpaid = bool(pay_amount) and amount_received > 0 and amount_received < float(pay_amount) and not confirmed
+
+    return {
+        "order_id": order_id,
+        "status": status,
+        "payment_confirmed": confirmed,
+        "amount_received": amount_received,
+        "pay_amount": pay_amount,
+        "underpaid": underpaid,
+        "tx_hash": tx_hash,
+        "queued": bool(order.get("queued")) and not order.get("bot_token"),
+        "creation": _creation_progress(order),
+        "access_token": order.get("web_token", "") or "",
+        "bot_username": order.get("bot_username", "") or order.get("created_bot_username", ""),
+        "bot_name": order.get("bot_name", ""),
+        "plan_name": order.get("plan_name", ""),
+        "duration_days": order.get("duration_days", 0),
+    }
+
+
+# ─────────────── Admin: bot-token pool ───────────────
+
+@router.get("/admin/bot-tokens")
+async def admin_list_bot_tokens():
+    """List the bot-token pool (tokens masked) with counts."""
+    from code.shop import token_pool
+    return {"tokens": token_pool.list_tokens(mask=True), "counts": token_pool.counts()}
+
+
+@router.post("/admin/bot-tokens")
+async def admin_add_bot_tokens(body: BotTokenAddRequest):
+    """Add one or more @BotFather tokens to the pool. Each is validated for its username."""
+    from code.shop import token_pool
+    from code.utils import validate_bot_token
+    results = []
+    for raw in body.tokens:
+        token = (raw or "").strip()
+        if not token:
+            continue
+        try:
+            ok, username = await validate_bot_token(token)
+        except Exception as exc:
+            ok, username = False, str(exc)
+        if not ok:
+            results.append({"token": token[:8] + "…", "added": False, "error": username})
+            continue
+        added, msg = token_pool.add_token(token, username)
+        results.append({"token": token[:8] + "…", "username": username, "added": added, "error": None if added else msg})
+    return {"results": results, "counts": token_pool.counts()}
+
+
+@router.delete("/admin/bot-tokens")
+async def admin_remove_bot_token(token: str = Query(...)):
+    """Remove a token from the pool by its full value."""
+    from code.shop import token_pool
+    ok = token_pool.remove_token(token)
+    if not ok:
+        raise HTTPException(404, "Token not found in pool")
+    return {"ok": True, "counts": token_pool.counts()}
