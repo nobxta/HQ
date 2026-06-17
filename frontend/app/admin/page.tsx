@@ -483,7 +483,8 @@ export default function DashboardPage() {
             ) : (
               <div className="p-4 space-y-3">
                 {renewals.map((r) => {
-                  const d = r.expires_at ? new Date(r.expires_at * 1000) : null;
+                  const parts = r.valid_till ? r.valid_till.split("/") : null; // DD/MM/YYYY
+                  const d = parts && parts.length === 3 ? new Date(+parts[2], +parts[1] - 1, +parts[0]) : null;
                   const month = d ? d.toLocaleString("en-US", { month: "short" }).toUpperCase() : "—";
                   const day = d ? d.getDate() : "—";
                   return (
