@@ -2258,42 +2258,30 @@ async def nowpayments_ipn(request: Request):
         raise HTTPException(400, "Invalid JSON")
 
     payment_id = str(data.get("payment_id") or "")
-    order_id = str(data.get("order_id") or "")
     pstatus = (data.get("payment_status") or "").lower()
+    logger.info("[IPN] payment_id=%s status=%s", payment_id, pstatus)
 
-    from code.shop.storage import get_order, get_order_by_payment_id, update_order_status
-    order = (get_order(order_id) if order_id else None) or (get_order_by_payment_id(payment_id) if payment_id else None)
-    if not order:
-        logger.warning("[IPN] order not found (payment_id=%s order_id=%s)", payment_id, order_id)
-        return {"ok": True}  # ack so NOWPayments stops retrying
-
-    logger.info("[IPN] payment_id=%s status=%s order=%s", payment_id, pstatus, order.get("order_id"))
-
-    if pstatus == "confirming":
-        if order.get("status") == "payment_waiting":
-            try:
-                update_order_status(order["order_id"], "confirming")
-            except Exception:
-                pass
-        return {"ok": True}
-
+    # Only act on terminal success states. waiting / partially_paid / failed / expired
+    # are acked and ignored (the user retries; nothing to provision).
     if pstatus in ("confirmed", "finished", "sent"):
         details = {
             "payment_status": "confirmed",
             "amount_received": float(data.get("actually_paid") or data.get("amount_received") or 0),
-            "pay_amount": float(data.get("pay_amount") or order.get("pay_amount") or 0),
-            "pay_currency": (data.get("pay_currency") or order.get("pay_currency") or "").lower(),
+            "pay_amount": float(data.get("pay_amount") or 0),
+            "pay_currency": (data.get("pay_currency") or "").lower(),
             "network": (data.get("network") or data.get("pay_currency") or "").lower(),
             "tx_hash": (data.get("payin_hash") or data.get("outcome_transaction_id") or "").strip(),
         }
-        from code.shop.workers import apply_confirmed_payment
+        from code.shop.workers import confirm_payment_for_invoice
         try:
-            await apply_confirmed_payment(order, details)
+            ok = await confirm_payment_for_invoice(payment_id, details)
         except Exception as exc:
-            logger.exception("[IPN] confirmation failed for %s: %s", order.get("order_id"), exc)
+            logger.exception("[IPN] confirmation failed for %s: %s", payment_id, exc)
             raise HTTPException(500, "Processing error")
+        if not ok:
+            logger.warning("[IPN] no matching order/temppay for payment_id=%s", payment_id)
 
-    return {"ok": True}
+    return {"ok": True}  # always ack so NOWPayments stops retrying
 
 
 # ─────────────── Admin: bot-token pool ───────────────

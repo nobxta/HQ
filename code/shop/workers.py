@@ -35,6 +35,7 @@ from .storage import (
     cleanup_old_expired_cancelled_orders,
     temppay_load_all,
     temppay_remove_by_invoice_id,
+    temppay_get_by_invoice_id,
     append_order_from_temppay,
 )
 from .payment import get_payment_details, fetch_supported_currencies
@@ -392,6 +393,31 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
         )
         logger.info("[CREATE_PIPELINE] order→paid order_id=%s; confirmation screen shown (Proceed required)", order_id)
     return True
+
+
+async def confirm_payment_for_invoice(payment_id: str, details: dict) -> bool:
+    """Confirm a payment by its NOWPayments invoice/payment id — used by the IPN webhook.
+
+    Handles both storage locations:
+      - orders.json (website, renewal, or already-promoted bot purchases), and
+      - temppay.json (shop-bot purchases not yet promoted to an order) — promoted first.
+
+    Returns True if a matching order was confirmed, False if nothing matched.
+    """
+    pid = (payment_id or "").strip()
+    if not pid:
+        return False
+    # Already an order (website / renewal / promoted bot purchase)
+    order = get_order_by_payment_id(pid)
+    if order:
+        return await apply_confirmed_payment(order, details)
+    # Shop-bot new purchase still sitting in temppay → promote, then confirm
+    entry = temppay_get_by_invoice_id(pid)
+    if entry and (entry.get("status") or "pending") == "pending":
+        order = append_order_from_temppay(entry, status="confirming")
+        temppay_remove_by_invoice_id(pid)
+        return await apply_confirmed_payment(order, details)
+    return False
 
 
 async def payment_polling_worker() -> None:
