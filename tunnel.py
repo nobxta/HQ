@@ -128,7 +128,13 @@ def _route_dns() -> None:
 def _start_tunnel() -> None:
     """Launch the tunnel as a background subprocess forwarding to the local API."""
     global _proc
-    port = os.getenv("SERVER_PORT", "8000")
+    # Resolve the port EXACTLY like uvicorn does (api.utils.get_api_port:
+    # API_PORT > SERVER_PORT > 8000) so the tunnel can never point at the wrong port.
+    try:
+        from api.utils import get_api_port
+        port = str(get_api_port())
+    except Exception:
+        port = os.getenv("API_PORT") or os.getenv("SERVER_PORT") or "8000"
     # Use 127.0.0.1 (not "localhost") so cloudflared connects over IPv4 — uvicorn
     # binds 0.0.0.0 (IPv4 only); "localhost" can resolve to IPv6 ::1 → connection refused.
     local_url = f"http://127.0.0.1:{port}"
