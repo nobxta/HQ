@@ -2193,49 +2193,25 @@ async def portal_purchase_create(body: PurchaseCreateRequest):
 
 @router.get("/purchase/{order_id}/status")
 async def portal_purchase_status(order_id: str):
-    """Poll a web purchase: payment status → creation state → access token when ready."""
-    from code.shop.storage import get_order, update_order_status
-    from code.shop.payment import get_payment_details
+    """Report a web purchase's current state. Confirmation is driven by the IPN
+    webhook (no provider polling here) — this only reads the stored order."""
+    from code.shop.storage import get_order
 
     order = get_order(order_id)
     if not order:
         raise HTTPException(404, "Order not found")
 
     status = order.get("status", "payment_waiting")
-    payment_id = order.get("payment_id", "")
-    amount_received = 0.0
-    pay_amount = order.get("pay_amount") or 0
-    tx_hash = ""
-
-    if payment_id and status in ("payment_waiting", "confirming"):
-        d = get_payment_details(payment_id)
-        if d:
-            amount_received = d.get("amount_received", 0) or 0
-            pay_amount = d.get("pay_amount") or pay_amount
-            tx_hash = d.get("tx_hash", "")
-            pstatus = (d.get("payment_status") or "waiting").lower()
-            if pstatus == "confirmed":
-                _confirm_purchase(order)
-                order = get_order(order_id) or order
-                status = order.get("status", status)
-            elif pstatus == "confirming" and status == "payment_waiting":
-                try:
-                    update_order_status(order_id, "confirming")
-                    status = "confirming"
-                except Exception:
-                    pass
-
     confirmed = status in ("paid", "creating", "pending_creation", "completed")
-    underpaid = bool(pay_amount) and amount_received > 0 and amount_received < float(pay_amount) and not confirmed
 
     return {
         "order_id": order_id,
         "status": status,
         "payment_confirmed": confirmed,
-        "amount_received": amount_received,
-        "pay_amount": pay_amount,
-        "underpaid": underpaid,
-        "tx_hash": tx_hash,
+        "amount_received": order.get("amount_received", 0) or 0,
+        "pay_amount": order.get("pay_amount") or 0,
+        "underpaid": False,
+        "tx_hash": order.get("tx_hash", "") or "",
         "queued": bool(order.get("queued")) and not order.get("bot_token"),
         "creation": _creation_progress(order),
         "access_token": order.get("web_token", "") or "",
@@ -2244,6 +2220,80 @@ async def portal_purchase_status(order_id: str):
         "plan_name": order.get("plan_name", ""),
         "duration_days": order.get("duration_days", 0),
     }
+
+
+def _verify_ipn_sig(raw: bytes, sig: str, secret: str) -> bool:
+    """Verify NOWPayments IPN HMAC-SHA512 over the key-sorted JSON body."""
+    import hmac, hashlib, json as _json
+    if not sig or not secret:
+        return False
+    try:
+        data = _json.loads(raw)
+        sorted_body = _json.dumps(data, sort_keys=True, separators=(",", ":"))
+    except Exception:
+        return False
+    digest = hmac.new(secret.encode(), sorted_body.encode(), hashlib.sha512).hexdigest()
+    return hmac.compare_digest(digest, sig.strip())
+
+
+@router.post("/payment/ipn")
+async def nowpayments_ipn(request: Request):
+    """NOWPayments IPN webhook — instant confirmation for web, bot, and renewal orders.
+    Verifies the HMAC-SHA512 signature; performs no provider polling."""
+    import json as _json
+    from code import config as appcfg
+
+    raw = await request.body()
+    secret = getattr(appcfg, "NOWPAYMENTS_IPN_SECRET", "")
+    if not secret:
+        logger.error("[IPN] NOWPAYMENTS_IPN_SECRET not set — cannot verify webhook")
+        raise HTTPException(503, "IPN not configured")
+    sig = request.headers.get("x-nowpayments-sig", "")
+    if not _verify_ipn_sig(raw, sig, secret):
+        logger.warning("[IPN] signature verification failed")
+        raise HTTPException(401, "Invalid signature")
+    try:
+        data = _json.loads(raw)
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+
+    payment_id = str(data.get("payment_id") or "")
+    order_id = str(data.get("order_id") or "")
+    pstatus = (data.get("payment_status") or "").lower()
+
+    from code.shop.storage import get_order, get_order_by_payment_id, update_order_status
+    order = (get_order(order_id) if order_id else None) or (get_order_by_payment_id(payment_id) if payment_id else None)
+    if not order:
+        logger.warning("[IPN] order not found (payment_id=%s order_id=%s)", payment_id, order_id)
+        return {"ok": True}  # ack so NOWPayments stops retrying
+
+    logger.info("[IPN] payment_id=%s status=%s order=%s", payment_id, pstatus, order.get("order_id"))
+
+    if pstatus == "confirming":
+        if order.get("status") == "payment_waiting":
+            try:
+                update_order_status(order["order_id"], "confirming")
+            except Exception:
+                pass
+        return {"ok": True}
+
+    if pstatus in ("confirmed", "finished", "sent"):
+        details = {
+            "payment_status": "confirmed",
+            "amount_received": float(data.get("actually_paid") or data.get("amount_received") or 0),
+            "pay_amount": float(data.get("pay_amount") or order.get("pay_amount") or 0),
+            "pay_currency": (data.get("pay_currency") or order.get("pay_currency") or "").lower(),
+            "network": (data.get("network") or data.get("pay_currency") or "").lower(),
+            "tx_hash": (data.get("payin_hash") or data.get("outcome_transaction_id") or "").strip(),
+        }
+        from code.shop.workers import apply_confirmed_payment
+        try:
+            await apply_confirmed_payment(order, details)
+        except Exception as exc:
+            logger.exception("[IPN] confirmation failed for %s: %s", order.get("order_id"), exc)
+            raise HTTPException(500, "Processing error")
+
+    return {"ok": True}
 
 
 # ─────────────── Admin: bot-token pool ───────────────

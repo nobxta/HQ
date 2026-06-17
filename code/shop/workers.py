@@ -283,6 +283,117 @@ async def _process_temppay_entry(entry: dict, now_utc: datetime) -> None:
         logger.info("[CREATE_PIPELINE] temppay→order OK order_id=%s; confirmation screen shown (Proceed required)", order_id)
 
 
+async def apply_confirmed_payment(o: dict, details: dict) -> bool:
+    """Run the post-payment action for a confirmed order. Idempotent and shared by
+    the polling worker AND the IPN webhook.
+
+    Handles three order kinds:
+      - website purchase (source == "web"): mark paid, assign a pooled bot token,
+        queue for creation (or flag if the pool is empty).
+      - renewal: extend the parent bot's validity, complete the order.
+      - new bot purchase (shop bot): mark paid + awaiting "proceed", show the
+        Telegram confirmation screen so the user can continue.
+
+    Returns False if the order is no longer awaiting payment (already handled).
+    """
+    order_id = o.get("order_id", "")
+    current = get_order(order_id)
+    if not current or current.get("status") not in ("payment_waiting", "confirming"):
+        return False
+    now = datetime.utcnow().isoformat() + "Z"
+
+    # ── Website purchase ──
+    if (o.get("source") or "") == "web":
+        from . import token_pool
+        update_order_status(order_id, "paid", paid_at=now)
+        tok = (o.get("bot_token") or "").strip()
+        if tok:
+            token_pool.mark_assigned(order_id)
+            try:
+                update_order_status(order_id, "pending_creation")
+            except Exception:
+                pass
+            add_admin_alert("web_purchase", f"Web order {order_id} paid — create AdBot ({o.get('plan_name')}) for {o.get('bot_name')}.")
+        else:
+            add_admin_alert("web_purchase_queued", f"Web order {order_id} paid but NO bot token in pool — add one, then recreate.")
+        logger.info("[IPN] web order %s confirmed → %s", order_id, "pending_creation" if tok else "queued")
+        return True
+
+    # ── Bot purchase / renewal ──
+    chat_id = o.get("payment_chat_id") or 0
+    msg_id = o.get("payment_message_id") or 0
+    user_id = o.get("user_id") or 0
+    plan_name = o.get("plan_name") or "AdBot"
+    duration_days = o.get("duration_days") or 0
+    network_key = normalize_network_for_explorer(details.get("pay_currency") or "", details.get("network") or "")
+
+    if o.get("order_type") == "renewal":
+        confirm_edit = "✅ " + RENEWAL_CONFIRMED_MESSAGE
+        if chat_id and msg_id:
+            await notify.notify_edit_message(
+                chat_id, msg_id, confirm_edit, bot_token=config.SHOP_BOT_TOKEN
+            )
+    else:
+        conf_text, conf_ent, conf_rm = build_payment_confirmation_screen(o, details)
+        if chat_id and msg_id:
+            await notify.notify_edit_message(
+                chat_id, msg_id, conf_text, parse_mode="HTML", reply_markup=conf_rm, entities=conf_ent,
+                disable_web_page_preview=True, bot_token=config.SHOP_BOT_TOKEN
+            )
+        logger.info(
+            "Payment confirmed — blockchain tx stored order_id=%s tx_hash=%s explorer_key=%s",
+            order_id, "yes" if (details.get("tx_hash") or "").strip() else "no", network_key
+        )
+        if build_explorer_link(network_key, details.get("tx_hash") or ""):
+            logger.info("Explorer link generated for %s", network_key)
+        logger.info("Confirmation message formatted successfully")
+
+    if o.get("order_type") == "renewal":
+        parent_id = o.get("parent_order_id")
+        parent = get_order(parent_id) if parent_id else None
+        if parent and extend_valid_till_for_bot(parent.get("bot_token", ""), o.get("duration_days", 0), o.get("order_id", "")):
+            update_order_status(order_id, "completed", paid_at=now)
+            if user_id:
+                try:
+                    from ..broadcast_users import add_plan_user
+                    add_plan_user(user_id)
+                except Exception:
+                    pass
+            if user_id and not (chat_id and msg_id):
+                await notify.notify_send_to_chat(
+                    user_id,
+                    "✅ " + RENEWAL_CONFIRMED_MESSAGE,
+                    bot_token=config.SHOP_BOT_TOKEN,
+                )
+            add_admin_alert(
+                "renewal_confirmed",
+                f"Renewal confirmed\nOrder: {order_id}\nDuration: {duration_days} days\nUser: tg://user?id={user_id}",
+            )
+            logger.info("Renewal order %s completed for bot", order_id)
+        else:
+            update_order_status(order_id, "failed")
+    else:
+        update_order_status(order_id, "paid", paid_at=now)
+        update_order(order_id, {
+            "awaiting_field": "proceed",
+            "tx_hash": (details.get("tx_hash") or "").strip(),
+            "network": network_key,
+            "pay_currency": (details.get("pay_currency") or "").strip(),
+        })
+        if user_id:
+            try:
+                from ..broadcast_users import add_plan_user
+                add_plan_user(user_id)
+            except Exception:
+                pass
+        add_admin_alert(
+            "order_confirmed",
+            f"New order confirmed\nPlan: {plan_name}\nDuration: {duration_days} days\nUser: tg://user?id={user_id}",
+        )
+        logger.info("[CREATE_PIPELINE] order→paid order_id=%s; confirmation screen shown (Proceed required)", order_id)
+    return True
+
+
 async def payment_polling_worker() -> None:
     """
     Two sources: (1) temppay.json = active unpaid (pending). (2) orders.json = confirming / payment_waiting (renewals).
@@ -427,82 +538,7 @@ async def payment_polling_worker() -> None:
 
                 # Paid or overpaid: amount_received >= pay_amount AND payment_status == confirmed → proceed normally (no special overpayment handling)
                 if provider_status == "confirmed" and amount_received >= pay_amount:
-                    current = get_order(order_id)
-                    if not current or current.get("status") not in ("payment_waiting", "confirming"):
-                        continue
-                    chat_id = o.get("payment_chat_id") or 0
-                    msg_id = o.get("payment_message_id") or 0
-                    user_id = o.get("user_id") or 0
-                    plan_name = o.get("plan_name") or "AdBot"
-                    duration_days = o.get("duration_days") or 0
-                    network_key = normalize_network_for_explorer(details.get("pay_currency") or "", details.get("network") or "")
-
-                    # 1. Edit payment message: renewal = simple confirm; new purchase = confirmation screen with [Proceed]
-                    if o.get("order_type") == "renewal":
-                        confirm_edit = "✅ " + RENEWAL_CONFIRMED_MESSAGE
-                        if chat_id and msg_id:
-                            await notify.notify_edit_message(
-                                chat_id, msg_id, confirm_edit, bot_token=config.SHOP_BOT_TOKEN
-                            )
-                    else:
-                        conf_text, conf_ent, conf_rm = build_payment_confirmation_screen(o, details)
-                        if chat_id and msg_id:
-                            await notify.notify_edit_message(
-                                chat_id, msg_id, conf_text, parse_mode="HTML", reply_markup=conf_rm, entities=conf_ent,
-                                disable_web_page_preview=True, bot_token=config.SHOP_BOT_TOKEN
-                            )
-                        logger.info(
-                            "Payment confirmed — blockchain tx stored order_id=%s tx_hash=%s explorer_key=%s",
-                            order_id, "yes" if (details.get("tx_hash") or "").strip() else "no", network_key
-                        )
-                        if build_explorer_link(network_key, details.get("tx_hash") or ""):
-                            logger.info("Explorer link generated for %s", network_key)
-                        logger.info("Confirmation message formatted successfully")
-
-                    now = datetime.utcnow().isoformat() + "Z"
-                    if o.get("order_type") == "renewal":
-                        parent_id = o.get("parent_order_id")
-                        parent = get_order(parent_id) if parent_id else None
-                        if parent and extend_valid_till_for_bot(parent.get("bot_token", ""), o.get("duration_days", 0), o.get("order_id", "")):
-                            update_order_status(order_id, "completed", paid_at=now)
-                            if user_id:
-                                try:
-                                    from ..broadcast_users import add_plan_user
-                                    add_plan_user(user_id)
-                                except Exception:
-                                    pass
-                            if user_id and not (chat_id and msg_id):
-                                await notify.notify_send_to_chat(
-                                    user_id,
-                                    "✅ " + RENEWAL_CONFIRMED_MESSAGE,
-                                    bot_token=config.SHOP_BOT_TOKEN,
-                                )
-                            add_admin_alert(
-                                "renewal_confirmed",
-                                f"Renewal confirmed\nOrder: {order_id}\nDuration: {duration_days} days\nUser: tg://user?id={user_id}",
-                            )
-                            logger.info("Renewal order %s completed for bot", order_id)
-                        else:
-                            update_order_status(order_id, "failed")
-                    else:
-                        update_order_status(order_id, "paid", paid_at=now)
-                        update_order(order_id, {
-                            "awaiting_field": "proceed",
-                            "tx_hash": (details.get("tx_hash") or "").strip(),
-                            "network": network_key,
-                            "pay_currency": (details.get("pay_currency") or "").strip(),
-                        })
-                        if user_id:
-                            try:
-                                from ..broadcast_users import add_plan_user
-                                add_plan_user(user_id)
-                            except Exception:
-                                pass
-                        add_admin_alert(
-                            "order_confirmed",
-                            f"New order confirmed\nPlan: {plan_name}\nDuration: {duration_days} days\nUser: tg://user?id={user_id}",
-                        )
-                        logger.info("[CREATE_PIPELINE] order→paid order_id=%s; confirmation screen shown (Proceed required)", order_id)
+                    await apply_confirmed_payment(o, details)
         except Exception as e:
             logger.warning("Payment polling error: %s", e)
         _write_payment_heartbeat()

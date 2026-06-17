@@ -40,8 +40,13 @@ SUPPORT_USER_ID = int(os.getenv("SUPPORT_USER_ID", "0") or os.getenv("SUPPORT_ID
 WEBSITE_URL = (os.getenv("WEBSITE_URL", "") or "").strip()
 NOWPAYMENTS_API_KEY = (os.getenv("NOWPAYMENTS_API_KEY", "") or "").strip()
 NOWPAYMENTS_BASE_URL = (os.getenv("NOWPAYMENTS_BASE_URL", "https://api.nowpayments.io/v1") or "https://api.nowpayments.io/v1").rstrip("/")
+# IPN/webhook secret (NOWPayments dashboard → Store settings → IPN). Required for the webhook.
+NOWPAYMENTS_IPN_SECRET = (os.getenv("NOWPAYMENTS_IPN_SECRET", "") or "").strip()
 # Stub payments only when explicitly enabled (set PAYMENT_DEV_MODE=1 to use stub without API key)
 PAYMENT_DEV_MODE = (os.getenv("PAYMENT_DEV_MODE", "") or "").lower() in ("1", "true", "yes")
+# Payment confirmation is webhook-only by default. Set PAYMENT_POLLING=1 to re-enable the
+# background polling worker as a fallback.
+PAYMENT_POLLING_ENABLED = (os.getenv("PAYMENT_POLLING", "") or "").lower() in ("1", "true", "yes")
 
 MAX_SESSIONS_PER_BOT = 50
 # Minimum cycle interval (seconds) between posting rounds. Values below this are raised to this (e.g. 250 allowed if >= MIN_CYCLE_SEC).

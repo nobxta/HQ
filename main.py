@@ -227,7 +227,7 @@ async def _worker_watchdog_loop() -> None:
         try:
             await asyncio.sleep(WATCHDOG_CHECK_INTERVAL_SEC)
             now = time.time()
-            if config.SHOP_BOT_TOKEN and PAYMENT_HEARTBEAT_PATH.exists():
+            if config.PAYMENT_POLLING_ENABLED and config.SHOP_BOT_TOKEN and PAYMENT_HEARTBEAT_PATH.exists():
                 ts = _read_heartbeat_ts(PAYMENT_HEARTBEAT_PATH)
                 if ts is not None and (now - ts) > WATCHDOG_STALE_SEC:
                     task = _payment_task_holder[0]
@@ -312,7 +312,10 @@ async def main() -> None:
         asyncio.create_task(_fetch_currencies_once())
     # Shop Bot: order recovery (once), payment polling, renewal scheduler, daily cleanup, currencies sync
     asyncio.create_task(order_recovery_on_startup(), name="order_recovery_on_startup")
-    _payment_task_holder[0] = asyncio.create_task(payment_polling_worker(), name="payment_polling_worker")
+    if config.PAYMENT_POLLING_ENABLED:
+        _payment_task_holder[0] = asyncio.create_task(payment_polling_worker(), name="payment_polling_worker")
+    else:
+        logger.info("Payment polling disabled (webhook-only). Set PAYMENT_POLLING=1 to re-enable the fallback worker.")
     asyncio.create_task(renewal_scheduler_worker(), name="renewal_scheduler_worker")
     asyncio.create_task(daily_orders_cleanup_worker(), name="daily_orders_cleanup_worker")
     asyncio.create_task(daily_supported_currencies_sync_worker(), name="daily_supported_currencies_sync_worker")
