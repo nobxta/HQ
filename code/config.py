@@ -48,6 +48,13 @@ PAYMENT_DEV_MODE = (os.getenv("PAYMENT_DEV_MODE", "") or "").lower() in ("1", "t
 # background polling worker as a fallback.
 PAYMENT_POLLING_ENABLED = (os.getenv("PAYMENT_POLLING", "") or "").lower() in ("1", "true", "yes")
 
+# Email notifications (optional). If SMTP_HOST is unset, email sending is skipped silently.
+SMTP_HOST = (os.getenv("SMTP_HOST", "") or "").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587") or "587")
+SMTP_USER = (os.getenv("SMTP_USER", "") or "").strip()
+SMTP_PASS = (os.getenv("SMTP_PASS", "") or "").strip()
+SMTP_FROM = (os.getenv("SMTP_FROM", "") or os.getenv("SMTP_USER", "") or "").strip()
+
 MAX_SESSIONS_PER_BOT = 50
 # Minimum cycle interval (seconds) between posting rounds. Values below this are raised to this (e.g. 250 allowed if >= MIN_CYCLE_SEC).
 MIN_CYCLE_SEC = 60

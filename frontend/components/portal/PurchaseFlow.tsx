@@ -205,7 +205,7 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
         setStatus(r.data);
         if (r.data?.payment_confirmed) {
           setStep("creating");
-          try { localStorage.removeItem(STORE_KEY); } catch {}
+          // keep the order in localStorage so a return visit can still claim the login
           if (pollRef.current) clearInterval(pollRef.current);
           // keep polling slower for creation completion + access token
           pollRef.current = setInterval(async () => {
@@ -236,16 +236,35 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
     else doClose();
   }, [step, order, status, doClose]);
 
-  /* restore an in-progress payment after a page refresh */
+  /* restore an in-progress / completed order after a refresh or return visit */
   const restoredRef = useRef(false);
   useEffect(() => {
     if (restoredRef.current || !resume?.order || !resume?.currency) return;
     restoredRef.current = true;
     setOrder(resume.order);
     setSelected(resume.currency);
-    setStep("pay");
-    startPolling(resume.order.order_id);
+    const oid = resume.order.order_id;
+    // peek at status so we land on the right screen (pay vs. creating/ready)
+    axios.get(`${API}/api/portal/purchase/${oid}/status`)
+      .then(r => { setStatus(r.data); setStep(r.data?.payment_confirmed ? "creating" : "pay"); })
+      .catch(() => setStep("pay"))
+      .finally(() => startPolling(oid));
   }, [resume, startPolling]);
+
+  /* email-me-when-ready (notify) */
+  const [notifyEmail, setNotifyEmail] = useState("");
+  const [notifySaved, setNotifySaved] = useState(false);
+  useEffect(() => { if (email && !notifyEmail) setNotifyEmail(email); }, [email]); // eslint-disable-line react-hooks/exhaustive-deps
+  const saveContact = useCallback(async () => {
+    if (!order || !notifyEmail.trim()) return;
+    try {
+      await axios.post(`${API}/api/portal/purchase/${order.order_id}/contact`, {
+        email: notifyEmail.trim(),
+        telegram_id: tgId.trim() ? Number(tgId.trim()) : null,
+      });
+      setNotifySaved(true);
+    } catch { /* silent */ }
+  }, [order, notifyEmail, tgId]);
 
   /* countdown */
   useEffect(() => {
@@ -612,6 +631,32 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
                       })}
                     </div>
                   )}
+
+                  {/* Notify when ready — so they can safely close the tab */}
+                  <div className="rounded-lg border border-[#1f1f22] bg-[#101012] p-4">
+                    <p className="text-[12px] font-medium text-white">Get your login by email</p>
+                    <p className="text-[11px] text-[#5d5d66] mt-0.5 leading-relaxed">
+                      We&apos;ll email your access token the moment it&apos;s ready — you can safely close this page.
+                    </p>
+                    {notifySaved ? (
+                      <p className="text-[12px] text-emerald-400 mt-2.5 flex items-center gap-1.5">
+                        <Check className="w-3.5 h-3.5" /> We&apos;ll email {notifyEmail}
+                      </p>
+                    ) : (
+                      <div className="flex gap-2 mt-2.5">
+                        <input
+                          value={notifyEmail} onChange={e => setNotifyEmail(e.target.value)} type="email"
+                          placeholder="you@email.com"
+                          className="flex-1 rounded-lg border border-[#1f1f22] bg-[#0a0a0a] px-3 py-2 text-[13px] text-white placeholder-[#5d5d66] outline-none focus:border-[#2AABEE]/50 transition-colors"
+                        />
+                        <button onClick={saveContact} disabled={!notifyEmail.trim()}
+                          className="px-4 rounded-lg text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50" style={{ background: TG }}>
+                          Notify me
+                        </button>
+                      </div>
+                    )}
+                    <p className="text-[11px] text-[#5d5d66] mt-2">Or just come back to this site — your login will be waiting here.</p>
+                  </div>
                 </>
               ) : (
                 <div className="text-center space-y-4">

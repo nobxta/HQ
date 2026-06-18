@@ -2002,6 +2002,11 @@ class CouponValidateRequest(BaseModel):
     code: str
 
 
+class PurchaseContactRequest(BaseModel):
+    email: Optional[str] = None
+    telegram_id: Optional[int] = None
+
+
 class BotTokenAddRequest(BaseModel):
     tokens: list[str]
 
@@ -2209,6 +2214,16 @@ async def portal_purchase_status(order_id: str):
     underpaid = waiting and amount_received > 0 and amount_received < pay_amount
     expired = status in ("expired", "cancelled", "failed")
 
+    # Fire notifications once, the first time we observe the bot is ready.
+    if status == "completed" and not order.get("notified"):
+        try:
+            from code.shop.web_notify import notify_order_ready
+            from code.shop.storage import update_order
+            await notify_order_ready(order)
+            update_order(order_id, {"notified": True})
+        except Exception as exc:
+            logger.warning("[NOTIFY] dispatch failed for %s: %s", order_id, exc)
+
     return {
         "order_id": order_id,
         "status": status,
@@ -2227,6 +2242,24 @@ async def portal_purchase_status(order_id: str):
         "plan_name": order.get("plan_name", ""),
         "duration_days": order.get("duration_days", 0),
     }
+
+
+@router.post("/purchase/{order_id}/contact")
+async def portal_purchase_contact(order_id: str, body: PurchaseContactRequest):
+    """Attach an email / Telegram id to an order so we can notify the buyer when their
+    bot is ready (used by the website's 'notify me' field on the waiting screen)."""
+    from code.shop.storage import get_order, update_order
+    order = get_order(order_id)
+    if not order:
+        raise HTTPException(404, "Order not found")
+    updates: dict = {}
+    if body.email and body.email.strip():
+        updates["ref_email"] = body.email.strip()
+    if body.telegram_id:
+        updates["notify_telegram_id"] = int(body.telegram_id)
+    if updates:
+        update_order(order_id, updates)
+    return {"ok": True, "saved": list(updates.keys())}
 
 
 def _verify_ipn_sig(raw: bytes, sig: str, secret: str) -> bool:
