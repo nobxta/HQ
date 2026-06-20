@@ -135,7 +135,7 @@ CONFIRMED_PREP_MESSAGE_DISPLAY = "✅ " + CONFIRMED_PREP_MESSAGE
 STEP5_MESSAGE = (
     "Enter your AdBot name.\n\n"
     "Reply with the name you want for your AdBot (e.g. MyAdBot).\n\n"
-    "Next: you will send your Bot Token from @BotFather."
+    "That's all we need — we'll set up your AdBot and send you the link when it's ready."
 )
 
 STEP6_MESSAGE = (

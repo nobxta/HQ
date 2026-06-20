@@ -1189,13 +1189,108 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if not text:
             await update.message.reply_text("Enter a non-empty bot name.")
             return
-        st["bot_name"] = text
         order_id = st.get("order_id")
-        if order_id:
-            update_order(order_id, {"bot_name": text, "awaiting_field": "token"})
-        st["step"] = "enter_token"
-        step6_text, step6_entities = build_emoji_message(STEP6_MESSAGE, "keyboard")
-        await update.message.reply_text(step6_text, entities=step6_entities)
+        order = get_order(order_id) if order_id else None
+        if not order or order.get("status") != "paid":
+            await update.message.reply_text("Order not found or not paid. Start from /start.")
+            _clear_shop_state(user_id)
+            return
+        st["bot_name"] = text
+        update_order(order_id, {"bot_name": text})
+        from ..utils import add_admin_alert
+
+        # Pull a bot token from our free pool — the user no longer provides their own.
+        from .token_pool import reserve_token, mark_assigned, release_order
+        pooled = reserve_token(order_id)
+        if not pooled:
+            update_order_status(order_id, "pending_creation")
+            update_order(order_id, {"bot_name": text})
+            add_admin_alert("pending_creation", f"Order {order_id} — no bot token in pool. Add one, then recreate.")
+            await update.message.reply_text(QUEUE_EDIT_MESSAGE)
+            _clear_shop_state(user_id)
+            return
+        bot_token = (pooled.get("token") or "").strip()
+        username = (pooled.get("username") or "").strip()
+        if not username:
+            ok, username = await validate_bot_token(bot_token)
+            if not ok:
+                release_order(order_id)
+                await update.message.reply_text("Couldn't provision a bot right now — please contact support.")
+                _clear_shop_state(user_id)
+                return
+
+        # Build the creation form with the pooled token and submit to the queue.
+        plan = order.get("plan_id")
+        plans = load_plans()
+        plan_obj = None
+        for mode_plans in plans.values():
+            for p in mode_plans:
+                if p.get("id") == plan:
+                    plan_obj = p
+                    break
+            if plan_obj:
+                break
+        if not plan_obj:
+            plan_obj = {"sessions": 1, "cycle": 3600, "gap": 5}
+        valid_end = datetime.utcnow() + timedelta(days=order.get("duration_days", 7))
+        valid_till = valid_end.strftime("%d/%m/%Y")
+        renewal_price = str(order.get("amount_usd", 0))
+        from ..chatlist import default_group_file_for_mode
+        _plan_mode = (order.get("plan_mode") or "starter").strip().capitalize()
+        group_file = default_group_file_for_mode(_plan_mode)
+        if not (config.GROUPS_DIR / group_file).exists():
+            group_file = "Starter.txt"
+            if not (config.GROUPS_DIR / group_file).exists():
+                for f in config.GROUPS_DIR.glob("*.txt"):
+                    group_file = f.name
+                    break
+        duration_days = order.get("duration_days", 7)
+        form = {
+            "name": text,
+            "bot_token": bot_token,
+            "bot_username": username,
+            "sessions_count": int(plan_obj.get("sessions", 1)),
+            "cycle": int(plan_obj.get("cycle", 3600)),
+            "gap": int(plan_obj.get("gap", 5)),
+            "valid_till": valid_till,
+            "duration_days": duration_days,
+            "mode": _plan_mode,
+            "group_file": group_file,
+            "plan_name": order.get("plan_name", ""),
+            "renewal_price": renewal_price,
+            "order_id": order_id,
+            "source": "shop",
+            "user_id": order.get("user_id") or user_id,
+        }
+        adbot_data = load_adbot()
+        free_count = len(adbot_data.get("free_sessions", []))
+        if free_count < form["sessions_count"]:
+            update_order_status(order_id, "pending_creation")
+            update_order(order_id, {
+                "bot_name": form.get("name"),
+                "bot_token": form.get("bot_token"),
+                "bot_username": form.get("bot_username"),
+            })
+            mark_assigned(order_id)
+            add_admin_alert("pending_creation", f"Order {order_id} — insufficient sessions (need {form['sessions_count']}, free {free_count}). Recreate after adding sessions.")
+            await update.message.reply_text(QUEUE_EDIT_MESSAGE)
+            _clear_shop_state(user_id)
+            return
+        progress_text, progress_entities = build_emoji_message(CREATION_PROGRESS_MESSAGE, "rocket")
+        progress_msg = await update.message.reply_text(progress_text, entities=progress_entities)
+        update_order(order_id, {
+            "bot_name": text,
+            "bot_token": bot_token,
+            "bot_username": username,
+        })
+        mark_assigned(order_id)
+        submit_create_job(
+            chat_id,
+            progress_msg.message_id,
+            form,
+            notification_bot_token=config.SHOP_BOT_TOKEN or None,
+        )
+        _clear_shop_state(user_id)
         return
 
     if step == "enter_token":
