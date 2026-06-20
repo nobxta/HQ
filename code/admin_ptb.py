@@ -603,7 +603,7 @@ async def _result_consumer_ptb() -> None:
             if bot_token:
                 asyncio.create_task(create_user_bot(bot_token))
             if order_id:
-                update_order_status(order_id, "completed", created_bot_username=username, bot_token=bot_token)
+                update_order_status(order_id, "completed", created_bot_username=username, bot_token=bot_token, web_token=form.get("_web_token", ""))
                 try:
                     order = get_order(order_id)
                     uid = order.get("user_id") if order else None
@@ -690,6 +690,11 @@ async def _result_consumer_ptb() -> None:
                             pass
                 elif reason == "bot_token_already_registered":
                     update_order_status(order_id, "failed")
+                    try:
+                        from .shop.token_pool import release_order as _release_tok
+                        _release_tok(order_id)
+                    except Exception:
+                        pass
                     if chat_id and msg_id and ((edit_bot_token and can_send_shop) or (not edit_bot_token and can_send_admin)):
                         dup_msg = "This bot token is already linked to an AdBot. Please use a different token from @BotFather or manage your existing bot."
                         try:
@@ -705,6 +710,11 @@ async def _result_consumer_ptb() -> None:
                             pass
                 else:
                     update_order_status(order_id, "failed")
+                    try:
+                        from .shop.token_pool import release_order as _release_tok
+                        _release_tok(order_id)
+                    except Exception:
+                        pass
                     if chat_id and msg_id and ((edit_bot_token and can_send_shop) or (not edit_bot_token and can_send_admin)):
                         try:
                             await notify.notify_edit_message(chat_id, msg_id, FAILURE_CREATION_MESSAGE, parse_mode=None, bot_token=edit_bot_token)
@@ -722,8 +732,10 @@ async def _result_consumer_ptb() -> None:
 async def _progress_consumer_web(
     progress_queue: queue_module.Queue,
     bot_name: str,
+    order_id: str = "",
 ) -> None:
-    """Consume (chat_id, msg_id, msg) from progress_queue and publish to pub/sub for web UI; stop on None."""
+    """Consume (chat_id, msg_id, msg) from progress_queue, publish to pub/sub AND persist the
+    latest step onto the order so the website can poll/show it live; stop on None."""
     from api.services.events import emit_create_progress
     while True:
         item = await asyncio.to_thread(progress_queue.get)
@@ -732,6 +744,12 @@ async def _progress_consumer_web(
             return
         _chat_id, _msg_id, msg = item
         emit_create_progress(bot_name, msg, status="progress")
+        if order_id:
+            try:
+                from .shop.storage import update_order
+                update_order(order_id, {"creation_step": msg})
+            except Exception:
+                pass
         logger.info("[CREATE_PROGRESS] web consumer published bot=%s msg=%s", bot_name, msg[:80])
 
 
@@ -798,7 +816,7 @@ def submit_create_job(
     progress_queue: queue_module.Queue = queue_module.Queue()
     if web:
         bot_name = form.get("name", "unknown")
-        asyncio.create_task(_progress_consumer_web(progress_queue, bot_name))
+        asyncio.create_task(_progress_consumer_web(progress_queue, bot_name, form.get("order_id", "")))
     else:
         asyncio.create_task(_progress_consumer_ptb(progress_queue, notification_bot_token))
     _create_job_queue.put((chat_id, msg_id, form, progress_queue))

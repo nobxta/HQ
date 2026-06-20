@@ -37,8 +37,8 @@ interface OrderData {
 interface StatusData {
   status: string; payment_confirmed: boolean; amount_received: number; pay_amount: number;
   underpaid: boolean; remaining?: number; expired?: boolean; tx_hash: string; queued: boolean;
-  creation: { state: string; percent: number }; access_token: string;
-  bot_username: string; bot_name: string;
+  creation: { state: string; percent: number }; creation_step?: string; access_token: string;
+  bot_username: string; bot_name: string; plan_name?: string; duration_days?: number;
 }
 
 /* localStorage key so an in-progress payment survives a page refresh */
@@ -606,9 +606,13 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
                     <div className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3" style={{ background: "rgba(42,171,238,0.12)" }}>
                       <Sparkles className="w-6 h-6" style={{ color: TG }} />
                     </div>
-                    <h3 className="text-[18px] font-semibold text-white">Payment confirmed</h3>
+                    <h3 className="text-[18px] font-semibold text-white">Payment successful</h3>
                     <p className="text-[13px] text-[#8b8b93] mt-1">
-                      {queued ? "You're in the queue — we'll provision your bot shortly." : "Creating your AdBot · est. ~1 min"}
+                      {queued ? (
+                        "You're in the queue — we'll provision your bot shortly."
+                      ) : (
+                        <>Setting up <span className="text-white font-medium">{status?.plan_name || plan.label}</span> · {status?.duration_days || plan.durationDays} days{(status?.bot_name) ? <> · {status.bot_name}</> : null}</>
+                      )}
                     </p>
                   </div>
 
@@ -629,6 +633,12 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
                           </div>
                         );
                       })}
+                      {status?.creation_step && (
+                        <div className="pt-2 mt-1 border-t border-[#1f1f22] flex items-center gap-2">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0" style={{ color: TG }} />
+                          <span className="text-[12px] text-[#8b8b93] truncate">{status.creation_step}</span>
+                        </div>
+                      )}
                     </div>
                   )}
 

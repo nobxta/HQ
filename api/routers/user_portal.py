@@ -2236,6 +2236,7 @@ async def portal_purchase_status(order_id: str):
         "tx_hash": order.get("tx_hash", "") or "",
         "queued": bool(order.get("queued")) and not order.get("bot_token"),
         "creation": _creation_progress(order),
+        "creation_step": order.get("creation_step", "") or "",
         "access_token": order.get("web_token", "") or "",
         "bot_username": order.get("bot_username", "") or order.get("created_bot_username", ""),
         "bot_name": order.get("bot_name", ""),

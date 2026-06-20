@@ -303,21 +303,86 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
         return False
     now = datetime.utcnow().isoformat() + "Z"
 
-    # ── Website purchase ──
+    # ── Website purchase: build headlessly from the pooled token ──
     if (o.get("source") or "") == "web":
         from . import token_pool
         update_order_status(order_id, "paid", paid_at=now)
         tok = (o.get("bot_token") or "").strip()
-        if tok:
-            token_pool.mark_assigned(order_id)
-            try:
-                update_order_status(order_id, "pending_creation")
-            except Exception:
-                pass
-            add_admin_alert("web_purchase", f"Web order {order_id} paid — create AdBot ({o.get('plan_name')}) for {o.get('bot_name')}.")
-        else:
+
+        # No token reserved → queue (admin adds stock, then recreate).
+        if not tok:
             add_admin_alert("web_purchase_queued", f"Web order {order_id} paid but NO bot token in pool — add one, then recreate.")
-        logger.info("[IPN] web order %s confirmed → %s", order_id, "pending_creation" if tok else "queued")
+            logger.info("[IPN] web order %s confirmed but no token → queued", order_id)
+            return True
+
+        token_pool.mark_assigned(order_id)
+        username = (o.get("bot_username") or "").strip()
+        if not username:
+            try:
+                from ..utils import validate_bot_token
+                ok, username = await validate_bot_token(tok)
+                if not ok:
+                    token_pool.release_order(order_id)
+                    update_order_status(order_id, "pending_creation")
+                    add_admin_alert("web_purchase", f"Web order {order_id}: pooled token invalid — needs a good token, then recreate.")
+                    return True
+            except Exception:
+                username = username or ""
+
+        # Resolve the plan, then check session stock.
+        from .storage import load_plans
+        from ..utils import load_adbot
+        from ..chatlist import default_group_file_for_mode
+        plan_obj = None
+        for _mode_plans in load_plans().values():
+            for _p in _mode_plans:
+                if _p.get("id") == o.get("plan_id"):
+                    plan_obj = _p
+                    break
+            if plan_obj:
+                break
+        if not plan_obj:
+            plan_obj = {"sessions": 1, "cycle": 3600, "gap": 5}
+        sessions_count = int(plan_obj.get("sessions", 1))
+        free_count = len(load_adbot().get("free_sessions", []))
+        if free_count < sessions_count:
+            update_order_status(order_id, "pending_creation")
+            add_admin_alert("pending_creation", f"Web order {order_id} — need {sessions_count} sessions, only {free_count} free. Recreate after adding sessions.")
+            logger.info("[IPN] web order %s confirmed but low sessions (%s/%s) → queued", order_id, free_count, sessions_count)
+            return True
+
+        # Build the create form and submit a headless job (engine generates the web token).
+        _mode = (o.get("plan_mode") or "starter").strip().capitalize()
+        group_file = default_group_file_for_mode(_mode)
+        if not (config.GROUPS_DIR / group_file).exists():
+            group_file = "Starter.txt"
+        valid_end = datetime.utcnow() + timedelta(days=int(o.get("duration_days", 30)))
+        form = {
+            "name": o.get("bot_name") or "AdBot",
+            "bot_token": tok,
+            "bot_username": username,
+            "sessions_count": sessions_count,
+            "cycle": int(plan_obj.get("cycle", 3600)),
+            "gap": int(plan_obj.get("gap", 5)),
+            "valid_till": valid_end.strftime("%d/%m/%Y"),
+            "duration_days": int(o.get("duration_days", 30)),
+            "mode": _mode,
+            "group_file": group_file,
+            "plan_name": o.get("plan_name", ""),
+            "renewal_price": str(o.get("amount_usd", 0)),
+            "order_id": order_id,
+            "source": "web",
+            "user_id": o.get("user_id") or 0,
+        }
+        update_order(order_id, {"bot_name": form["name"]})
+        try:
+            from ..admin_ptb import submit_create_job
+            submit_create_job(0, 0, form, web=True)
+            logger.info("[IPN] web order %s → headless build submitted", order_id)
+        except Exception as exc:
+            update_order_status(order_id, "pending_creation")
+            add_admin_alert("web_purchase", f"Web order {order_id}: could not submit build ({exc}). Recreate from admin.")
+            logger.warning("[IPN] web order %s build submit failed: %s", order_id, exc)
         return True
 
     # ── Bot purchase / renewal ──
