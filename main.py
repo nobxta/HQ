@@ -36,6 +36,7 @@ from code.crash import resume_adbots
 from code.shop.handlers import start_shop_bot_thread
 from code.shop.workers import (
     payment_polling_worker,
+    payment_safety_sweep,
     renewal_scheduler_worker,
     order_recovery_on_startup,
     daily_orders_cleanup_worker,
@@ -316,6 +317,7 @@ async def main() -> None:
         _payment_task_holder[0] = asyncio.create_task(payment_polling_worker(), name="payment_polling_worker")
     else:
         logger.info("Payment polling disabled (webhook-only). Set PAYMENT_POLLING=1 to re-enable the fallback worker.")
+        asyncio.create_task(payment_safety_sweep(), name="payment_safety_sweep")
     asyncio.create_task(renewal_scheduler_worker(), name="renewal_scheduler_worker")
     asyncio.create_task(daily_orders_cleanup_worker(), name="daily_orders_cleanup_worker")
     asyncio.create_task(daily_supported_currencies_sync_worker(), name="daily_supported_currencies_sync_worker")

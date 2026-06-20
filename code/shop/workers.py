@@ -460,6 +460,102 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
     return True
 
 
+async def webhook_temppay_partial(payment_id: str, amount_received: float) -> bool:
+    """Underpaid bot invoice (still in temppay): DM the buyer how much is left. For the webhook."""
+    entry = temppay_get_by_invoice_id((payment_id or "").strip())
+    if not entry:
+        return False
+    pay_amount = float(entry.get("amount") or entry.get("pay_amount") or 0)
+    remaining = max(0.0, pay_amount - float(amount_received or 0))
+    chat_id = entry.get("payment_chat_id") or 0
+    msg_id = entry.get("payment_message_id") or 0
+    msg = (
+        "Payment detected but incomplete.\n\n"
+        f"Received: {amount_received}\n"
+        f"Required: {pay_amount}\n"
+        f"Remaining: {remaining}\n\n"
+        "Send the remaining amount to the same address to continue."
+    )
+    if chat_id and msg_id:
+        await notify.notify_edit_message(chat_id, msg_id, msg, bot_token=config.SHOP_BOT_TOKEN)
+    elif entry.get("user_id"):
+        await notify.notify_send_to_chat(entry["user_id"], msg, bot_token=config.SHOP_BOT_TOKEN)
+    return True
+
+
+async def webhook_temppay_expired(payment_id: str) -> bool:
+    """Expired bot invoice (still in temppay): remove it and tell the buyer. For the webhook."""
+    pid = (payment_id or "").strip()
+    entry = temppay_get_by_invoice_id(pid)
+    if not entry:
+        return False
+    chat_id = entry.get("payment_chat_id") or 0
+    msg_id = entry.get("payment_message_id") or 0
+    temppay_remove_by_invoice_id(pid)
+    try:
+        from .handlers import clear_pending_payment_state
+        clear_pending_payment_state(entry.get("user_id"))
+    except Exception:
+        pass
+    if chat_id and msg_id:
+        await notify.notify_edit_message(chat_id, msg_id, EXPIRED_MESSAGE, bot_token=config.SHOP_BOT_TOKEN)
+    return True
+
+
+SAFETY_SWEEP_INTERVAL_SEC = 600   # re-check every 10 minutes
+SAFETY_SWEEP_GRACE_SEC = 480      # ignore orders younger than 8 min (let the webhook win first)
+
+
+async def payment_safety_sweep() -> None:
+    """Webhook safety net: periodically re-check orders/temppay still awaiting payment past a
+    grace window and confirm any the webhook missed. Confirm-only, idempotent, low-frequency.
+    Disable with PAYMENT_SAFETY_SWEEP=0."""
+    if not config.SHOP_BOT_TOKEN:
+        return
+    if not getattr(config, "PAYMENT_SAFETY_SWEEP_ENABLED", True):
+        logger.info("Payment safety sweep disabled (PAYMENT_SAFETY_SWEEP=0).")
+        return
+    logger.info("Payment safety sweep started (every %ss).", SAFETY_SWEEP_INTERVAL_SEC)
+    while True:
+        await asyncio.sleep(SAFETY_SWEEP_INTERVAL_SEC)
+        try:
+            now = datetime.utcnow()
+            for o in load_orders():
+                if o.get("status") not in ("payment_waiting", "confirming"):
+                    continue
+                pid = (o.get("payment_id") or "").strip()
+                if not pid:
+                    continue
+                created = _parse_iso((o.get("created_at") or "").strip())
+                if created and (now - created).total_seconds() < SAFETY_SWEEP_GRACE_SEC:
+                    continue
+                d = await asyncio.to_thread(get_payment_details, pid)
+                if not d:
+                    continue
+                st = (d.get("payment_status") or "waiting").lower()
+                if st in ("confirmed", "finished", "sent") and float(d.get("amount_received") or 0) >= float(o.get("pay_amount") or 0):
+                    logger.info("[SWEEP] webhook missed — confirming order %s", o.get("order_id"))
+                    await apply_confirmed_payment(o, d)
+            for entry in temppay_load_all():
+                if (entry.get("status") or "pending") != "pending":
+                    continue
+                pid = (entry.get("invoice_id") or entry.get("payment_id") or "").strip()
+                if not pid:
+                    continue
+                created = _parse_iso((entry.get("created_at") or "").strip())
+                if created and (now - created).total_seconds() < SAFETY_SWEEP_GRACE_SEC:
+                    continue
+                d = await asyncio.to_thread(get_payment_details, pid)
+                if not d:
+                    continue
+                st = (d.get("payment_status") or "waiting").lower()
+                if st in ("confirmed", "finished", "sent"):
+                    logger.info("[SWEEP] webhook missed — confirming temppay %s", pid)
+                    await confirm_payment_for_invoice(pid, d)
+        except Exception as e:
+            logger.warning("Payment safety sweep error: %s", e)
+
+
 async def confirm_payment_for_invoice(payment_id: str, details: dict) -> bool:
     """Confirm a payment by its NOWPayments invoice/payment id — used by the IPN webhook.
 

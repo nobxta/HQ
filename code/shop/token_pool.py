@@ -13,6 +13,7 @@ status: "available" | "reserved" | "assigned"
 import json
 import logging
 import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -72,6 +73,7 @@ def add_token(token: str, username: str = "") -> tuple[bool, str]:
             if t.get("token") == token:
                 return False, "Token already in pool"
         data["tokens"].append({
+            "id": uuid.uuid4().hex[:10],
             "token": token,
             "username": (username or "").strip(),
             "status": "available",
@@ -81,6 +83,19 @@ def add_token(token: str, username: str = "") -> tuple[bool, str]:
         })
         _save_raw(data)
     return True, "Added"
+
+
+def remove_by_id(token_id: str) -> bool:
+    """Remove a token by its pool id (used by the admin UI, which only sees masked tokens)."""
+    token_id = (token_id or "").strip()
+    with _lock:
+        data = _load_raw()
+        before = len(data["tokens"])
+        data["tokens"] = [t for t in data["tokens"] if t.get("id") != token_id]
+        if len(data["tokens"]) == before:
+            return False
+        _save_raw(data)
+    return True
 
 
 def remove_token(token: str) -> bool:

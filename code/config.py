@@ -47,6 +47,9 @@ PAYMENT_DEV_MODE = (os.getenv("PAYMENT_DEV_MODE", "") or "").lower() in ("1", "t
 # Payment confirmation is webhook-only by default. Set PAYMENT_POLLING=1 to re-enable the
 # background polling worker as a fallback.
 PAYMENT_POLLING_ENABLED = (os.getenv("PAYMENT_POLLING", "") or "").lower() in ("1", "true", "yes")
+# Lightweight safety net for webhook-only mode: every ~10 min re-check orders still awaiting
+# payment past a grace window and confirm any the webhook missed. Default ON; set PAYMENT_SAFETY_SWEEP=0 to disable.
+PAYMENT_SAFETY_SWEEP_ENABLED = (os.getenv("PAYMENT_SAFETY_SWEEP", "1") or "1").lower() in ("1", "true", "yes")
 
 # Email notifications (optional). If SMTP_HOST is unset, email sending is skipped silently.
 SMTP_HOST = (os.getenv("SMTP_HOST", "") or "").strip()

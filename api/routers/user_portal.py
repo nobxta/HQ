@@ -2312,6 +2312,13 @@ async def nowpayments_ipn(request: Request):
                 "amount_received": float(data.get("actually_paid") or data.get("amount_received") or 0),
                 "partial": True,
             })
+        else:
+            # Bot purchase still in temppay → DM the buyer how much is left.
+            try:
+                from code.shop.workers import webhook_temppay_partial
+                await webhook_temppay_partial(payment_id, float(data.get("actually_paid") or data.get("amount_received") or 0))
+            except Exception as exc:
+                logger.warning("[IPN] temppay partial notify failed: %s", exc)
         return {"ok": True}
 
     # Invoice expired / failed: stop the order and release the reserved bot token.
@@ -2327,6 +2334,13 @@ async def nowpayments_ipn(request: Request):
                 token_pool.release_order(order["order_id"])
             except Exception:
                 pass
+        elif not order:
+            # Bot purchase still in temppay → remove it and tell the buyer.
+            try:
+                from code.shop.workers import webhook_temppay_expired
+                await webhook_temppay_expired(payment_id)
+            except Exception as exc:
+                logger.warning("[IPN] temppay expiry notify failed: %s", exc)
         return {"ok": True}
 
     # Terminal success → confirm + provision.
@@ -2383,10 +2397,10 @@ async def admin_add_bot_tokens(body: BotTokenAddRequest):
 
 
 @router.delete("/admin/bot-tokens")
-async def admin_remove_bot_token(token: str = Query(...)):
-    """Remove a token from the pool by its full value."""
+async def admin_remove_bot_token(id: str = Query(None), token: str = Query(None)):
+    """Remove a token from the pool — by pool id (from the UI) or by full token value."""
     from code.shop import token_pool
-    ok = token_pool.remove_token(token)
+    ok = token_pool.remove_by_id(id) if id else (token_pool.remove_token(token) if token else False)
     if not ok:
         raise HTTPException(404, "Token not found in pool")
     return {"ok": True, "counts": token_pool.counts()}
