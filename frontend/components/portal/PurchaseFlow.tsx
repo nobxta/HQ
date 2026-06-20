@@ -288,7 +288,7 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
     return () => clearInterval(iv);
   }, [step]);
 
-  const done = status?.status === "completed" || !!status?.access_token;
+  const done = status?.status === "completed";
   const queued = status?.queued;
 
   const copy = (text: string, what: "addr" | "amt" | "tok") => {
@@ -615,6 +615,21 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
                       )}
                     </p>
                   </div>
+
+                  {status?.access_token && (
+                    <div className="rounded-lg border border-[#1f1f22] bg-[#101012] p-4">
+                      <p className="text-[10px] text-[#5d5d66] uppercase tracking-wider mb-1.5">Your access code</p>
+                      <div className="flex items-center gap-2">
+                        <code className="flex-1 text-[15px] font-mono text-white break-all">{status.access_token}</code>
+                        <button onClick={() => copy(status.access_token, "tok")} className="flex items-center gap-1 px-2.5 py-1.5 rounded text-[11px] font-medium" style={{ background: "rgba(42,171,238,0.12)", color: TG }}>
+                          {copied === "tok" ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                        </button>
+                      </div>
+                      <a href="/user/login" className="mt-2.5 inline-flex items-center gap-1 text-[12px] font-medium" style={{ color: TG }}>
+                        Log in now to watch progress <ArrowRight className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
+                  )}
 
                   {queued ? (
                     <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3 text-[12px] text-amber-400">

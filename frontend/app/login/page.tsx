@@ -49,14 +49,20 @@ function LoginContent() {
           router.push("/admin");
         }
       } else {
-        // User → store portal session, redirect to user dashboard
+        // User → store portal session
         setPortalSession({
           access_token: data.access_token,
           refresh_token: data.refresh_token,
           bot_name: data.bot_name,
           telegram_id: data.telegram_id,
         });
-        router.replace("/user/dashboard");
+        if (data.provisioning) {
+          // Bot still being built → work-in-progress page (keeps the code to re-check)
+          try { localStorage.setItem("portal_provisioning", JSON.stringify({ code: trimmed, bot_name: data.bot_name })); } catch {}
+          router.replace("/user/provisioning");
+        } else {
+          router.replace("/user/dashboard");
+        }
       }
     } catch (e: any) {
       setError(e?.response?.data?.detail || "Invalid code");

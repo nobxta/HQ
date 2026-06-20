@@ -66,6 +66,8 @@ class UnifiedLoginResponse(BaseModel):
     expires_in: int
     bot_name: str = ""
     telegram_id: int = 0
+    provisioning: bool = False     # web order paid, bot still being created
+    creation_step: str = ""        # live build step to show on the "work in progress" screen
 
 
 class PortalUpdateMessage(BaseModel):
@@ -250,6 +252,27 @@ async def unified_login(body: UnifiedLoginRequest, request: Request):
                 bot_name=bot_name,
                 telegram_id=owner_id,
             )
+
+    # 3. Web order paid but the bot is still being built → let them in to a "work in progress" view.
+    try:
+        from code.shop.storage import load_orders
+        for o in load_orders():
+            if (o.get("source") == "web" and (o.get("web_token") or "") == code
+                    and o.get("status") in ("paid", "pending_creation", "creating")):
+                bot_name = o.get("bot_name") or "AdBot"
+                subject = f"user:0:{bot_name}"
+                return UnifiedLoginResponse(
+                    role="user",
+                    access_token=create_portal_access_token(subject),
+                    refresh_token=create_portal_refresh_token(subject),
+                    expires_in=PORTAL_ACCESS_TOKEN_EXPIRE_SEC,
+                    bot_name=bot_name,
+                    telegram_id=0,
+                    provisioning=True,
+                    creation_step=o.get("creation_step", "") or "",
+                )
+    except Exception:
+        pass
 
     raise HTTPException(401, "Invalid code")
 

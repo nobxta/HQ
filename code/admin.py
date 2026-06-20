@@ -977,7 +977,7 @@ async def _core_create_adbot_async(
         history = build_history_section()
         if last_renewal_at and last_renewal_days:
             history["renewals"] = [{"at": last_renewal_at, "days": last_renewal_days, "order_id": str(form.get("order_id", "")), "source": "creation"}]
-        web_token = "".join(random.choices(string.ascii_letters + string.digits, k=8))
+        web_token = (form.get("_web_token") or "").strip() or "".join(random.choices(string.ascii_letters + string.digits, k=8))
         entry = {
             "name": name,
             "bot_token": bot_token,

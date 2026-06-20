@@ -351,16 +351,22 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
             logger.info("[IPN] web order %s confirmed but low sessions (%s/%s) → queued", order_id, free_count, sessions_count)
             return True
 
-        # Build the create form and submit a headless job (engine generates the web token).
+        # Build the create form and submit a headless job.
         _mode = (o.get("plan_mode") or "starter").strip().capitalize()
         group_file = default_group_file_for_mode(_mode)
         if not (config.GROUPS_DIR / group_file).exists():
             group_file = "Starter.txt"
         valid_end = datetime.utcnow() + timedelta(days=int(o.get("duration_days", 30)))
+        # Generate the access code NOW so the buyer gets it immediately and can log in while
+        # the bot is still building. The engine binds this exact token to the bot.
+        import random as _rnd, string as _str
+        web_token = (o.get("web_token") or "").strip() or "".join(_rnd.choices(_str.ascii_letters + _str.digits, k=8))
+        update_order(order_id, {"web_token": web_token})
         form = {
             "name": o.get("bot_name") or "AdBot",
             "bot_token": tok,
             "bot_username": username,
+            "_web_token": web_token,
             "sessions_count": sessions_count,
             "cycle": int(plan_obj.get("cycle", 3600)),
             "gap": int(plan_obj.get("gap", 5)),
