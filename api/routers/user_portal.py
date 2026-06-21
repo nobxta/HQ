@@ -2388,20 +2388,6 @@ async def nowpayments_ipn(request: Request):
     return {"ok": True}  # always ack so NOWPayments stops retrying
 
 
-@router.get("/payment/ipn-check")
-async def nowpayments_ipn_check():
-    """TEMP debug: confirm whether the server's IPN secret matches yours — by hash, never
-    revealing it. Compare `sha256` + `length` to your local value. Remove after debugging."""
-    import hashlib
-    from code import config as appcfg
-    s = (getattr(appcfg, "NOWPAYMENTS_IPN_SECRET", "") or "")
-    return {
-        "configured": bool(s),
-        "length": len(s),
-        "sha256": hashlib.sha256(s.encode()).hexdigest() if s else "",
-    }
-
-
 # ─────────────── Admin: bot-token pool ───────────────
 
 @router.get("/admin/bot-tokens")
