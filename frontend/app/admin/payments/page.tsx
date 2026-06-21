@@ -1,14 +1,13 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useOrders, usePendingOrders } from "@/lib/hooks/usePayments";
 import { Table, Thead, Tbody, Tr, Th, Td } from "@/components/ui/Table";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import ConfirmModal from "@/components/ConfirmModal";
-import StatCard from "@/components/StatCard";
 import { TableSkeleton } from "@/components/ui/Skeleton";
-import { Clock, CheckCircle, Search, Ban, CreditCard, RotateCw, Copy, Check } from "lucide-react";
+import { CheckCircle, Search, Ban, RotateCw, Copy, Check } from "lucide-react";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
 import { formatDateTime, formatUSD, truncate } from "@/lib/utils";
@@ -46,6 +45,11 @@ export default function PaymentsPage() {
   const [detail, setDetail] = useState<OrderRow | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  const [stats, setStats] = useState<{ total: number; revenue_usd: number; completed: number; pending: number; expired: number } | null>(null);
+
+  useEffect(() => {
+    api.get("/api/orders/stats").then((r) => setStats(r.data)).catch(() => {});
+  }, [data]);
 
   const orders: OrderRow[] = ((data?.items || []) as OrderRow[]).filter(
     (o) => !search || o.order_id.includes(search) || String(o.user_id || "").includes(search) || (o.payment_id || "").includes(search)
@@ -91,11 +95,37 @@ export default function PaymentsPage() {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
-        <StatCard title="Pending Orders" value={pending?.total || 0} icon={Clock} color="text-warning" />
-        <StatCard title="Total Orders" value={data?.total || 0} icon={CreditCard} color="text-accent" />
-        <StatCard title="This Page" value={orders.length} icon={CheckCircle} color="text-success" />
+      {/* Compact metrics */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {[
+          { label: "Revenue", value: formatUSD(stats?.revenue_usd || 0), sub: `${stats?.completed || 0} completed`, color: "text-success" },
+          { label: "Pending", value: stats?.pending ?? (pending?.total || 0), sub: "awaiting / building", color: "text-warning" },
+          { label: "Expired", value: stats?.expired || 0, sub: "expired / cancelled", color: "text-danger" },
+          { label: "Total Orders", value: stats?.total ?? (data?.total || 0), sub: `${orders.length} on this page`, color: "text-accent" },
+        ].map((c) => (
+          <div key={c.label} className="rounded-xl border border-white/[0.06] bg-dark-850 px-4 py-3">
+            <p className="text-[11px] text-dark-500 uppercase tracking-wider">{c.label}</p>
+            <p className={`text-xl font-bold mt-0.5 ${c.color}`}>{c.value}</p>
+            <p className="text-[10px] text-dark-600 mt-0.5">{c.sub}</p>
+          </div>
+        ))}
       </div>
+
+      {/* Status breakdown bar */}
+      {stats && stats.total > 0 && (
+        <div className="space-y-1.5">
+          <div className="flex h-1.5 rounded-full overflow-hidden bg-dark-800">
+            <div className="bg-success" style={{ width: `${(stats.completed / stats.total) * 100}%` }} />
+            <div className="bg-warning" style={{ width: `${(stats.pending / stats.total) * 100}%` }} />
+            <div className="bg-danger" style={{ width: `${(stats.expired / stats.total) * 100}%` }} />
+          </div>
+          <div className="flex items-center gap-4 text-[10px] text-dark-500">
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-success" /> Completed {stats.completed}</span>
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-warning" /> Pending {stats.pending}</span>
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-danger" /> Expired {stats.expired}</span>
+          </div>
+        </div>
+      )}
 
       <div className="space-y-3">
         <div className="relative">

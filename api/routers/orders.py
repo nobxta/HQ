@@ -43,6 +43,31 @@ async def pending_orders():
     return {"orders": pending, "total": len(pending)}
 
 
+@router.get("/stats")
+async def order_stats():
+    """Aggregate metrics across ALL orders for the payments dashboard."""
+    orders = await wrappers.load_orders()
+    by_status: dict[str, int] = {}
+    revenue = 0.0
+    for o in orders:
+        st = o.get("status", "") or "unknown"
+        by_status[st] = by_status.get(st, 0) + 1
+        if st == "completed":
+            try:
+                revenue += float(o.get("amount_usd") or 0)
+            except (TypeError, ValueError):
+                pass
+    pending_states = ("payment_waiting", "confirming", "paid", "pending_creation", "creating")
+    return {
+        "total": len(orders),
+        "by_status": by_status,
+        "revenue_usd": round(revenue, 2),
+        "completed": by_status.get("completed", 0),
+        "pending": sum(by_status.get(s, 0) for s in pending_states),
+        "expired": by_status.get("expired", 0) + by_status.get("cancelled", 0),
+    }
+
+
 @router.get("/{order_id}")
 async def get_order(order_id: str):
     results = await wrappers.search_orders(order_id=order_id)
