@@ -82,6 +82,64 @@ async def recreate_order(order_id: str):
     return OrderActionResponse(success=True, message=msg)
 
 
+@router.post("/{order_id}/sync")
+async def sync_order(order_id: str):
+    """Re-poll NOWPayments for this order right now and update it. If the provider says the
+    payment is finished and we haven't processed it yet, confirm it (triggers build)."""
+    from code.shop.storage import get_order, update_order, update_order_status
+    from code.shop.payment import get_payment_details
+
+    order = get_order(order_id)
+    if not order:
+        raise HTTPException(404, f"Order '{order_id}' not found")
+    payment_id = (order.get("payment_id") or "").strip()
+    if not payment_id:
+        return {"synced": False, "reason": "No payment_id on this order", "order": serialize_order(order)}
+
+    details = await asyncio.to_thread(get_payment_details, payment_id)
+    if not details:
+        raise HTTPException(502, "Could not reach NOWPayments — try again")
+
+    pstatus = (details.get("payment_status") or "").lower()
+    update_order(order_id, {
+        "amount_received": details.get("amount_received", 0) or 0,
+        "pay_address": details.get("pay_address") or order.get("pay_address", ""),
+        "tx_hash": details.get("tx_hash") or order.get("tx_hash", ""),
+        "network": details.get("network") or order.get("network", ""),
+        "last_synced_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+    })
+
+    confirmed = False
+    if pstatus in ("confirmed", "finished", "sent") and order.get("status") in ("payment_waiting", "confirming"):
+        from code.shop.workers import confirm_payment_for_invoice
+        try:
+            confirmed = await confirm_payment_for_invoice(payment_id, details)
+        except Exception as e:
+            raise HTTPException(500, f"Confirm failed: {e}")
+    elif pstatus == "confirming" and order.get("status") == "payment_waiting":
+        try:
+            update_order_status(order_id, "confirming")
+        except Exception:
+            pass
+    elif pstatus in ("expired", "failed") and order.get("status") in ("payment_waiting", "confirming"):
+        try:
+            update_order_status(order_id, "expired" if pstatus == "expired" else "cancelled")
+            from code.shop import token_pool
+            token_pool.release_order(order_id)
+        except Exception:
+            pass
+
+    fresh = get_order(order_id) or order
+    await wrappers.log_admin_action("web_admin", "order_sync", target=order_id)
+    return {
+        "synced": True,
+        "provider_status": pstatus,
+        "confirmed": confirmed,
+        "details": details,
+        "order": serialize_order(fresh),
+    }
+
+
 @router.get("/search/by-payment")
 async def search_by_payment(payment_id: str):
     results = await wrappers.search_orders(payment_id=payment_id)

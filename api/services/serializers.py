@@ -66,20 +66,39 @@ def serialize_session(entry: dict) -> dict:
 
 
 def serialize_order(order: dict) -> dict:
-    """Convert order dict to API format (strip sensitive fields)."""
+    """Convert order dict to API format (admin-only endpoints, so payment fields are included)."""
     return {
         "order_id": order.get("order_id", ""),
         "user_id": order.get("user_id"),
         "status": order.get("status", ""),
         "order_type": order.get("order_type", "purchase"),
+        "source": order.get("source", ""),
         "plan_name": order.get("plan_name", ""),
         "plan_id": order.get("plan_id", ""),
+        "plan_mode": order.get("plan_mode", "") or order.get("mode", ""),
         "mode": order.get("mode", ""),
         "duration_days": order.get("duration_days"),
         "amount_usd": order.get("amount_usd"),
+        "base_amount_usd": order.get("base_amount_usd"),
+        "coupon": order.get("coupon", ""),
+        "coupon_percent": order.get("coupon_percent", 0),
+        # NOWPayments / crypto fields
+        "payment_id": order.get("payment_id", ""),
         "pay_currency": order.get("pay_currency", ""),
         "pay_amount": order.get("pay_amount", ""),
+        "amount_received": order.get("amount_received", 0),
+        "pay_address": order.get("pay_address", ""),
+        "network": order.get("network", ""),
         "tx_hash": order.get("tx_hash", ""),
+        "invoice_expires_at": order.get("invoice_expires_at", ""),
+        # reference / fulfillment
+        "ref_name": order.get("ref_name", ""),
+        "ref_email": order.get("ref_email", ""),
+        "ref_username": order.get("ref_username", ""),
+        "bot_name": order.get("bot_name", ""),
+        "web_token": order.get("web_token", ""),
+        "creation_step": order.get("creation_step", ""),
+        "queued": bool(order.get("queued")),
         "created_at": order.get("created_at", ""),
         "paid_at": order.get("paid_at", ""),
         "bot_username": order.get("created_bot_username", ""),
