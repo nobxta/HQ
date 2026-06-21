@@ -2166,14 +2166,11 @@ async def portal_purchase_create(body: PurchaseCreateRequest):
     if not display:
         display = f"USER{order_id[:4].upper()}"
 
-    reserved = token_pool.reserve_token(order_id)
-
     invoice = create_invoice(
         amount_usd=amount, currency=body.currency, order_id=order_id,
         description=f"AdBot {plan_name} ({duration_days}d)",
     )
     if invoice.get("_invoice_failed"):
-        token_pool.release_order(order_id)
         update_order(order_id, {"status": "invoice_failed"})
         reason = invoice.get("_reason", "")
         raise HTTPException(400, "Selected payment method is temporarily unavailable." if reason == "unavailable"
@@ -2194,9 +2191,9 @@ async def portal_purchase_create(body: PurchaseCreateRequest):
         "coupon_percent": pct,
         "base_amount_usd": base,
         "source": "web",
-        "queued": reserved is None,
-        "bot_token": (reserved or {}).get("token", ""),
-        "bot_username": (reserved or {}).get("username", ""),
+        # Token is reserved at PAYMENT time (apply_confirmed_payment), never at creation —
+        # so unpaid / abandoned / spam orders can't lock up the pool. This is just a UI hint.
+        "queued": token_pool.count_available() == 0,
     })
 
     return {
@@ -2215,7 +2212,7 @@ async def portal_purchase_create(body: PurchaseCreateRequest):
         "pay_amount": invoice.get("pay_amount"),
         "pay_currency": (invoice.get("pay_currency") or body.currency).upper(),
         "invoice_expires_at": invoice.get("invoice_expires_at") or "",
-        "queued": reserved is None,
+        "queued": token_pool.count_available() == 0,
     }
 
 

@@ -307,16 +307,19 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
     if (o.get("source") or "") == "web":
         from . import token_pool
         update_order_status(order_id, "paid", paid_at=now)
-        tok = (o.get("bot_token") or "").strip()
+        # Reserve a token NOW (at payment), not at order creation — so unpaid/spam orders
+        # never consume stock. reserve_token is idempotent if this order already holds one.
+        reserved = token_pool.reserve_token(order_id)
+        tok = ((reserved or {}).get("token") or "").strip()
+        username = ((reserved or {}).get("username") or "").strip()
 
-        # No token reserved → queue (admin adds stock, then recreate).
+        # No token available → queue (admin adds stock, then recreate).
         if not tok:
+            update_order(order_id, {"queued": True})
             add_admin_alert("web_purchase_queued", f"Web order {order_id} paid but NO bot token in pool — add one, then recreate.")
             logger.info("[IPN] web order %s confirmed but no token → queued", order_id)
             return True
 
-        token_pool.mark_assigned(order_id)
-        username = (o.get("bot_username") or "").strip()
         if not username:
             try:
                 from ..utils import validate_bot_token
@@ -539,9 +542,23 @@ async def payment_safety_sweep() -> None:
                 if not d:
                     continue
                 st = (d.get("payment_status") or "waiting").lower()
+                order_id = o.get("order_id", "")
                 if st in ("confirmed", "finished", "sent") and float(d.get("amount_received") or 0) >= float(o.get("pay_amount") or 0):
-                    logger.info("[SWEEP] webhook missed — confirming order %s", o.get("order_id"))
+                    logger.info("[SWEEP] webhook missed — confirming order %s", order_id)
                     await apply_confirmed_payment(o, d)
+                elif st in ("expired", "failed", "refunded"):
+                    update_order_status(order_id, "expired" if st == "expired" else "cancelled")
+                    from . import token_pool as _tp
+                    _tp.release_order(order_id)
+                    logger.info("[SWEEP] order %s -> %s (provider %s)", order_id, "expired" if st == "expired" else "cancelled", st)
+                else:
+                    # Provider still 'waiting' but our invoice window has passed → abandon it.
+                    exp = _parse_iso((o.get("invoice_expires_at") or o.get("expiry_time") or "").strip())
+                    if exp and now > exp:
+                        update_order_status(order_id, "expired")
+                        from . import token_pool as _tp
+                        _tp.release_order(order_id)
+                        logger.info("[SWEEP] order %s expired (invoice window passed, unpaid)", order_id)
             for entry in temppay_load_all():
                 if (entry.get("status") or "pending") != "pending":
                     continue
