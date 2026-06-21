@@ -67,6 +67,7 @@ class UnifiedLoginResponse(BaseModel):
     bot_name: str = ""
     telegram_id: int = 0
     provisioning: bool = False     # web order paid, bot still being created
+    queued: bool = False           # paid but waiting for stock (no token / sessions)
     creation_step: str = ""        # live build step to show on the "work in progress" screen
 
 
@@ -261,6 +262,7 @@ async def unified_login(body: UnifiedLoginRequest, request: Request):
                     and o.get("status") in ("paid", "pending_creation", "creating")):
                 bot_name = o.get("bot_name") or "AdBot"
                 subject = f"user:0:{bot_name}"
+                is_queued = bool(o.get("queued")) or o.get("status") == "paid"
                 return UnifiedLoginResponse(
                     role="user",
                     access_token=create_portal_access_token(subject),
@@ -269,6 +271,7 @@ async def unified_login(body: UnifiedLoginRequest, request: Request):
                     bot_name=bot_name,
                     telegram_id=0,
                     provisioning=True,
+                    queued=is_queued,
                     creation_step=o.get("creation_step", "") or "",
                 )
     except Exception:

@@ -17,6 +17,7 @@ export default function ProvisioningPage() {
   const router = useRouter();
   const [botName, setBotName] = useState("");
   const [step, setStep] = useState("");
+  const [queued, setQueued] = useState(false);
   const [idx, setIdx] = useState(0);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -46,6 +47,7 @@ export default function ProvisioningPage() {
         }
         if (data.creation_step) setStep(data.creation_step);
         if (data.bot_name) setBotName(data.bot_name);
+        if (typeof data.queued === "boolean") setQueued(data.queued);
       } catch { /* keep waiting; bot not ready / transient */ }
     };
     poll();
@@ -65,32 +67,44 @@ export default function ProvisioningPage() {
         <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-accent/15 border border-accent/20 mx-auto mb-4">
           <Send className="h-6 w-6 text-accent" />
         </div>
-        <h1 className="text-lg font-bold text-white">Setting up your AdBot</h1>
-        <p className="text-sm text-dark-400 mt-1">
-          {botName ? <>&ldquo;{botName}&rdquo; is being created.</> : "Your bot is being created."} This usually takes about a minute — you can keep this page open.
+        <h1 className="text-lg font-bold text-white">{queued ? "Your AdBot is reserved" : "Your AdBot is being created"}</h1>
+        <p className="text-sm text-dark-400 mt-1.5 max-w-[300px] mx-auto leading-relaxed">
+          {queued
+            ? "We'll create your AdBot automatically when resources become available."
+            : <>{botName ? <>&ldquo;{botName}&rdquo;</> : "Your bot"} is being set up — this usually takes about a minute.</>}
         </p>
 
-        <div className="mt-5 rounded-xl border border-dark-700/40 bg-dark-900 p-4 space-y-2.5 text-left">
-          {STEPS.map((s, i) => {
-            const state = i < idx ? "done" : i === idx ? "active" : "todo";
-            return (
-              <div key={s} className="flex items-center gap-2.5">
-                {state === "done" ? <CheckCheck className="w-4 h-4 text-accent" />
-                  : state === "active" ? <Loader2 className="w-4 h-4 text-accent animate-spin" />
-                  : <span className="w-4 h-4 rounded-full border border-dark-700 inline-block" />}
-                <span className={`text-[13px] ${state === "todo" ? "text-dark-600" : "text-dark-200"}`}>{s}</span>
+        {queued ? (
+          <div className="mt-5 rounded-xl border border-dark-700/40 bg-dark-900 p-4 text-left">
+            <p className="text-[10px] text-dark-600 uppercase tracking-wider mb-1">Current status</p>
+            <p className="text-[13px] text-dark-200">Waiting for available resources</p>
+            <p className="text-[11px] text-dark-600 mt-0.5">No action required from you.</p>
+          </div>
+        ) : (
+          <div className="mt-5 rounded-xl border border-dark-700/40 bg-dark-900 p-4 space-y-2.5 text-left">
+            {STEPS.map((s, i) => {
+              const state = i < idx ? "done" : i === idx ? "active" : "todo";
+              return (
+                <div key={s} className="flex items-center gap-2.5">
+                  {state === "done" ? <CheckCheck className="w-4 h-4 text-accent" />
+                    : state === "active" ? <Loader2 className="w-4 h-4 text-accent animate-spin" />
+                    : <span className="w-4 h-4 rounded-full border border-dark-700 inline-block" />}
+                  <span className={`text-[13px] ${state === "todo" ? "text-dark-600" : "text-dark-200"}`}>{s}</span>
+                </div>
+              );
+            })}
+            {step && (
+              <div className="pt-2 mt-1 border-t border-dark-700/40 flex items-center gap-2">
+                <Loader2 className="w-3.5 h-3.5 text-accent animate-spin flex-shrink-0" />
+                <span className="text-[12px] text-dark-400 truncate">{step}</span>
               </div>
-            );
-          })}
-          {step && (
-            <div className="pt-2 mt-1 border-t border-dark-700/40 flex items-center gap-2">
-              <Loader2 className="w-3.5 h-3.5 text-accent animate-spin flex-shrink-0" />
-              <span className="text-[12px] text-dark-400 truncate">{step}</span>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
 
-        <p className="text-[11px] text-dark-600 mt-4">We&apos;ll take you to your dashboard automatically when it&apos;s ready.</p>
+        <p className="text-[11px] text-dark-600 mt-4">
+          {queued ? "You can safely close this page — we'll have it ready when you return." : "We'll take you to your dashboard automatically when it's ready."}
+        </p>
       </div>
     </div>
   );

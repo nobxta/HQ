@@ -307,6 +307,12 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
     if (o.get("source") or "") == "web":
         from . import token_pool
         update_order_status(order_id, "paid", paid_at=now)
+        # Issue the access code NOW so the buyer can log in immediately — even if we have to
+        # queue the build (no token / low sessions). The same code is bound to the bot later.
+        import random as _rnd, string as _str
+        web_token = (o.get("web_token") or "").strip() or "".join(_rnd.choices(_str.ascii_letters + _str.digits, k=8))
+        o["web_token"] = web_token
+        update_order(order_id, {"web_token": web_token})
         # Reserve a token NOW (at payment), not at order creation — so unpaid/spam orders
         # never consume stock. reserve_token is idempotent if this order already holds one.
         reserved = token_pool.reserve_token(order_id)
@@ -360,11 +366,7 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
         if not (config.GROUPS_DIR / group_file).exists():
             group_file = "Starter.txt"
         valid_end = datetime.utcnow() + timedelta(days=int(o.get("duration_days", 30)))
-        # Generate the access code NOW so the buyer gets it immediately and can log in while
-        # the bot is still building. The engine binds this exact token to the bot.
-        import random as _rnd, string as _str
-        web_token = (o.get("web_token") or "").strip() or "".join(_rnd.choices(_str.ascii_letters + _str.digits, k=8))
-        update_order(order_id, {"web_token": web_token})
+        # web_token was already issued at the top of this branch and bound to the order.
         form = {
             "name": o.get("bot_name") or "AdBot",
             "bot_token": tok,
