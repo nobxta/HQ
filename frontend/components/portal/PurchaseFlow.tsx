@@ -604,8 +604,8 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
                 <div className="space-y-4">
                   {/* Header */}
                   <div>
-                    <h2 className="text-[24px] font-semibold text-white">Your AdBot is Being Prepared</h2>
-                    <p className="text-[14px] text-[#94A3B8] mt-2">We&apos;ve secured your deployment slot and started provisioning your AdBot.</p>
+                    <h2 className="text-[24px] font-semibold text-white">Securing Your Deployment</h2>
+                    <p className="text-[14px] text-[#94A3B8] mt-2">Your payment is confirmed. Your AdBot instance is being provisioned exclusively for you.</p>
                   </div>
 
                   {/* Status badge + timeline container */}
@@ -659,8 +659,8 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
                   <div className="grid grid-cols-2 gap-3">
                     <div className="rounded-lg border border-[#1f1f22] bg-[#0B1020] p-4">
                       <p className="text-[11px] uppercase tracking-wider text-[#94A3B8] mb-2">Estimated Activation</p>
-                      <p className="text-[20px] font-semibold text-white">10–60 min</p>
-                      <p className="text-[11px] text-[#94A3B8] mt-1">Most today</p>
+                      <p className="text-[20px] font-semibold text-white">5–15 min</p>
+                      <p className="text-[11px] text-[#94A3B8] mt-1">Most immediately</p>
                     </div>
                     <div className="rounded-lg border border-[#1f1f22] bg-[#0B1020] p-4">
                       <p className="text-[11px] uppercase tracking-wider text-[#94A3B8] mb-2">Queue Position</p>
@@ -670,17 +670,17 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
                   </div>
 
                   {/* Access code — the hero element */}
-                  <div className="rounded-xl border border-[#1f1f22] bg-[#0B1020] p-6 text-center relative overflow-hidden">
+                  <div className="rounded-xl border border-[#1f1f22] bg-[#0B1020] p-6 text-center relative overflow-hidden animate-code-glow">
                     {/* Subtle background shine effect */}
                     <div className="absolute inset-0 shine-effect opacity-0" />
 
-                    <p className="text-[11px] uppercase tracking-wider text-[#94A3B8] mb-3 relative z-10">Access Code</p>
+                    <p className="text-[11px] uppercase tracking-wider text-[#94A3B8] mb-3 relative z-10">🔐 Access Code</p>
                     {status?.access_token ? (
                       <>
                         <code className="block text-[36px] font-mono font-bold text-white tracking-[0.08em] letter-spacing-wide leading-tight relative z-10 mb-2">
                           {status.access_token}
                         </code>
-                        <p className="text-[12px] text-[#94A3B8] mb-4 relative z-10">Keep this code safe. It will be your only login credential.</p>
+                        <p className="text-[12px] text-[#94A3B8] mb-4 relative z-10">This is your exclusive access key — treat it like a password. Save it somewhere safe; you&apos;ll need it to log in.</p>
                         <button onClick={() => copy(status.access_token, "tok")} className="relative z-10 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-[12px] font-semibold text-white transition-all hover:translate-y-[-2px]" style={{ background: "linear-gradient(135deg, #3BA8FF 0%, #2B8FD9 100%)" }}>
                           {copied === "tok" ? (
                             <><Check className="w-4 h-4" /> Copied</>
@@ -695,12 +695,21 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
                   </div>
 
                   {/* CTA */}
-                  {status?.access_token && (
-                    <a href={`/login?token=${encodeURIComponent(status.access_token)}`}
-                      className="w-full inline-flex items-center justify-center gap-2 text-[14px] font-semibold text-white h-12 rounded-lg transition-all hover:translate-y-[-2px]" style={{ background: "linear-gradient(135deg, #3BA8FF 0%, #2B8FD9 100%)" }}>
-                      Go to Dashboard <ArrowRight className="w-4 h-4" />
-                    </a>
-                  )}
+                  {(() => {
+                    const isReady = status?.access_token && status?.status === "completed";
+                    return isReady ? (
+                      <a href={`/login?token=${encodeURIComponent(status.access_token)}`}
+                        className="w-full inline-flex items-center justify-center gap-2 text-[14px] font-semibold text-white h-12 rounded-lg transition-all hover:translate-y-[-2px]" style={{ background: "linear-gradient(135deg, #3BA8FF 0%, #2B8FD9 100%)" }}>
+                        Go to Dashboard <ArrowRight className="w-4 h-4" />
+                      </a>
+                    ) : (
+                      <button disabled
+                        className="w-full inline-flex items-center justify-center gap-2 text-[14px] font-semibold text-white h-12 rounded-lg transition-all duration-300 opacity-60 cursor-not-allowed" style={{ background: "linear-gradient(135deg, #3BA8FF 0%, #2B8FD9 100%)" }}>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Access unlocking...
+                      </button>
+                    );
+                  })()}
 
                   {/* Notifications */}
                   <div className="rounded-lg border border-[#1f1f22] bg-[#0B1020] p-4">
@@ -805,6 +814,9 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
         .shine-effect { position: absolute; top: 0; left: -100%; width: 100%; height: 100%; background: linear-gradient(90deg, transparent, rgba(59, 168, 255, 0.2), transparent); animation: shine-sweep 6s ease-in-out infinite; }
 
         @keyframes breathing { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.05); opacity: 0.8; } }
+
+        @keyframes code-glow { 0%, 100% { box-shadow: 0 0 12px rgba(59, 168, 255, 0.15); } 50% { box-shadow: 0 0 20px rgba(59, 168, 255, 0.25); } }
+        .animate-code-glow { animation: code-glow 3s infinite ease-in-out; }
 
         .letter-spacing-wide { letter-spacing: 0.08em; }
       `}</style>
