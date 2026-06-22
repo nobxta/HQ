@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import portalApi, { setPortalSession } from "@/lib/portal-api";
 import {
   Send, Bell, Check, Clock, Server, Lock, RefreshCw, Loader2,
-  Crown, Mail, AtSign, Hash, ShieldCheck, MessageCircle, ChevronRight, FileText,
+  Users, Mail, AtSign, Hash, ShieldCheck, MessageCircle, ChevronRight,
+  CalendarClock, Headphones,
 } from "lucide-react";
 
 const TG = "#2AABEE";
@@ -14,9 +15,9 @@ const TELEGRAM_CHANNEL_URL = "https://t.me/hqadz";
 
 interface ProvData {
   provisioning?: boolean; queued?: boolean; creation_step?: string; bot_name?: string;
-  order_id?: string; plan_name?: string; plan_mode?: string; amount_usd?: number;
-  duration_days?: number; created_at?: string; paid_at?: string; pay_source?: string;
-  pay_currency?: string; ref_email?: string; ref_username?: string; notify_telegram_id?: number;
+  order_id?: string; plan_name?: string; plan_mode?: string; accounts?: number; billing?: string;
+  amount_usd?: number; duration_days?: number; created_at?: string; paid_at?: string; pay_source?: string;
+  pay_currency?: string; ref_name?: string; ref_email?: string; ref_username?: string; notify_telegram_id?: number;
 }
 
 function fmtDate(iso?: string) {
@@ -136,7 +137,11 @@ export default function ProvisioningPage() {
 
   const queued = !!data.queued;
   const hasOrder = !!data.order_id;
-  const period = (data.duration_days || 0) >= 30 ? "month" : "week";
+  const billing = data.billing || ((data.duration_days || 0) >= 30 ? "month" : "week");
+  const interval = billing === "month" ? "Monthly" : billing === "week" ? "Weekly" : "—";
+  const period = billing === "month" ? "month" : "week";
+  const userName = (data.ref_name || "").trim();
+  const initial = (userName || "U").charAt(0).toUpperCase();
   const steps = [
     { label: "Payment Confirmed", icon: Check, state: "done" },
     { label: "Resources Reserved", icon: Server, state: "done" },
@@ -158,13 +163,15 @@ export default function ProvisioningPage() {
         <div className="mx-auto max-w-[1280px] px-5 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <Send className="h-5 w-5" style={{ color: TG }} />
-            <span className="text-[18px] font-semibold tracking-tight">AdBot</span>
+            <span className="text-[18px] font-semibold tracking-tight">HQAdz</span>
           </div>
           <div className="flex items-center gap-4">
             <Bell className="h-[18px] w-[18px] text-[#8b8b93]" />
             <div className="flex items-center gap-2.5">
-              <span className="flex h-9 w-9 items-center justify-center rounded-full text-[13px] font-semibold text-white" style={{ background: TG }}>U</span>
-              <span className="text-[14px] text-[#c9c9cf] hidden sm:block">User</span>
+              <span className="flex h-9 w-9 items-center justify-center rounded-full text-[13px] font-semibold text-white" style={{ background: TG }}>{initial}</span>
+              {userName
+                ? <span className="text-[14px] text-[#c9c9cf] hidden sm:block max-w-[160px] truncate">{userName}</span>
+                : <span className="inline-block h-3.5 w-16 rounded bg-[#1f1f22] animate-pulse hidden sm:block" />}
             </div>
           </div>
         </div>
@@ -182,10 +189,7 @@ export default function ProvisioningPage() {
               </div>
               <div className="p-5">
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <Crown className="h-5 w-5" style={{ color: "#F5B638" }} />
-                    <span className="text-[18px] font-semibold">{loaded ? (data.plan_name || "AdBot Plan") : <Skel w="6rem" />}</span>
-                  </div>
+                  <span className="text-[18px] font-semibold">{loaded ? (data.plan_name || "AdBot Plan") : <Skel w="6rem" />}</span>
                   <span className="text-[11px] font-semibold px-2.5 py-1 rounded-full" style={{ color: TG, background: "rgba(42,171,238,0.12)" }}>
                     {queued ? "Reserved" : "Active"}
                   </span>
@@ -200,10 +204,11 @@ export default function ProvisioningPage() {
                 ) : null}
 
                 <div className="mt-5 rounded-md bg-[#16161a] border border-[#1f1f22] divide-y divide-[#1f1f22]">
+                  <PlanRow icon={Users} label="Accounts" value={loaded ? (data.accounts ? `${data.accounts} Account${data.accounts === 1 ? "" : "s"}` : "—") : null} />
+                  <PlanRow icon={CalendarClock} label="Interval" value={loaded ? interval : null} />
                   <PlanRow icon={Clock} label="Validity" value={loaded ? (data.duration_days ? `${data.duration_days} Days` : "—") : null} />
                   <PlanRow icon={ShieldCheck} label="Plan Tier" value={loaded ? (data.plan_mode ? cap(data.plan_mode) : "Standard") : null} />
-                  <PlanRow icon={Send} label="Bot Name" value={loaded ? (data.bot_name || "—") : null} />
-                  <PlanRow icon={Crown} label="Support" value="Priority" />
+                  <PlanRow icon={Headphones} label="Support" value="Priority" />
                 </div>
               </div>
             </section>
@@ -217,13 +222,8 @@ export default function ProvisioningPage() {
                 <div className="rounded-md bg-[#16161a] border border-[#1f1f22] divide-y divide-[#1f1f22] px-4">
                   <InfoRow label="Order ID" value={loaded ? (data.order_id ? `#${data.order_id}` : "—") : null} mono />
                   <InfoRow label="Order Date" value={loaded ? (fmtDate(data.created_at) || "—") : null} />
-                  <InfoRow label="Payment" value={loaded ? (data.pay_source ? cap(data.pay_source) : "Crypto") : null} />
                   <InfoRow label="Amount" value={loaded ? `$${(data.amount_usd || 0).toFixed(2)}` : null} />
                 </div>
-                <button className="mt-4 w-full flex items-center justify-between rounded-md border border-[#1f1f22] bg-[#16161a] px-4 py-3 text-[13px] font-medium text-[#c9c9cf] hover:border-[#3d3d44] transition-colors">
-                  <span className="flex items-center gap-2"><FileText className="h-4 w-4 text-[#8b8b93]" /> View Invoices</span>
-                  <ChevronRight className="h-4 w-4 text-[#5d5d66]" />
-                </button>
               </div>
             </section>
           </div>
@@ -292,7 +292,7 @@ export default function ProvisioningPage() {
                   </span>
                   <div>
                     <p className="text-[12px] text-[#8b8b93]">Estimated Time</p>
-                    <p className="text-[16px] font-semibold leading-tight mt-0.5">10–60 min</p>
+                    <p className="text-[16px] font-semibold leading-tight mt-0.5">10 min – 12 hrs</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-3.5">
@@ -327,7 +327,7 @@ export default function ProvisioningPage() {
               </div>
               <div className="p-5">
                 <p className="text-[13px] text-[#8b8b93] leading-relaxed">
-                  Add your contact so we can notify you the moment your AdBot is ready.
+                  Help us know you better so we can reach you easily and notify you the moment your AdBot is ready.
                 </p>
 
                 <div className="mt-4 space-y-4">

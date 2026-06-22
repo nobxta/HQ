@@ -73,12 +73,15 @@ class UnifiedLoginResponse(BaseModel):
     order_id: str = ""
     plan_name: str = ""
     plan_mode: str = ""
+    accounts: int = 0              # number of accounts (sessions) included in the plan
+    billing: str = ""             # "week" / "month"
     amount_usd: float = 0.0
     duration_days: int = 0
     created_at: str = ""
     paid_at: str = ""
     pay_source: str = ""
     pay_currency: str = ""
+    ref_name: str = ""
     ref_email: str = ""
     ref_username: str = ""
     notify_telegram_id: int = 0
@@ -284,6 +287,15 @@ async def unified_login(body: UnifiedLoginRequest, request: Request):
                     _dur = int(o.get("duration_days") or 0)
                 except (TypeError, ValueError):
                     _dur = 0
+                # Account count comes from the plan definition (sessions), not the order.
+                _accounts = 0
+                try:
+                    _plan, _ = _find_plan(o.get("plan_mode", ""), o.get("plan_id", ""))
+                    if _plan:
+                        _accounts = int(_plan.get("sessions") or 0)
+                except Exception:
+                    _accounts = 0
+                _billing = "month" if _dur >= 30 else ("week" if _dur > 0 else "")
                 return UnifiedLoginResponse(
                     role="user",
                     access_token=create_portal_access_token(subject),
@@ -297,12 +309,15 @@ async def unified_login(body: UnifiedLoginRequest, request: Request):
                     order_id=o.get("order_id", "") or "",
                     plan_name=o.get("plan_name", "") or "",
                     plan_mode=o.get("plan_mode", "") or "",
+                    accounts=_accounts,
+                    billing=_billing,
                     amount_usd=_amount,
                     duration_days=_dur,
                     created_at=o.get("created_at", "") or "",
                     paid_at=o.get("paid_at", "") or "",
                     pay_source=o.get("source", "") or "",
                     pay_currency=(o.get("pay_currency", "") or "").upper(),
+                    ref_name=o.get("ref_name", "") or "",
                     ref_email=o.get("ref_email", "") or "",
                     ref_username=o.get("ref_username", "") or "",
                     notify_telegram_id=int(o.get("notify_telegram_id") or 0),
