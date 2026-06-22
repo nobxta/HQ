@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import axios from "axios";
 import {
   X, ArrowLeft, ArrowRight, Check, CheckCheck, Search, Copy, Clock,
-  AlertTriangle, Loader2, Tag, ChevronRight, Sparkles, Wallet,
+  AlertTriangle, Loader2, Tag, ChevronRight, Sparkles, Wallet, Lock,
 } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -289,7 +289,6 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
   }, [step]);
 
   const done = status?.status === "completed";
-  const queued = status?.queued;
 
   const copy = (text: string, what: "addr" | "amt" | "tok") => {
     navigator.clipboard.writeText(text);
@@ -602,74 +601,67 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
             <div className="space-y-5 py-2">
               {!done ? (
                 <div className="space-y-4">
-                  {/* Header */}
+                  {/* 1. Confirmed */}
                   <div className="text-center">
                     <div className="relative w-14 h-14 mx-auto mb-3.5">
-                      <span className="absolute inset-0 rounded-full reserve-pulse" style={{ background: "rgba(42,171,238,0.25)" }} />
-                      <span className="relative w-14 h-14 rounded-full flex items-center justify-center" style={{ background: "rgba(42,171,238,0.14)", boxShadow: "0 0 32px rgba(42,171,238,0.4)" }}>
-                        <Sparkles className="w-6 h-6" style={{ color: TG }} />
+                      <span className="absolute inset-0 rounded-full reserve-pulse" style={{ background: "rgba(16,185,129,0.22)" }} />
+                      <span className="relative w-14 h-14 rounded-full flex items-center justify-center bg-emerald-500/[0.14]" style={{ boxShadow: "0 0 28px rgba(16,185,129,0.35)" }}>
+                        <Check className="w-7 h-7 text-emerald-400" />
                       </span>
                     </div>
-                    <h3 className="text-[19px] font-semibold text-white">{queued ? "Your AdBot is reserved" : "Your AdBot is being created"}</h3>
-                    <p className="text-[13px] text-[#8b8b93] mt-1.5 max-w-[300px] mx-auto leading-relaxed">
-                      Payment received successfully.{" "}
-                      {queued
-                        ? "We'll create your AdBot automatically when resources become available."
-                        : <>Setting up <span className="text-white">{status?.plan_name || plan.label}</span> · {status?.duration_days || plan.durationDays} days.</>}
+                    <h3 className="text-[19px] font-semibold text-white">Payment confirmed</h3>
+                    <p className="text-[13px] text-[#8b8b93] mt-1.5 max-w-[320px] mx-auto leading-relaxed">
+                      Your AdBot slot is reserved. We&apos;re preparing your instance and will notify you the moment it&apos;s ready.
                     </p>
                   </div>
 
-                  {/* Login code + open panel (the one real action) */}
-                  {status?.access_token && (
-                    <div className="rounded-xl border border-[#1f1f22] bg-[#101012] p-3.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="text-[10px] text-[#5d5d66] uppercase tracking-wider mb-0.5">Your login code</p>
-                          <code className="text-[16px] font-mono text-white tracking-wide">{status.access_token}</code>
+                  {/* 2. Setup status + progress */}
+                  <div className="rounded-xl border border-[#1f1f22] bg-[#101012] p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-[10px] uppercase tracking-wider text-[#5d5d66]">Setup status</span>
+                      <span className="text-[11px] font-medium px-2 py-0.5 rounded-full inline-flex items-center gap-1.5" style={{ background: "rgba(245,158,11,0.12)", color: "#f59e0b" }}>
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" /> Setup in progress
+                      </span>
+                    </div>
+                    <div className="space-y-2.5">
+                      {[
+                        { label: "Payment received", state: "done" },
+                        { label: "Slot reserved", state: "done" },
+                        { label: "Instance creation", state: "active" },
+                        { label: "Ready for login", state: "todo" },
+                      ].map((p) => (
+                        <div key={p.label} className="flex items-center gap-2.5">
+                          {p.state === "done" ? <CheckCheck className="w-4 h-4 text-emerald-400" />
+                            : p.state === "active" ? <Loader2 className="w-4 h-4 animate-spin" style={{ color: TG }} />
+                            : <span className="w-4 h-4 rounded-full border border-[#1f1f22] inline-block" />}
+                          <span className={`text-[13px] ${p.state === "todo" ? "text-[#5d5d66]" : "text-white"}`}>{p.label}</span>
                         </div>
-                        <button onClick={() => copy(status.access_token, "tok")} className="flex items-center gap-1 px-2.5 py-1.5 rounded text-[11px] font-medium flex-shrink-0" style={{ background: "rgba(42,171,238,0.12)", color: TG }}>
-                          {copied === "tok" ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />} {copied === "tok" ? "Copied" : "Copy"}
-                        </button>
+                      ))}
+                    </div>
+                    {status?.creation_step && (
+                      <div className="pt-2.5 mt-2.5 border-t border-[#1f1f22] flex items-center gap-2">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0" style={{ color: TG }} />
+                        <span className="text-[12px] text-[#8b8b93] truncate">{status.creation_step}</span>
                       </div>
-                      <a href={`/login?token=${encodeURIComponent(status.access_token)}`}
-                        className="mt-3 w-full inline-flex items-center justify-center gap-2 py-2.5 rounded-lg text-[13px] font-medium text-white transition-opacity hover:opacity-90" style={{ background: TG }}>
-                        Open my panel <ArrowRight className="w-4 h-4" />
-                      </a>
-                    </div>
-                  )}
+                    )}
+                    <p className="text-[11px] text-[#5d5d66] mt-3 pt-3 border-t border-[#1f1f22]">
+                      Usually ready within a few minutes — a little longer during busy periods. No action required from you.
+                    </p>
+                  </div>
 
-                  {/* Status (queued) or live steps (building) */}
-                  {queued ? (
-                    <div className="rounded-xl border border-[#1f1f22] bg-[#101012] px-4 py-3">
-                      <p className="text-[10px] text-[#5d5d66] uppercase tracking-wider mb-1">Current status</p>
-                      <p className="text-[13px] text-white">Waiting for available resources</p>
-                      <p className="text-[11px] text-[#5d5d66] mt-0.5">No action required from you.</p>
+                  {/* 3. Login details — locked until ready */}
+                  <div className="rounded-xl border border-[#1f1f22] bg-[#101012] p-4">
+                    <p className="text-[10px] uppercase tracking-wider text-[#5d5d66] mb-1">Login details</p>
+                    <p className="text-[12px] text-[#8b8b93]">Your secret code will appear here once your AdBot is ready.</p>
+                    <div className="mt-3 w-full inline-flex items-center justify-center gap-2 h-12 rounded-xl text-[13px] font-medium text-[#5d5d66] bg-[#16161a] border border-[#1f1f22] cursor-not-allowed select-none">
+                      <Lock className="w-3.5 h-3.5" /> Panel not ready
                     </div>
-                  ) : (
-                    <div className="rounded-xl border border-[#1f1f22] bg-[#101012] p-4 space-y-2.5">
-                      {CREATION_STEPS.map((s, i) => {
-                        const state = i < progressIdx ? "done" : i === progressIdx ? "active" : "todo";
-                        return (
-                          <div key={s} className="flex items-center gap-2.5">
-                            {state === "done" ? <CheckCheck className="w-4 h-4" style={{ color: TG }} />
-                              : state === "active" ? <Loader2 className="w-4 h-4 animate-spin" style={{ color: TG }} />
-                              : <span className="w-4 h-4 rounded-full border border-[#1f1f22] inline-block" />}
-                            <span className={`text-[13px] ${state === "todo" ? "text-[#5d5d66]" : "text-white"}`}>{s}</span>
-                          </div>
-                        );
-                      })}
-                      {status?.creation_step && (
-                        <div className="pt-2 mt-1 border-t border-[#1f1f22] flex items-center gap-2">
-                          <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0" style={{ color: TG }} />
-                          <span className="text-[12px] text-[#8b8b93] truncate">{status.creation_step}</span>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  </div>
 
-                  {/* Notify */}
+                  {/* 4. Notify */}
                   <div className="rounded-xl border border-[#1f1f22] bg-[#101012] p-3.5">
-                    <p className="text-[12px] font-medium text-white">Get notified when it&apos;s ready</p>
+                    <p className="text-[12px] font-medium text-white">Get notified</p>
+                    <p className="text-[11px] text-[#5d5d66] mt-0.5">Receive an email the moment your AdBot is ready.</p>
                     {notifySaved ? (
                       <p className="text-[12px] text-emerald-400 mt-2 flex items-center gap-1.5">
                         <Check className="w-3.5 h-3.5" /> We&apos;ll email {notifyEmail}
@@ -679,7 +671,7 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
                         <div className="flex gap-2 mt-2">
                           <input
                             value={notifyEmail} onChange={e => setNotifyEmail(e.target.value)} type="email"
-                            placeholder="you@email.com"
+                            placeholder="Enter your email"
                             className="flex-1 rounded-lg border border-[#1f1f22] bg-[#0a0a0a] px-3 py-2 text-[13px] text-white placeholder-[#5d5d66] outline-none focus:border-[#2AABEE]/50 transition-colors"
                           />
                           <button onClick={saveContact} disabled={!notifyEmail.trim()}
@@ -687,38 +679,42 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
                             Notify me
                           </button>
                         </div>
-                        <p className="text-[11px] text-[#5d5d66] mt-2">We&apos;ll send your login details as soon as your AdBot is available.</p>
+                        <p className="text-[11px] text-[#5d5d66] mt-2">We&apos;ll only use this email for setup updates.</p>
                       </>
                     )}
                   </div>
 
-                  {/* Footer reassurance */}
-                  <div className="flex items-center justify-center gap-1.5 text-[12px] text-[#8b8b93] pt-0.5">
-                    <Check className="w-3.5 h-3.5 text-emerald-500" /> Payment confirmed — you can safely close this page.
+                  {/* 5. Support */}
+                  <div className="text-center text-[12px] text-[#5d5d66]">
+                    Need help? <a href="https://t.me/hqadz" target="_blank" rel="noopener noreferrer" className="font-medium" style={{ color: TG }}>Telegram support</a>
                   </div>
                 </div>
               ) : (
                 <div className="text-center space-y-4">
-                  <div className="w-14 h-14 rounded-full flex items-center justify-center mx-auto" style={{ background: "rgba(42,171,238,0.12)" }}>
-                    <Check className="w-7 h-7" style={{ color: TG }} />
+                  <div className="relative w-14 h-14 mx-auto">
+                    <span className="absolute inset-0 rounded-full reserve-pulse" style={{ background: "rgba(16,185,129,0.22)" }} />
+                    <span className="relative w-14 h-14 rounded-full flex items-center justify-center bg-emerald-500/[0.14]" style={{ boxShadow: "0 0 28px rgba(16,185,129,0.4)" }}>
+                      <Check className="w-7 h-7 text-emerald-400" />
+                    </span>
                   </div>
                   <div>
                     <h3 className="text-[20px] font-semibold text-white">Your AdBot is ready</h3>
-                    <p className="text-[13px] text-[#8b8b93] mt-1">Use the access token below to log into your dashboard.</p>
+                    <p className="text-[13px] text-[#8b8b93] mt-1">Save your secret code — you&apos;ll use it to log in.</p>
                   </div>
                   {status?.access_token && (
-                    <div className="rounded-lg border border-[#1f1f22] bg-[#101012] p-4">
-                      <p className="text-[10px] text-[#5d5d66] uppercase tracking-wider mb-1.5">Access token</p>
+                    <div className="rounded-xl border border-[#1f1f22] bg-[#101012] p-4 text-left">
+                      <p className="text-[10px] text-[#5d5d66] uppercase tracking-wider mb-1.5">Secret code</p>
                       <div className="flex items-center gap-2">
-                        <code className="flex-1 text-[14px] font-mono text-white break-all">{status.access_token}</code>
-                        <button onClick={() => copy(status.access_token, "tok")} className="flex items-center gap-1 px-2.5 py-1.5 rounded text-[11px] font-medium" style={{ background: "rgba(42,171,238,0.12)", color: TG }}>
-                          {copied === "tok" ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                        <code className="flex-1 text-[16px] font-mono text-white break-all tracking-wide">{status.access_token}</code>
+                        <button onClick={() => copy(status.access_token, "tok")} className="flex items-center gap-1 px-2.5 py-1.5 rounded text-[11px] font-medium flex-shrink-0" style={{ background: "rgba(42,171,238,0.12)", color: TG }}>
+                          {copied === "tok" ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />} {copied === "tok" ? "Copied" : "Copy"}
                         </button>
                       </div>
                     </div>
                   )}
-                  <a href="/user/login" className="w-full inline-flex items-center justify-center gap-2 text-[14px] font-medium text-white py-3 rounded-lg transition-opacity hover:opacity-90" style={{ background: TG }}>
-                    Open dashboard <ArrowRight className="w-4 h-4" />
+                  <a href={status?.access_token ? `/login?token=${encodeURIComponent(status.access_token)}` : "/user/login"}
+                    className="w-full inline-flex items-center justify-center gap-2 text-[13px] font-medium text-white h-12 rounded-xl transition-opacity hover:opacity-90" style={{ background: TG }}>
+                    Open Dashboard <ArrowRight className="w-4 h-4" />
                   </a>
                 </div>
               )}
