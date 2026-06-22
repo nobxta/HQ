@@ -5,7 +5,7 @@ import axios from "axios";
 import {
   X, ArrowLeft, ArrowRight, Check, Search, Copy, Clock,
   AlertTriangle, Loader2, Tag, ChevronRight, Sparkles, Wallet,
-  Timer, KeySquare, Bell, Circle, Info, Send, ShieldCheck, BellRing,
+  Bell, ShieldCheck,
 } from "lucide-react";
 
 const TELEGRAM_SUPPORT_URL = "https://t.me/hqadz_support";
@@ -311,7 +311,7 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
     .sort((a, b) => TOP_COINS.indexOf(a.code) - TOP_COINS.indexOf(b.code));
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 font-body" style={{ background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}>
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 font-sans" style={{ background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}>
       <div className="relative w-full max-w-xl max-h-[92vh] overflow-y-auto rounded-2xl border border-[#1f1f22] bg-[#0a0a0a] shadow-2xl pf-scroll pf-modal-in">
 
         {/* header */}
@@ -603,184 +603,120 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
           {step === "creating" && (
             <div className="space-y-4 py-2">
               {!done ? (
-                <div className="space-y-7">
-                  {/* ── Header: provisioning ring + title + trust row ── */}
-                  <div className="text-center pf-fade-up" style={{ animationDelay: "0ms" }}>
+                <div className="space-y-6 font-sans">
+                  {/* ── Header: provisioning ring + title ── */}
+                  <div className="text-center pf-fade-up pt-2" style={{ animationDelay: "0ms" }}>
                     <div className="flex justify-center mb-6">
                       <div className="provision-ring">
                         <div className="provision-ring-spin" />
-                        <ShieldCheck className="provision-ring-icon w-7 h-7 text-[#3BA8FF]" />
+                        <ShieldCheck className="provision-ring-icon w-6 h-6 text-[#3BA8FF]" strokeWidth={1.75} />
                       </div>
                     </div>
-                    <h2 className="text-[34px] leading-[1.1] font-semibold text-white tracking-[-0.02em]">Preparing Your AdBot Workspace</h2>
-                    <p className="text-[15px] text-[#94A3B8] leading-relaxed max-w-[440px] mx-auto mt-3">
-                      Your slot is secured and setup has started.<br />Most workspaces are ready within 10–60 minutes.
+                    <h2 className="text-[30px] leading-[1.1] font-semibold text-white tracking-[-0.02em]">Preparing Your AdBot</h2>
+                    <p className="text-[14px] text-[#8b94a8] mt-2.5 inline-flex items-center gap-2 justify-center">
+                      Setup in progress <span className="h-1 w-1 rounded-full bg-[#3BA8FF]" /> Usually ready within 10–60 min
                     </p>
-                    <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 mt-5">
-                      {["Payment Confirmed", "Access Reserved", "Setup Started"].map((t) => (
-                        <span key={t} className="inline-flex items-center gap-1.5 text-[12px] font-medium text-[#94A3B8]">
-                          <Check className="w-3.5 h-3.5 text-[#22C55E]" /> {t}
-                        </span>
-                      ))}
-                    </div>
+                  </div>
+
+                  {/* ── Access code (hero) ── */}
+                  <div className="rounded-2xl border border-[#3BA8FF]/25 bg-gradient-to-b from-[#0d1426] to-[#0a0f1c] px-6 py-7 text-center relative overflow-hidden animate-code-glow pf-fade-up" style={{ animationDelay: "70ms" }}>
+                    <div className="absolute inset-0 shine-effect opacity-0" />
+                    <p className="text-[12px] font-semibold uppercase tracking-[0.22em] text-[#3BA8FF] mb-5 relative z-10">Access Code</p>
+                    {status?.access_token ? (
+                      <>
+                        <code className="block font-mono text-[46px] font-bold text-white tracking-[0.1em] leading-none relative z-10 mb-6 break-all">
+                          {status.access_token.toUpperCase()}
+                        </code>
+                        <button onClick={() => copy(status.access_token, "tok")}
+                          className="relative z-10 inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-[13px] font-semibold transition-all active:scale-[0.97]"
+                          style={copied === "tok"
+                            ? { background: "rgba(34,197,94,0.12)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.3)" }
+                            : { background: "rgba(59,168,255,0.12)", color: "#3BA8FF", border: "1px solid rgba(59,168,255,0.3)" }}>
+                          {copied === "tok" ? <><Check className="w-4 h-4" /> Copied</> : <><Copy className="w-4 h-4" /> Copy Code</>}
+                        </button>
+                        <p className="text-[13px] text-[#8b94a8] mt-6 relative z-10 leading-relaxed max-w-[340px] mx-auto">
+                          Use this code to access your AdBot when setup completes.
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-[13px] text-[#8b94a8] py-6 relative z-10">Your access code will appear shortly…</p>
+                    )}
                   </div>
 
                   {/* ── Setup progress ── */}
-                  <div className="rounded-2xl border border-[#1f1f22] bg-[#0B1020] p-6 pf-fade-up" style={{ animationDelay: "80ms" }}>
-                    <div className="flex items-center justify-between mb-5">
-                      <p className="text-[14px] font-semibold text-white">Setup Progress</p>
-                      <span className="text-[12px] font-semibold px-3 py-1 rounded-full inline-flex items-center gap-2 setting-up-badge">
-                        <span className="pulse-dot" /> Provisioning
-                      </span>
-                    </div>
-                    <div className="space-y-1">
-                      {[
-                        { n: "Step 1", label: "Payment Confirmed", state: "done" },
-                        { n: "Step 2", label: "Resources Allocated", state: "done" },
-                        { n: "Step 3", label: "Preparing Workspace", state: "active" },
-                        { n: "Step 4", label: "Unlocking Access", state: "todo" },
-                      ].map((s, idx, arr) => (
-                        <div key={s.label} className="flex items-stretch gap-3.5">
-                          <div className="flex flex-col items-center">
+                  <div className="rounded-2xl border border-[#1c2333] bg-[#0a0f1c] p-6 pf-fade-up" style={{ animationDelay: "140ms" }}>
+                    <div className="flex items-start justify-between">
+                      <div className="space-y-4 flex-1">
+                        {[
+                          { label: "Payment Confirmed", state: "done" },
+                          { label: "Access Reserved", state: "done" },
+                          { label: "Preparing Workspace", state: "active" },
+                          { label: "Access Ready", state: "todo" },
+                        ].map((s) => (
+                          <div key={s.label} className="flex items-center gap-3">
                             {s.state === "done" && (
-                              <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-[#22C55E]/15 border border-[#22C55E]/60">
-                                <Check className="w-3.5 h-3.5 text-[#22C55E]" />
+                              <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-[#22C55E]/12 border border-[#22C55E]/50">
+                                <Check className="w-3.5 h-3.5 text-[#22C55E]" strokeWidth={2.5} />
                               </span>
                             )}
                             {s.state === "active" && (
-                              <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-[#3BA8FF]/15 border border-[#3BA8FF] pulsing-step">
+                              <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-[#3BA8FF]/12 border border-[#3BA8FF] pulsing-step">
                                 <span className="h-2 w-2 rounded-full bg-[#3BA8FF] active-dot" />
                               </span>
                             )}
                             {s.state === "todo" && (
-                              <span className="h-6 w-6 flex-shrink-0 rounded-full border border-[#2a2a30]" />
+                              <span className="h-6 w-6 flex-shrink-0 rounded-full border border-[#2a3346]" />
                             )}
-                            {idx < arr.length - 1 && (
-                              <span className={`w-px flex-1 my-1 ${s.state === "done" ? "bg-[#22C55E]/30" : "bg-[#1f1f22]"}`} />
-                            )}
+                            <span className={`text-[15px] font-medium ${s.state === "todo" ? "text-[#5a6377]" : "text-white"}`}>{s.label}</span>
                           </div>
-                          <div className={`pb-5 ${idx === arr.length - 1 ? "pb-0" : ""}`}>
-                            <p className="text-[11px] uppercase tracking-wider text-[#5d5d66]">{s.n}</p>
-                            <p className={`text-[14px] font-medium mt-0.5 ${s.state === "todo" ? "text-[#5d5d66]" : "text-white"}`}>{s.label}</p>
-                          </div>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
+                      <span className="text-[12px] font-semibold px-3 py-1 rounded-full inline-flex items-center gap-2 setting-up-badge flex-shrink-0">
+                        <span className="pulse-dot" /> Provisioning
+                      </span>
                     </div>
                   </div>
 
                   {/* ── Stat cards ── */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pf-fade-up" style={{ animationDelay: "160ms" }}>
-                    {[
-                      { icon: Clock, title: "Estimated Setup Time", desc: "10–60 min" },
-                      { icon: BellRing, title: "Status Updates", desc: "You'll be notified automatically" },
-                      { icon: ShieldCheck, title: "Access Reserved", desc: "Your login code is already active" },
-                    ].map((c) => (
-                      <div key={c.title} className="rounded-xl border border-[#1f1f22] bg-[#0B1020] p-4">
-                        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#3BA8FF]/12 mb-3">
-                          <c.icon className="w-[18px] h-[18px] text-[#3BA8FF]" />
-                        </span>
-                        <p className="text-[12px] text-[#5d5d66]">{c.title}</p>
-                        <p className="text-[14px] font-semibold text-white mt-1 leading-snug">{c.desc}</p>
+                  <div className="grid grid-cols-2 gap-3 pf-fade-up" style={{ animationDelay: "210ms" }}>
+                    <div className="rounded-2xl border border-[#1c2333] bg-[#0a0f1c] p-5 flex items-center gap-3.5">
+                      <span className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full bg-[#3BA8FF]/12">
+                        <Clock className="w-5 h-5 text-[#3BA8FF]" strokeWidth={1.75} />
+                      </span>
+                      <div>
+                        <p className="text-[12px] text-[#8b94a8]">Estimated</p>
+                        <p className="text-[16px] font-semibold text-white leading-tight mt-0.5">10–60 min</p>
                       </div>
-                    ))}
-                  </div>
-
-                  {/* ── Access code (hero block) ── */}
-                  <div className="rounded-2xl border border-[#3BA8FF]/20 bg-[#0B1020] px-6 py-8 text-center relative overflow-hidden animate-code-glow pf-fade-up" style={{ animationDelay: "240ms" }}>
-                    <div className="absolute inset-0 shine-effect opacity-0" />
-                    <p className="text-[12px] uppercase tracking-[0.18em] text-[#94A3B8] mb-5 relative z-10 inline-flex items-center justify-center gap-2">
-                      <KeySquare className="w-4 h-4" /> Access Code
-                    </p>
-                    {status?.access_token ? (
-                      <>
-                        <code className="block text-[44px] font-mono font-bold text-white tracking-[0.14em] leading-none relative z-10 mb-6">
-                          {status.access_token}
-                        </code>
-                        <button onClick={() => copy(status.access_token, "tok")}
-                          className="relative z-10 inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-[13px] font-semibold text-white transition-all active:scale-[0.98]"
-                          style={{ background: copied === "tok" ? "#22C55E" : "linear-gradient(135deg, #3BA8FF 0%, #2B8FD9 100%)" }}>
-                          {copied === "tok" ? (
-                            <><Check className="w-4 h-4" /> Copied to clipboard</>
-                          ) : (
-                            <><Copy className="w-4 h-4" /> Copy Code</>
-                          )}
-                        </button>
-                        <p className="text-[13px] text-[#94A3B8] mt-6 relative z-10 leading-relaxed max-w-[360px] mx-auto">
-                          This is your permanent AdBot access code. Use it to sign in once setup is complete.
-                        </p>
-                      </>
-                    ) : (
-                      <p className="text-[13px] text-[#94A3B8] py-6 relative z-10">Your access code will appear shortly…</p>
-                    )}
-                  </div>
-
-                  {/* ── What happens next ── */}
-                  <div className="rounded-2xl border border-[#1f1f22] bg-[#0B1020] p-6 pf-fade-up" style={{ animationDelay: "320ms" }}>
-                    <p className="text-[16px] font-semibold text-white">What happens next?</p>
-                    <ul className="mt-4 space-y-3">
-                      {[
-                        "Infrastructure is assigned",
-                        "Your workspace is configured",
-                        "Access is unlocked automatically",
-                      ].map((t) => (
-                        <li key={t} className="flex items-center gap-3 text-[14px] text-[#c9c9cf]">
-                          <span className="h-1.5 w-1.5 rounded-full bg-[#3BA8FF] flex-shrink-0" /> {t}
-                        </li>
-                      ))}
-                    </ul>
-                    <p className="text-[13px] text-[#5d5d66] mt-4 pt-4 border-t border-[#1f1f22]">No action is required from you.</p>
-                  </div>
-
-                  {/* ── Automatic notifications ── */}
-                  <div className="rounded-2xl border border-[#1f1f22] bg-[#0B1020] p-6 pf-fade-up" style={{ animationDelay: "400ms" }}>
-                    <p className="text-[16px] font-semibold text-white">Automatic Notifications</p>
-                    <p className="text-[13px] text-[#94A3B8] mt-1 leading-relaxed">
-                      We&apos;ll notify you here the moment your AdBot becomes available.
-                    </p>
-                    {notifySaved ? (
-                      <div className="mt-4 inline-flex items-center gap-2 text-[13px] font-semibold text-[#22C55E]">
-                        <Check className="w-4 h-4" /> You&apos;ll be notified at {notifyEmail}
+                    </div>
+                    <div className="rounded-2xl border border-[#1c2333] bg-[#0a0f1c] p-5 flex items-center gap-3.5">
+                      <span className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full bg-[#3BA8FF]/12">
+                        <Bell className="w-5 h-5 text-[#3BA8FF]" strokeWidth={1.75} />
+                      </span>
+                      <div>
+                        <p className="text-[12px] text-[#8b94a8]">You&apos;ll be notified</p>
+                        <p className="text-[16px] font-semibold text-white leading-tight mt-0.5">automatically</p>
                       </div>
-                    ) : (
-                      <div className="flex gap-2 mt-4">
-                        <input
-                          value={notifyEmail} onChange={e => setNotifyEmail(e.target.value)} type="email"
-                          placeholder="Add an email for updates (optional)"
-                          className="flex-1 rounded-lg border border-[#1f1f22] bg-[#050816] px-3.5 py-2.5 text-[13px] text-white placeholder-[#5d5d66] outline-none focus:border-[#3BA8FF]/50 transition-colors"
-                        />
-                        <button onClick={saveContact} disabled={!notifyEmail.trim()}
-                          className="px-4 rounded-lg text-[13px] font-semibold text-white transition-all active:scale-[0.98] disabled:opacity-50" style={{ background: "#3BA8FF" }}>
-                          Notify me
-                        </button>
-                      </div>
-                    )}
+                    </div>
                   </div>
 
                   {/* ── Primary CTA ── */}
-                  {(() => {
-                    const isReady = status?.access_token && status?.status === "completed";
-                    const href = status?.access_token ? `/login?token=${encodeURIComponent(status.access_token)}` : "/login";
-                    return (
-                      <a href={href}
-                        className="group w-full inline-flex items-center justify-center gap-2 text-[15px] font-semibold text-white h-12 rounded-xl transition-all active:scale-[0.98] hover:shadow-[0_0_24px_rgba(59,168,255,0.35)]"
-                        style={{ background: "linear-gradient(135deg, #3BA8FF 0%, #2B8FD9 100%)" }}>
-                        {isReady ? (
-                          <>Go to Dashboard <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" /></>
-                        ) : (
-                          <>View Setup Progress <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" /></>
-                        )}
-                      </a>
-                    );
-                  })()}
+                  <a
+                    href={status?.access_token ? `/login?token=${encodeURIComponent(status.access_token)}` : "/login"}
+                    className="group w-full inline-flex items-center justify-center gap-2.5 text-[15px] font-semibold text-white h-14 rounded-2xl transition-all active:scale-[0.99] hover:shadow-[0_8px_30px_rgba(59,168,255,0.35)] pf-fade-up"
+                    style={{ background: "linear-gradient(135deg, #3BA8FF 0%, #2B7FE0 100%)", animationDelay: "280ms" }}>
+                    <Sparkles className="w-4 h-4" /> Open Dashboard
+                    <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
+                  </a>
 
                   {/* ── Support ── */}
                   <a
                     href={TELEGRAM_SUPPORT_URL}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="w-full inline-flex items-center justify-center gap-2 text-[13px] font-medium text-[#94A3B8] py-3 rounded-xl border border-[#1f1f22] transition-all hover:text-white hover:border-[#3BA8FF]/40 hover:bg-[#3BA8FF]/[0.06]"
+                    className="block text-center text-[12.5px] font-medium text-[#5a6377] transition-colors hover:text-[#3BA8FF] pf-fade-up"
+                    style={{ animationDelay: "320ms" }}
                   >
-                    <Send className="w-4 h-4" /> Contact support on Telegram
+                    Need help? Contact support on Telegram
                   </a>
                 </div>
               ) : (
