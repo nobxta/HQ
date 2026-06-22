@@ -69,6 +69,19 @@ class UnifiedLoginResponse(BaseModel):
     provisioning: bool = False     # web order paid, bot still being created
     queued: bool = False           # paid but waiting for stock (no token / sessions)
     creation_step: str = ""        # live build step to show on the "work in progress" screen
+    # Order / plan context for the provisioning page (only set while provisioning)
+    order_id: str = ""
+    plan_name: str = ""
+    plan_mode: str = ""
+    amount_usd: float = 0.0
+    duration_days: int = 0
+    created_at: str = ""
+    paid_at: str = ""
+    pay_source: str = ""
+    pay_currency: str = ""
+    ref_email: str = ""
+    ref_username: str = ""
+    notify_telegram_id: int = 0
 
 
 class PortalUpdateMessage(BaseModel):
@@ -263,6 +276,14 @@ async def unified_login(body: UnifiedLoginRequest, request: Request):
                 bot_name = o.get("bot_name") or "AdBot"
                 subject = f"user:0:{bot_name}"
                 is_queued = bool(o.get("queued")) or o.get("status") == "paid"
+                try:
+                    _amount = float(o.get("amount_usd") or 0)
+                except (TypeError, ValueError):
+                    _amount = 0.0
+                try:
+                    _dur = int(o.get("duration_days") or 0)
+                except (TypeError, ValueError):
+                    _dur = 0
                 return UnifiedLoginResponse(
                     role="user",
                     access_token=create_portal_access_token(subject),
@@ -273,6 +294,18 @@ async def unified_login(body: UnifiedLoginRequest, request: Request):
                     provisioning=True,
                     queued=is_queued,
                     creation_step=o.get("creation_step", "") or "",
+                    order_id=o.get("order_id", "") or "",
+                    plan_name=o.get("plan_name", "") or "",
+                    plan_mode=o.get("plan_mode", "") or "",
+                    amount_usd=_amount,
+                    duration_days=_dur,
+                    created_at=o.get("created_at", "") or "",
+                    paid_at=o.get("paid_at", "") or "",
+                    pay_source=o.get("source", "") or "",
+                    pay_currency=(o.get("pay_currency", "") or "").upper(),
+                    ref_email=o.get("ref_email", "") or "",
+                    ref_username=o.get("ref_username", "") or "",
+                    notify_telegram_id=int(o.get("notify_telegram_id") or 0),
                 )
     except Exception:
         pass
@@ -2031,6 +2064,7 @@ class CouponValidateRequest(BaseModel):
 class PurchaseContactRequest(BaseModel):
     email: Optional[str] = None
     telegram_id: Optional[int] = None
+    telegram_username: Optional[str] = None
 
 
 class BotTokenAddRequest(BaseModel):
@@ -2281,6 +2315,8 @@ async def portal_purchase_contact(order_id: str, body: PurchaseContactRequest):
         updates["ref_email"] = body.email.strip()
     if body.telegram_id:
         updates["notify_telegram_id"] = int(body.telegram_id)
+    if body.telegram_username and body.telegram_username.strip():
+        updates["ref_username"] = body.telegram_username.strip().lstrip("@")
     if updates:
         update_order(order_id, updates)
     return {"ok": True, "saved": list(updates.keys())}
