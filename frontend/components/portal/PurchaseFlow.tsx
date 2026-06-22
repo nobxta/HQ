@@ -649,12 +649,24 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
                     </p>
                   </div>
 
-                  {/* 3. Login details — locked until ready */}
+                  {/* 3. Secret code (proof) — visible now; login stays locked until ready */}
                   <div className="rounded-xl border border-[#1f1f22] bg-[#101012] p-4">
-                    <p className="text-[10px] uppercase tracking-wider text-[#5d5d66] mb-1">Login details</p>
-                    <p className="text-[12px] text-[#8b8b93]">Your secret code will appear here once your AdBot is ready.</p>
-                    <div className="mt-3 w-full inline-flex items-center justify-center gap-2 h-12 rounded-xl text-[13px] font-medium text-[#5d5d66] bg-[#16161a] border border-[#1f1f22] cursor-not-allowed select-none">
-                      <Lock className="w-3.5 h-3.5" /> Panel not ready
+                    <p className="text-[10px] uppercase tracking-wider text-[#5d5d66] mb-1.5">Your secret code</p>
+                    {status?.access_token ? (
+                      <>
+                        <div className="flex items-center gap-2">
+                          <code className="flex-1 text-[16px] font-mono text-white break-all tracking-wide">{status.access_token}</code>
+                          <button onClick={() => copy(status.access_token, "tok")} className="flex items-center gap-1 px-2.5 py-1.5 rounded text-[11px] font-medium flex-shrink-0" style={{ background: "rgba(42,171,238,0.12)", color: TG }}>
+                            {copied === "tok" ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />} {copied === "tok" ? "Copied" : "Copy"}
+                          </button>
+                        </div>
+                        <p className="text-[11px] text-[#5d5d66] mt-2">Save this — you&apos;ll use it to log in once your AdBot is ready.</p>
+                      </>
+                    ) : (
+                      <p className="text-[12px] text-[#8b8b93]">Your secret code will appear here shortly.</p>
+                    )}
+                    <div className="mt-3 w-full inline-flex items-center justify-center gap-2 h-12 rounded-xl text-[13px] font-medium text-[#5d5d66] bg-[#16161a] border border-[#1f1f22] cursor-not-allowed select-none" title="You can log in once setup completes">
+                      <Lock className="w-3.5 h-3.5" /> Login available when ready
                     </div>
                   </div>
 
