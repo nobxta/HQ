@@ -5,7 +5,7 @@ import axios from "axios";
 import {
   X, ArrowLeft, ArrowRight, Check, Search, Copy, Clock,
   AlertTriangle, Loader2, Tag, ChevronRight, Sparkles, Wallet,
-  Timer, KeySquare, Bell, Circle, Info, Send,
+  Timer, KeySquare, Bell, Circle, Info, Send, ShieldCheck, BellRing,
 } from "lucide-react";
 
 const TELEGRAM_SUPPORT_URL = "https://t.me/hqadz_support";
@@ -312,7 +312,7 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 font-body" style={{ background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}>
-      <div className="relative w-full max-w-xl max-h-[92vh] overflow-y-auto rounded-2xl border border-[#1f1f22] bg-[#0a0a0a] shadow-2xl pf-scroll">
+      <div className="relative w-full max-w-xl max-h-[92vh] overflow-y-auto rounded-2xl border border-[#1f1f22] bg-[#0a0a0a] shadow-2xl pf-scroll pf-modal-in">
 
         {/* header */}
         <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-3.5 border-b border-[#1f1f22] bg-[#0a0a0a]/95 backdrop-blur">
@@ -603,143 +603,182 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
           {step === "creating" && (
             <div className="space-y-4 py-2">
               {!done ? (
-                <div className="space-y-5">
-                  {/* Spinner + heading */}
-                  <div className="text-center space-y-4 pt-2">
-                    <div className="flex justify-center">
-                      <div className="w-[68px] h-[68px] rounded-full border-2 border-[#3BA8FF]/25 border-t-[#3BA8FF] animate-spin" />
+                <div className="space-y-7">
+                  {/* ── Header: provisioning ring + title + trust row ── */}
+                  <div className="text-center pf-fade-up" style={{ animationDelay: "0ms" }}>
+                    <div className="flex justify-center mb-6">
+                      <div className="provision-ring">
+                        <div className="provision-ring-spin" />
+                        <ShieldCheck className="provision-ring-icon w-7 h-7 text-[#3BA8FF]" />
+                      </div>
                     </div>
-                    <h2 className="text-[26px] font-semibold text-white">You&apos;re in queue!</h2>
-                    <p className="text-[14px] text-[#94A3B8] leading-relaxed max-w-[420px] mx-auto">
-                      We&apos;re currently preparing your AdBot. Due to high demand, your setup is taking a little longer than usual.
+                    <h2 className="text-[34px] leading-[1.1] font-semibold text-white tracking-[-0.02em]">Preparing Your AdBot Workspace</h2>
+                    <p className="text-[15px] text-[#94A3B8] leading-relaxed max-w-[440px] mx-auto mt-3">
+                      Your slot is secured and setup has started.<br />Most workspaces are ready within 10–60 minutes.
                     </p>
-                  </div>
-
-                  {/* Wait time + notification cards */}
-                  <div className="grid grid-cols-2 gap-3 rounded-xl border border-[#1f1f22] bg-[#0B1020] p-4">
-                    <div className="flex items-center gap-3 pr-3 border-r border-[#1f1f22]">
-                      <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-[#3BA8FF]/12">
-                        <Clock className="w-5 h-5 text-[#3BA8FF]" />
-                      </span>
-                      <div>
-                        <p className="text-[12px] text-[#94A3B8]">Estimated wait time</p>
-                        <p className="text-[16px] font-bold text-white">10 min – hours</p>
-                      </div>
-                    </div>
-                    <div className="flex items-start gap-3">
-                      <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-[#3BA8FF]/12">
-                        <Bell className="w-5 h-5 text-[#3BA8FF]" />
-                      </span>
-                      <div>
-                        <p className="text-[12px] font-semibold text-white">You&apos;ll be notified here</p>
-                        <p className="text-[11px] text-[#94A3B8] leading-snug mt-0.5">As soon as your AdBot is ready to go.</p>
-                      </div>
+                    <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 mt-5">
+                      {["Payment Confirmed", "Access Reserved", "Setup Started"].map((t) => (
+                        <span key={t} className="inline-flex items-center gap-1.5 text-[12px] font-medium text-[#94A3B8]">
+                          <Check className="w-3.5 h-3.5 text-[#22C55E]" /> {t}
+                        </span>
+                      ))}
                     </div>
                   </div>
 
-                  {/* Preparation status */}
-                  <div className="rounded-xl border border-[#1f1f22] bg-[#0B1020] p-5">
-                    <p className="text-[11px] uppercase tracking-wider text-[#5d5d66] mb-4">Preparation Status</p>
-                    <div className="space-y-3.5">
+                  {/* ── Setup progress ── */}
+                  <div className="rounded-2xl border border-[#1f1f22] bg-[#0B1020] p-6 pf-fade-up" style={{ animationDelay: "80ms" }}>
+                    <div className="flex items-center justify-between mb-5">
+                      <p className="text-[14px] font-semibold text-white">Setup Progress</p>
+                      <span className="text-[12px] font-semibold px-3 py-1 rounded-full inline-flex items-center gap-2 setting-up-badge">
+                        <span className="pulse-dot" /> Provisioning
+                      </span>
+                    </div>
+                    <div className="space-y-1">
                       {[
-                        { label: "Your request is confirmed", state: "done", badge: "In progress" },
-                        { label: "Preparing AdBot resources", state: "active" },
-                        { label: "Configuring your workspace", state: "todo" },
-                        { label: "Finalizing & unlocking access", state: "todo" },
-                      ].map((s) => (
-                        <div key={s.label} className="flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-3">
+                        { n: "Step 1", label: "Payment Confirmed", state: "done" },
+                        { n: "Step 2", label: "Resources Allocated", state: "done" },
+                        { n: "Step 3", label: "Preparing Workspace", state: "active" },
+                        { n: "Step 4", label: "Unlocking Access", state: "todo" },
+                      ].map((s, idx, arr) => (
+                        <div key={s.label} className="flex items-stretch gap-3.5">
+                          <div className="flex flex-col items-center">
                             {s.state === "done" && (
-                              <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border border-[#3BA8FF]/40 bg-[#3BA8FF]/10">
-                                <Clock className="w-3 h-3 text-[#3BA8FF]" />
+                              <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-[#22C55E]/15 border border-[#22C55E]/60">
+                                <Check className="w-3.5 h-3.5 text-[#22C55E]" />
                               </span>
                             )}
                             {s.state === "active" && (
-                              <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full">
-                                <span className="pulse-dot" />
+                              <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-[#3BA8FF]/15 border border-[#3BA8FF] pulsing-step">
+                                <span className="h-2 w-2 rounded-full bg-[#3BA8FF] active-dot" />
                               </span>
                             )}
                             {s.state === "todo" && (
-                              <span className="h-5 w-5 flex-shrink-0 rounded-full border border-[#3d3d44]" />
+                              <span className="h-6 w-6 flex-shrink-0 rounded-full border border-[#2a2a30]" />
                             )}
-                            <span className={`text-[14px] font-medium ${s.state === "todo" ? "text-[#5d5d66]" : "text-white"}`}>{s.label}</span>
+                            {idx < arr.length - 1 && (
+                              <span className={`w-px flex-1 my-1 ${s.state === "done" ? "bg-[#22C55E]/30" : "bg-[#1f1f22]"}`} />
+                            )}
                           </div>
-                          {s.badge && (
-                            <span className="text-[11px] font-semibold text-[#3BA8FF] bg-[#3BA8FF]/10 px-2.5 py-0.5 rounded-full flex-shrink-0">{s.badge}</span>
-                          )}
+                          <div className={`pb-5 ${idx === arr.length - 1 ? "pb-0" : ""}`}>
+                            <p className="text-[11px] uppercase tracking-wider text-[#5d5d66]">{s.n}</p>
+                            <p className={`text-[14px] font-medium mt-0.5 ${s.state === "todo" ? "text-[#5d5d66]" : "text-white"}`}>{s.label}</p>
+                          </div>
                         </div>
                       ))}
                     </div>
                   </div>
 
-                  {/* What's happening? */}
-                  <div className="rounded-xl border border-[#1f1f22] bg-[#0B1020] p-4 flex gap-3">
-                    <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-[#3BA8FF]/12">
-                      <Info className="w-5 h-5 text-[#3BA8FF]" />
-                    </span>
-                    <div>
-                      <p className="text-[14px] font-semibold text-white">What&apos;s happening?</p>
-                      <p className="text-[13px] text-[#94A3B8] mt-1 leading-relaxed">
-                        Our team is setting up powerful resources to make sure your AdBot performs at its best. Hang tight — it&apos;ll be worth the wait!
-                      </p>
-                    </div>
+                  {/* ── Stat cards ── */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pf-fade-up" style={{ animationDelay: "160ms" }}>
+                    {[
+                      { icon: Clock, title: "Estimated Setup Time", desc: "10–60 min" },
+                      { icon: BellRing, title: "Status Updates", desc: "You'll be notified automatically" },
+                      { icon: ShieldCheck, title: "Access Reserved", desc: "Your login code is already active" },
+                    ].map((c) => (
+                      <div key={c.title} className="rounded-xl border border-[#1f1f22] bg-[#0B1020] p-4">
+                        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#3BA8FF]/12 mb-3">
+                          <c.icon className="w-[18px] h-[18px] text-[#3BA8FF]" />
+                        </span>
+                        <p className="text-[12px] text-[#5d5d66]">{c.title}</p>
+                        <p className="text-[14px] font-semibold text-white mt-1 leading-snug">{c.desc}</p>
+                      </div>
+                    ))}
                   </div>
 
-                  {/* Access code */}
-                  <div className="rounded-xl border border-[#1f1f22] bg-[#0B1020] p-6 text-center relative overflow-hidden animate-code-glow">
+                  {/* ── Access code (hero block) ── */}
+                  <div className="rounded-2xl border border-[#3BA8FF]/20 bg-[#0B1020] px-6 py-8 text-center relative overflow-hidden animate-code-glow pf-fade-up" style={{ animationDelay: "240ms" }}>
                     <div className="absolute inset-0 shine-effect opacity-0" />
-                    <p className="text-[11px] uppercase tracking-wider text-[#94A3B8] mb-3 relative z-10 inline-flex items-center justify-center gap-1.5">
-                      <KeySquare className="w-3.5 h-3.5" /> Access Code
+                    <p className="text-[12px] uppercase tracking-[0.18em] text-[#94A3B8] mb-5 relative z-10 inline-flex items-center justify-center gap-2">
+                      <KeySquare className="w-4 h-4" /> Access Code
                     </p>
                     {status?.access_token ? (
                       <>
-                        <code className="block text-[34px] font-mono font-bold text-white tracking-[0.12em] leading-tight relative z-10 mb-3">
+                        <code className="block text-[44px] font-mono font-bold text-white tracking-[0.14em] leading-none relative z-10 mb-6">
                           {status.access_token}
                         </code>
-                        <button onClick={() => copy(status.access_token, "tok")} className="relative z-10 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-[12px] font-semibold text-[#3BA8FF] bg-[#3BA8FF]/10 border border-[#3BA8FF]/25 transition-all hover:bg-[#3BA8FF]/20">
+                        <button onClick={() => copy(status.access_token, "tok")}
+                          className="relative z-10 inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-[13px] font-semibold text-white transition-all active:scale-[0.98]"
+                          style={{ background: copied === "tok" ? "#22C55E" : "linear-gradient(135deg, #3BA8FF 0%, #2B8FD9 100%)" }}>
                           {copied === "tok" ? (
-                            <><Check className="w-4 h-4" /> Copied</>
+                            <><Check className="w-4 h-4" /> Copied to clipboard</>
                           ) : (
-                            <><Copy className="w-4 h-4" /> Copy code</>
+                            <><Copy className="w-4 h-4" /> Copy Code</>
                           )}
                         </button>
-                        <p className="text-[12px] text-[#94A3B8] mt-4 relative z-10 leading-relaxed">
-                          Use this code to access your AdBot dashboard once everything is ready.
+                        <p className="text-[13px] text-[#94A3B8] mt-6 relative z-10 leading-relaxed max-w-[360px] mx-auto">
+                          This is your permanent AdBot access code. Use it to sign in once setup is complete.
                         </p>
                       </>
                     ) : (
-                      <p className="text-[13px] text-[#94A3B8] py-4 relative z-10">Your access code will appear shortly…</p>
+                      <p className="text-[13px] text-[#94A3B8] py-6 relative z-10">Your access code will appear shortly…</p>
                     )}
                   </div>
 
-                  {/* Notify me when ready */}
-                  {notifySaved ? (
-                    <div className="w-full inline-flex items-center justify-center gap-2 text-[14px] font-semibold text-[#22C55E] py-3.5 rounded-lg bg-[#22C55E]/10 border border-[#22C55E]/25">
-                      <Check className="w-4 h-4" /> We&apos;ll notify {notifyEmail}
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      <div className="flex gap-2">
+                  {/* ── What happens next ── */}
+                  <div className="rounded-2xl border border-[#1f1f22] bg-[#0B1020] p-6 pf-fade-up" style={{ animationDelay: "320ms" }}>
+                    <p className="text-[16px] font-semibold text-white">What happens next?</p>
+                    <ul className="mt-4 space-y-3">
+                      {[
+                        "Infrastructure is assigned",
+                        "Your workspace is configured",
+                        "Access is unlocked automatically",
+                      ].map((t) => (
+                        <li key={t} className="flex items-center gap-3 text-[14px] text-[#c9c9cf]">
+                          <span className="h-1.5 w-1.5 rounded-full bg-[#3BA8FF] flex-shrink-0" /> {t}
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="text-[13px] text-[#5d5d66] mt-4 pt-4 border-t border-[#1f1f22]">No action is required from you.</p>
+                  </div>
+
+                  {/* ── Automatic notifications ── */}
+                  <div className="rounded-2xl border border-[#1f1f22] bg-[#0B1020] p-6 pf-fade-up" style={{ animationDelay: "400ms" }}>
+                    <p className="text-[16px] font-semibold text-white">Automatic Notifications</p>
+                    <p className="text-[13px] text-[#94A3B8] mt-1 leading-relaxed">
+                      We&apos;ll notify you here the moment your AdBot becomes available.
+                    </p>
+                    {notifySaved ? (
+                      <div className="mt-4 inline-flex items-center gap-2 text-[13px] font-semibold text-[#22C55E]">
+                        <Check className="w-4 h-4" /> You&apos;ll be notified at {notifyEmail}
+                      </div>
+                    ) : (
+                      <div className="flex gap-2 mt-4">
                         <input
                           value={notifyEmail} onChange={e => setNotifyEmail(e.target.value)} type="email"
-                          placeholder="Your email address"
-                          className="flex-1 rounded-lg border border-[#1f1f22] bg-[#050816] px-3.5 py-3 text-[13px] text-white placeholder-[#5d5d66] outline-none focus:border-[#3BA8FF]/50 transition-colors"
+                          placeholder="Add an email for updates (optional)"
+                          className="flex-1 rounded-lg border border-[#1f1f22] bg-[#050816] px-3.5 py-2.5 text-[13px] text-white placeholder-[#5d5d66] outline-none focus:border-[#3BA8FF]/50 transition-colors"
                         />
+                        <button onClick={saveContact} disabled={!notifyEmail.trim()}
+                          className="px-4 rounded-lg text-[13px] font-semibold text-white transition-all active:scale-[0.98] disabled:opacity-50" style={{ background: "#3BA8FF" }}>
+                          Notify me
+                        </button>
                       </div>
-                      <button onClick={saveContact} disabled={!notifyEmail.trim()}
-                        className="w-full inline-flex items-center justify-center gap-2 text-[15px] font-semibold text-white py-3.5 rounded-lg transition-all hover:translate-y-[-2px] disabled:opacity-50 disabled:hover:translate-y-0"
-                        style={{ background: "#2AABEE" }}>
-                        Notify me when ready <Bell className="w-4 h-4" />
-                      </button>
-                    </div>
-                  )}
+                    )}
+                  </div>
 
-                  {/* Contact support on Telegram */}
+                  {/* ── Primary CTA ── */}
+                  {(() => {
+                    const isReady = status?.access_token && status?.status === "completed";
+                    const href = status?.access_token ? `/login?token=${encodeURIComponent(status.access_token)}` : "/login";
+                    return (
+                      <a href={href}
+                        className="group w-full inline-flex items-center justify-center gap-2 text-[15px] font-semibold text-white h-12 rounded-xl transition-all active:scale-[0.98] hover:shadow-[0_0_24px_rgba(59,168,255,0.35)]"
+                        style={{ background: "linear-gradient(135deg, #3BA8FF 0%, #2B8FD9 100%)" }}>
+                        {isReady ? (
+                          <>Go to Dashboard <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" /></>
+                        ) : (
+                          <>View Setup Progress <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" /></>
+                        )}
+                      </a>
+                    );
+                  })()}
+
+                  {/* ── Support ── */}
                   <a
                     href={TELEGRAM_SUPPORT_URL}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="w-full inline-flex items-center justify-center gap-2 text-[13px] font-medium text-[#94A3B8] py-3 rounded-lg border border-[#1f1f22] transition-all hover:text-white hover:border-[#3BA8FF]/40 hover:bg-[#3BA8FF]/[0.06]"
+                    className="w-full inline-flex items-center justify-center gap-2 text-[13px] font-medium text-[#94A3B8] py-3 rounded-xl border border-[#1f1f22] transition-all hover:text-white hover:border-[#3BA8FF]/40 hover:bg-[#3BA8FF]/[0.06]"
                   >
                     <Send className="w-4 h-4" /> Contact support on Telegram
                   </a>
@@ -822,8 +861,31 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
 
         @keyframes breathing { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.05); opacity: 0.8; } }
 
-        @keyframes code-glow { 0%, 100% { box-shadow: 0 0 12px rgba(59, 168, 255, 0.15); } 50% { box-shadow: 0 0 20px rgba(59, 168, 255, 0.25); } }
+        @keyframes code-glow { 0%, 100% { box-shadow: 0 0 14px rgba(59, 168, 255, 0.12); } 50% { box-shadow: 0 0 26px rgba(59, 168, 255, 0.22); } }
         .animate-code-glow { animation: code-glow 3s infinite ease-in-out; }
+
+        /* Provisioning ring: 6s rotation + 2s pulse halo, subtle blue glow */
+        .provision-ring { position: relative; width: 72px; height: 72px; border-radius: 9999px;
+          display: flex; align-items: center; justify-content: center;
+          background: radial-gradient(circle at center, rgba(59,168,255,0.10), transparent 70%);
+          animation: ring-halo 2s ease-in-out infinite; }
+        .provision-ring-spin { position: absolute; inset: 0; border-radius: 9999px;
+          border: 2px solid rgba(59,168,255,0.15); border-top-color: #3BA8FF; border-right-color: rgba(59,168,255,0.55);
+          animation: ring-spin 6s linear infinite; }
+        .provision-ring-icon { position: relative; z-index: 1; }
+        @keyframes ring-spin { to { transform: rotate(360deg); } }
+        @keyframes ring-halo { 0%, 100% { box-shadow: 0 0 0 0 rgba(59,168,255,0.0); } 50% { box-shadow: 0 0 24px 2px rgba(59,168,255,0.22); } }
+
+        /* Active step dot */
+        @keyframes active-dot-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(0.8); } }
+        .active-dot { animation: active-dot-pulse 1.6s ease-in-out infinite; }
+
+        /* Modal content fade/stagger */
+        @keyframes pf-fade-up { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .pf-fade-up { animation: pf-fade-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+        @keyframes pf-modal-in { from { opacity: 0; transform: scale(0.97) translateY(6px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+        .pf-modal-in { animation: pf-modal-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) both; }
 
         .letter-spacing-wide { letter-spacing: 0.08em; }
       `}</style>
