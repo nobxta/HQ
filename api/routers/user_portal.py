@@ -71,9 +71,11 @@ class UnifiedLoginResponse(BaseModel):
     creation_step: str = ""        # live build step to show on the "work in progress" screen
     # Order / plan context for the provisioning page (only set while provisioning)
     order_id: str = ""
+    plan_id: str = ""
     plan_name: str = ""
     plan_mode: str = ""
     accounts: int = 0              # number of accounts (sessions) included in the plan
+    free_replacements: int = 0    # free account replacements (-1 = unlimited)
     billing: str = ""             # "week" / "month"
     amount_usd: float = 0.0
     duration_days: int = 0
@@ -287,12 +289,14 @@ async def unified_login(body: UnifiedLoginRequest, request: Request):
                     _dur = int(o.get("duration_days") or 0)
                 except (TypeError, ValueError):
                     _dur = 0
-                # Account count comes from the plan definition (sessions), not the order.
+                # Account count + replacements come from the plan definition, not the order.
                 _accounts = 0
+                _free_repl = 0
                 try:
                     _plan, _ = _find_plan(o.get("plan_mode", ""), o.get("plan_id", ""))
                     if _plan:
                         _accounts = int(_plan.get("sessions") or 0)
+                        _free_repl = int(_plan.get("free_replacements") or 0)
                 except Exception:
                     _accounts = 0
                 _billing = "month" if _dur >= 30 else ("week" if _dur > 0 else "")
@@ -307,9 +311,11 @@ async def unified_login(body: UnifiedLoginRequest, request: Request):
                     queued=is_queued,
                     creation_step=o.get("creation_step", "") or "",
                     order_id=o.get("order_id", "") or "",
+                    plan_id=o.get("plan_id", "") or "",
                     plan_name=o.get("plan_name", "") or "",
                     plan_mode=o.get("plan_mode", "") or "",
                     accounts=_accounts,
+                    free_replacements=_free_repl,
                     billing=_billing,
                     amount_usd=_amount,
                     duration_days=_dur,

@@ -6,7 +6,7 @@ import portalApi, { setPortalSession } from "@/lib/portal-api";
 import {
   Send, Bell, Check, Clock, Server, Lock, RefreshCw, Loader2,
   Users, Mail, AtSign, Hash, ShieldCheck, MessageCircle, ChevronRight,
-  CalendarClock, Headphones,
+  CalendarClock, Headphones, Repeat, Timer, RotateCcw, X as XIcon,
 } from "lucide-react";
 
 const TG = "#2AABEE";
@@ -15,7 +15,8 @@ const TELEGRAM_CHANNEL_URL = "https://t.me/hqadz";
 
 interface ProvData {
   provisioning?: boolean; queued?: boolean; creation_step?: string; bot_name?: string;
-  order_id?: string; plan_name?: string; plan_mode?: string; accounts?: number; billing?: string;
+  order_id?: string; plan_id?: string; plan_name?: string; plan_mode?: string; accounts?: number;
+  free_replacements?: number; billing?: string;
   amount_usd?: number; duration_days?: number; created_at?: string; paid_at?: string; pay_source?: string;
   pay_currency?: string; ref_name?: string; ref_email?: string; ref_username?: string; notify_telegram_id?: number;
 }
@@ -142,6 +143,16 @@ export default function ProvisioningPage() {
   const period = billing === "month" ? "month" : "week";
   const userName = (data.ref_name || "").trim();
   const initial = (userName || "U").charAt(0).toUpperCase();
+
+  // Derived plan features — each account posts once per hour, so total posts/hour
+  // equals the account count and the gap between posts is 3600s ÷ accounts.
+  const accounts = data.accounts || 0;
+  const postsPerHour = accounts;
+  const gapMin = accounts > 0 ? Math.round(60 / accounts) : 0;
+  const repl = data.free_replacements;
+  const replLabel = repl === -1 ? "Unlimited" : (typeof repl === "number" && repl > 0 ? `${repl}` : "—");
+  const planId = (data.plan_id || data.plan_name || "").toLowerCase();
+  const hasPriority = /gold|diamond/.test(planId) || (data.plan_mode || "").toLowerCase() === "enterprise";
   const steps = [
     { label: "Payment Confirmed", icon: Check, state: "done" },
     { label: "Resources Reserved", icon: Server, state: "done" },
@@ -204,11 +215,13 @@ export default function ProvisioningPage() {
                 ) : null}
 
                 <div className="mt-5 rounded-md bg-[#16161a] border border-[#1f1f22] divide-y divide-[#1f1f22]">
-                  <PlanRow icon={Users} label="Accounts" value={loaded ? (data.accounts ? `${data.accounts} Account${data.accounts === 1 ? "" : "s"}` : "—") : null} />
+                  <PlanRow icon={Users} label="Accounts" value={loaded ? (accounts ? `${accounts} Account${accounts === 1 ? "" : "s"}` : "—") : null} />
+                  <PlanRow icon={Repeat} label="Posting Rate" value={loaded ? (postsPerHour ? `${postsPerHour} / hour` : "—") : null} />
+                  <PlanRow icon={Timer} label="Post Interval" value={loaded ? (gapMin ? `Every ${gapMin} min` : "—") : null} />
+                  <PlanRow icon={RotateCcw} label="Free Replacements" value={loaded ? replLabel : null} />
+                  <PlanRow icon={Headphones} label="Priority Support" value={loaded ? (hasPriority ? "Included" : "Not included") : null} tone={loaded ? (hasPriority ? "positive" : "muted") : undefined} strike={loaded && !hasPriority} />
                   <PlanRow icon={CalendarClock} label="Interval" value={loaded ? interval : null} />
                   <PlanRow icon={Clock} label="Validity" value={loaded ? (data.duration_days ? `${data.duration_days} Days` : "—") : null} />
-                  <PlanRow icon={ShieldCheck} label="Plan Tier" value={loaded ? (data.plan_mode ? cap(data.plan_mode) : "Standard") : null} />
-                  <PlanRow icon={Headphones} label="Support" value="Priority" />
                 </div>
               </div>
             </section>
@@ -413,15 +426,21 @@ export default function ProvisioningPage() {
 
 function cap(s: string) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 
-function PlanRow({ icon: Icon, label, value }: { icon: any; label: string; value: string | null }) {
+function PlanRow({ icon: Icon, label, value, tone, strike }:
+  { icon: any; label: string; value: string | null; tone?: "default" | "positive" | "muted"; strike?: boolean }) {
+  const valueColor = tone === "positive" ? "text-[#22C55E]" : tone === "muted" ? "text-[#5d5d66]" : "text-white";
   return (
     <div className="flex items-center justify-between px-4 py-2.5">
-      <span className="flex items-center gap-2.5 text-[13px] text-[#8b8b93]">
+      <span className={`flex items-center gap-2.5 text-[13px] ${strike ? "text-[#5d5d66] line-through" : "text-[#8b8b93]"}`}>
         <Icon className="h-4 w-4 text-[#5d5d66]" /> {label}
       </span>
       {value === null
         ? <span className="inline-block h-3.5 w-12 rounded bg-[#1f1f22] animate-pulse" />
-        : <span className="text-[13px] font-medium text-white">{value}</span>}
+        : <span className={`flex items-center gap-1 text-[13px] font-medium ${valueColor}`}>
+            {tone === "positive" && <Check className="h-3.5 w-3.5" />}
+            {tone === "muted" && <XIcon className="h-3.5 w-3.5" />}
+            {value}
+          </span>}
     </div>
   );
 }
