@@ -5,13 +5,24 @@ import { useRouter } from "next/navigation";
 import portalApi, { setPortalSession } from "@/lib/portal-api";
 import {
   Send, Bell, Check, Clock, Server, Lock, RefreshCw, Loader2,
-  Users, Mail, AtSign, Hash, ShieldCheck, MessageCircle, ChevronRight,
-  CalendarClock, Headphones, Repeat, Timer, RotateCcw, X as XIcon,
+  Mail, AtSign, Hash, MessageCircle, ChevronRight, X as XIcon,
 } from "lucide-react";
 
 const TG = "#2AABEE";
 const TELEGRAM_SUPPORT_URL = "https://t.me/hqadz_support";
 const TELEGRAM_CHANNEL_URL = "https://t.me/hqadz";
+
+/* Per-tier reach + daily post capacity — mirrors the landing pricing page so the
+   provisioning card shows the exact same numbers the buyer chose. */
+const PLAN_META: Record<string, { reach: string; posts: string }> = {
+  bronze:  { reach: "~15K", posts: "48" },
+  silver:  { reach: "~30K", posts: "96" },
+  gold:    { reach: "~50K", posts: "144" },
+  diamond: { reach: "~90K", posts: "240" },
+  basic:   { reach: "~120K", posts: "480" },
+  pro:     { reach: "~300K", posts: "2.4K" },
+  elite:   { reach: "~600K", posts: "14K" },
+};
 
 interface ProvData {
   provisioning?: boolean; queued?: boolean; creation_step?: string; bot_name?: string;
@@ -144,15 +155,24 @@ export default function ProvisioningPage() {
   const userName = (data.ref_name || "").trim();
   const initial = (userName || "U").charAt(0).toUpperCase();
 
-  // Derived plan features — each account posts once per hour, so total posts/hour
-  // equals the account count and the gap between posts is 3600s ÷ accounts.
+  // Derived plan features — matches the landing pricing card, computed from the
+  // real account count the buyer chose at checkout.
   const accounts = data.accounts || 0;
-  const postsPerHour = accounts;
-  const gapMin = accounts > 0 ? Math.round(60 / accounts) : 0;
   const repl = data.free_replacements;
-  const replLabel = repl === -1 ? "Unlimited" : (typeof repl === "number" && repl > 0 ? `${repl}` : "—");
   const planId = (data.plan_id || data.plan_name || "").toLowerCase();
+  const meta = PLAN_META[planId];
+  const dayPosts = meta?.posts || (accounts ? String(accounts * 24) : "—");
+  const reach = meta?.reach || "—";
+  const replText = repl === -1 ? "Unlimited replacements" : `${repl ?? 0} free replacement${repl === 1 ? "" : "s"}`;
   const hasPriority = /gold|diamond/.test(planId) || (data.plan_mode || "").toLowerCase() === "enterprise";
+  const features: { text: string; ok: boolean }[] = [
+    { text: `${accounts} bots posting for you`, ok: true },
+    { text: `${dayPosts} posts / day capacity`, ok: true },
+    { text: replText, ok: true },
+    { text: "Priority support", ok: hasPriority },
+    { text: "Real-time delivery tracking", ok: true },
+    { text: "20+ crypto coins accepted", ok: true },
+  ];
   const steps = [
     { label: "Payment Confirmed", icon: Check, state: "done" },
     { label: "Resources Reserved", icon: Server, state: "done" },
@@ -206,22 +226,53 @@ export default function ProvisioningPage() {
                   </span>
                 </div>
                 {loaded && (data.amount_usd || 0) > 0 ? (
-                  <p className="mt-3 text-[26px] font-bold">
-                    ${(data.amount_usd || 0).toFixed(0)}
-                    <span className="text-[14px] font-medium text-[#8b8b93]"> / {period}</span>
-                  </p>
+                  <>
+                    <p className="mt-3 text-[26px] font-bold">
+                      ${(data.amount_usd || 0).toFixed(0)}
+                      <span className="text-[14px] font-medium text-[#8b8b93]"> / {period}</span>
+                    </p>
+                    <p className="text-[12px] text-[#5d5d66] mt-0.5">Billed {period === "month" ? "monthly" : "weekly"}</p>
+                  </>
                 ) : !loaded ? (
                   <p className="mt-3"><Skel w="5rem" /></p>
                 ) : null}
 
-                <div className="mt-5 rounded-md bg-[#16161a] border border-[#1f1f22] divide-y divide-[#1f1f22]">
-                  <PlanRow icon={Users} label="Accounts" value={loaded ? (accounts ? `${accounts} Account${accounts === 1 ? "" : "s"}` : "—") : null} />
-                  <PlanRow icon={Repeat} label="Posting Rate" value={loaded ? (postsPerHour ? `${postsPerHour} / hour` : "—") : null} />
-                  <PlanRow icon={Timer} label="Post Interval" value={loaded ? (gapMin ? `Every ${gapMin} min` : "—") : null} />
-                  <PlanRow icon={RotateCcw} label="Free Replacements" value={loaded ? replLabel : null} />
-                  <PlanRow icon={Headphones} label="Priority Support" value={loaded ? (hasPriority ? "Included" : "Not included") : null} tone={loaded ? (hasPriority ? "positive" : "muted") : undefined} strike={loaded && !hasPriority} />
-                  <PlanRow icon={CalendarClock} label="Interval" value={loaded ? interval : null} />
-                  <PlanRow icon={Clock} label="Validity" value={loaded ? (data.duration_days ? `${data.duration_days} Days` : "—") : null} />
+                {/* Reach per day */}
+                <div className="mt-5 flex items-center justify-between border-t border-[#1f1f22] pt-4">
+                  <span className="text-[10px] uppercase tracking-wider text-[#5d5d66]">Reach per day</span>
+                  {loaded ? <span className="text-[18px] font-semibold text-white tracking-tight">{reach}</span> : <Skel w="3rem" />}
+                </div>
+
+                {/* Feature checklist — mirrors the landing pricing card */}
+                <ul className="mt-4 space-y-2.5">
+                  {loaded ? features.map((f, i) => (
+                    <li key={i} className="flex items-center gap-2.5">
+                      <span className="grid place-content-center w-4 h-4 rounded-full flex-shrink-0"
+                        style={{ background: f.ok ? "rgba(42,171,238,0.14)" : "rgba(255,255,255,0.05)" }}>
+                        {f.ok
+                          ? <Check className="w-2.5 h-2.5" style={{ color: TG }} strokeWidth={3} />
+                          : <XIcon className="w-2.5 h-2.5 text-[#5d5d66]" strokeWidth={3} />}
+                      </span>
+                      <span className={`text-[12px] ${f.ok ? "text-[#c9c9cf]" : "text-[#5d5d66] line-through"}`}>{f.text}</span>
+                    </li>
+                  )) : [0,1,2,3,4,5].map(i => (
+                    <li key={i} className="flex items-center gap-2.5">
+                      <span className="w-4 h-4 rounded-full bg-[#1f1f22] animate-pulse flex-shrink-0" />
+                      <span className="h-3 w-32 rounded bg-[#1f1f22] animate-pulse" />
+                    </li>
+                  ))}
+                </ul>
+
+                {/* Interval + validity */}
+                <div className="mt-5 grid grid-cols-2 gap-3 border-t border-[#1f1f22] pt-4">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-[#5d5d66]">Interval</p>
+                    {loaded ? <p className="text-[13px] font-medium text-white mt-0.5">{interval}</p> : <p className="mt-1"><Skel w="3rem" /></p>}
+                  </div>
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-[#5d5d66]">Validity</p>
+                    {loaded ? <p className="text-[13px] font-medium text-white mt-0.5">{data.duration_days ? `${data.duration_days} Days` : "—"}</p> : <p className="mt-1"><Skel w="3rem" /></p>}
+                  </div>
                 </div>
               </div>
             </section>
@@ -425,25 +476,6 @@ export default function ProvisioningPage() {
 }
 
 function cap(s: string) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
-
-function PlanRow({ icon: Icon, label, value, tone, strike }:
-  { icon: any; label: string; value: string | null; tone?: "default" | "positive" | "muted"; strike?: boolean }) {
-  const valueColor = tone === "positive" ? "text-[#22C55E]" : tone === "muted" ? "text-[#5d5d66]" : "text-white";
-  return (
-    <div className="flex items-center justify-between px-4 py-2.5">
-      <span className={`flex items-center gap-2.5 text-[13px] ${strike ? "text-[#5d5d66] line-through" : "text-[#8b8b93]"}`}>
-        <Icon className="h-4 w-4 text-[#5d5d66]" /> {label}
-      </span>
-      {value === null
-        ? <span className="inline-block h-3.5 w-12 rounded bg-[#1f1f22] animate-pulse" />
-        : <span className={`flex items-center gap-1 text-[13px] font-medium ${valueColor}`}>
-            {tone === "positive" && <Check className="h-3.5 w-3.5" />}
-            {tone === "muted" && <XIcon className="h-3.5 w-3.5" />}
-            {value}
-          </span>}
-    </div>
-  );
-}
 
 function InfoRow({ label, value, mono }: { label: string; value: string | null; mono?: boolean }) {
   return (
