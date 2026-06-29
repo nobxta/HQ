@@ -12,17 +12,23 @@ const TG = "#2AABEE";
 const TELEGRAM_SUPPORT_URL = "https://t.me/hqadz_support";
 const TELEGRAM_CHANNEL_URL = "https://t.me/hqadz";
 
-/* Per-tier reach + daily post capacity — mirrors the landing pricing page so the
-   provisioning card shows the exact same numbers the buyer chose. */
-const PLAN_META: Record<string, { reach: string; posts: string }> = {
-  bronze:  { reach: "~15K", posts: "48" },
-  silver:  { reach: "~30K", posts: "96" },
-  gold:    { reach: "~50K", posts: "144" },
-  diamond: { reach: "~90K", posts: "240" },
-  basic:   { reach: "~120K", posts: "480" },
-  pro:     { reach: "~300K", posts: "2.4K" },
-  elite:   { reach: "~600K", posts: "14K" },
+/* Per-tier reach — mirrors the landing pricing page so the provisioning card
+   shows the exact same numbers the buyer chose. */
+const PLAN_META: Record<string, { reach: string }> = {
+  bronze:  { reach: "~15K" },
+  silver:  { reach: "~30K" },
+  gold:    { reach: "~50K" },
+  diamond: { reach: "~90K" },
+  basic:   { reach: "~120K" },
+  pro:     { reach: "~300K" },
+  elite:   { reach: "~600K" },
 };
+
+/* Tier → account / replacement counts (mirrors data/plans.json). Lets the page
+   show full plan details from the saved checkout even before the API echoes
+   them back. */
+const ACCOUNTS_BY_TIER: Record<string, number> = { bronze: 2, silver: 4, gold: 6, diamond: 10, basic: 5, pro: 12, elite: 20 };
+const REPL_BY_TIER: Record<string, number> = { bronze: 1, silver: 2, gold: 3, diamond: 4, basic: 2, pro: 4, elite: -1 };
 
 interface ProvData {
   provisioning?: boolean; queued?: boolean; creation_step?: string; bot_name?: string;
@@ -104,9 +110,14 @@ export default function ProvisioningPage() {
       if (raw) {
         const { order, plan } = JSON.parse(raw) || {};
         const seed: ProvData = {};
+        const tier = (plan?.id || order?.plan_id || "").toLowerCase();
         if (plan?.label || order?.plan_name) seed.plan_name = `${plan?.label || order?.plan_name} Plan`.replace(/\s*Plan\s*Plan$/i, " Plan");
+        if (tier) seed.plan_id = tier;
+        if (tier && ACCOUNTS_BY_TIER[tier]) seed.accounts = ACCOUNTS_BY_TIER[tier];
+        if (tier && tier in REPL_BY_TIER) seed.free_replacements = REPL_BY_TIER[tier];
         if (order?.amount_usd ?? plan?.price) seed.amount_usd = Number(order?.amount_usd ?? plan?.price) || 0;
         if (plan?.durationDays) seed.duration_days = Number(plan.durationDays) || 0;
+        if (plan?.billing) seed.billing = plan.billing;
         if (plan?.mode) seed.plan_mode = plan.mode;
         if (order?.order_id) seed.order_id = order.order_id;
         if (order?.pay_currency) seed.pay_currency = order.pay_currency;
