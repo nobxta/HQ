@@ -708,7 +708,7 @@ export default function LandingPage() {
                   <ul className="mt-5 space-y-2.5 flex-1">
                     {[
                       `${plan.sessions} bots posting for you`,
-                      `${meta.posts} posts / day capacity`,
+                      `${((plan.sessions || 0) * 1200).toLocaleString()} posts / day`,
                       plan.free_replacements === -1 ? "Unlimited replacements" : `${plan.free_replacements} free replacement${plan.free_replacements !== 1 ? "s" : ""}`,
                       "Real-time delivery tracking",
                       "20+ crypto coins accepted",
