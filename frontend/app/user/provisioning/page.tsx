@@ -161,13 +161,15 @@ export default function ProvisioningPage() {
   const repl = data.free_replacements;
   const planId = (data.plan_id || data.plan_name || "").toLowerCase();
   const meta = PLAN_META[planId];
-  const dayPosts = meta?.posts || (accounts ? String(accounts * 24) : "—");
+  // Capacity model: 100 target groups, where 2 accounts cover all 100 every hour
+  // (50 groups/account/hour). Over a full day that's accounts × 50 × 24 = accounts × 1,200.
+  const dayPosts = accounts ? (accounts * 1200).toLocaleString() : "—";
   const reach = meta?.reach || "—";
   const replText = repl === -1 ? "Unlimited replacements" : `${repl ?? 0} free replacement${repl === 1 ? "" : "s"}`;
   const hasPriority = /gold|diamond/.test(planId) || (data.plan_mode || "").toLowerCase() === "enterprise";
   const features: { text: string; ok: boolean }[] = [
     { text: `${accounts} bots posting for you`, ok: true },
-    { text: `${dayPosts} posts / day capacity`, ok: true },
+    { text: `${dayPosts} posts / day`, ok: true },
     { text: replText, ok: true },
     { text: "Priority support", ok: hasPriority },
     { text: "Real-time delivery tracking", ok: true },
