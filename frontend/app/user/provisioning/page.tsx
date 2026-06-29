@@ -166,11 +166,16 @@ export default function ProvisioningPage() {
   const userName = (data.ref_name || "").trim();
   const initial = (userName || "U").charAt(0).toUpperCase();
 
-  // Derived plan features — matches the landing pricing card, computed from the
-  // real account count the buyer chose at checkout.
-  const accounts = data.accounts || 0;
-  const repl = data.free_replacements;
-  const planId = (data.plan_id || data.plan_name || "").toLowerCase();
+  // Derived plan features — matches the landing pricing card. We resolve the tier
+  // from plan_id/plan_name (the API returns these straight from the order) and
+  // derive counts from the tier so the card fills in even if the server-side
+  // plan lookup didn't populate accounts/replacements.
+  const planId = (data.plan_id || data.plan_name || "").toLowerCase().split(/\s+/)[0];
+  const accounts = data.accounts || ACCOUNTS_BY_TIER[planId] || 0;
+  // Prefer the API value (incl. -1 = unlimited); fall back to the tier map when it's missing/0.
+  const repl = data.free_replacements && data.free_replacements !== 0
+    ? data.free_replacements
+    : (planId in REPL_BY_TIER ? REPL_BY_TIER[planId] : 0);
   const meta = PLAN_META[planId];
   // Capacity model: 100 target groups, where 2 accounts cover all 100 every hour
   // (50 groups/account/hour). Over a full day that's accounts × 50 × 24 = accounts × 1,200.
