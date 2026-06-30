@@ -98,7 +98,7 @@ function LoginContent() {
       <div className="w-full max-w-sm space-y-6">
         {/* Logo */}
         <div className="flex flex-col items-center">
-          <BrandMark height={52} className="mb-4" />
+          <BrandMark height={34} className="mb-4" />
           <p className="text-sm text-dark-400 mt-1">Enter your access code to continue</p>
         </div>
 
