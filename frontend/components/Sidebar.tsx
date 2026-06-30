@@ -88,7 +88,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
         <div className="flex items-center justify-between px-5 py-5">
           <div className="flex items-center gap-3">
             <div>
-              <BrandMark height={20} />
+              <BrandMark height={30} />
               <p className="text-[10px] uppercase tracking-[0.2em] text-dark-600 font-medium mt-1">Admin Panel</p>
             </div>
           </div>
