@@ -5,7 +5,7 @@ import Link from "next/link";
 import {
   Send, Check, CheckCheck, Menu, X, ArrowRight, Plus, Eye, MousePointerClick,
   User, Building2, Gem, Star, Zap, ShieldCheck, Coins, Headphones,
-  ChevronRight, ChevronLeft, Clock, Tag, TrendingUp, Lock,
+  ChevronRight, ChevronLeft, Clock, Tag, TrendingUp, Lock, Users, Activity,
 } from "lucide-react";
 import axios from "axios";
 import PurchaseFlow, { PurchasePlan } from "@/components/portal/PurchaseFlow";
@@ -238,16 +238,40 @@ function Workflow({ visible }: { visible: boolean }) {
 }
 
 /* ─── Live campaign monitor ─── */
+function SignalBars({ active }: { active: boolean }) {
+  const c = active ? TG : "#34d399";
+  return (
+    <span className="inline-flex items-end gap-[2px] h-3.5" aria-hidden>
+      {[5, 8, 11, 14].map((h, i) => (
+        <span key={i} className="w-[2px] rounded-sm" style={{ height: h, background: c, opacity: active && i === 3 ? 0.45 : 0.9 }} />
+      ))}
+    </span>
+  );
+}
+
 function CampaignMonitor({ visible }: { visible: boolean }) {
   const [sent, setSent] = useState(412930);
   const [viewsK, setViewsK] = useState(28.4);
   const [clicks, setClicks] = useState(61204);
   const [feed, setFeed] = useState<{ id: number; group: string; time: string }[]>([
-    { id: 1, group: "Forex Masters", time: "2s ago" },
-    { id: 2, group: "DeFi Lounge", time: "5s ago" },
-    { id: 3, group: "Airdrop Alerts", time: "9s ago" },
+    { id: 1, group: "Crypto Signals VIP", time: "just now" },
+    { id: 2, group: "NFT Traders Hub", time: "2s ago" },
+    { id: 3, group: "Solana Alpha Calls", time: "3s ago" },
+    { id: 4, group: "Forex Masters", time: "4s ago" },
+    { id: 5, group: "BTC India Lounge", time: "5s ago" },
+    { id: 6, group: "DeFi Community", time: "6s ago" },
+    { id: 7, group: "Airdrop Hunters", time: "7s ago" },
   ]);
-  const idRef = useRef(4);
+  const idRef = useRef(8);
+
+  const SESSIONS = [
+    { n: 1, phone: "+91 81234 56789" },
+    { n: 2, phone: "+91 92345 67890" },
+    { n: 3, phone: "+91 99876 54321" },
+    { n: 4, phone: "+91 88765 43210" },
+    { n: 5, phone: "+91 77654 32109" },
+  ];
+  const [sending, setSending] = useState<number>(2); // which session is "Sending"
 
   useEffect(() => {
     if (!visible) return;
@@ -255,47 +279,123 @@ function CampaignMonitor({ visible }: { visible: boolean }) {
       setSent(s => s + 3 + Math.floor(Math.random() * 9));
       setViewsK(v => +(v + 0.1 + Math.random() * 0.3).toFixed(1));
       setClicks(c => c + 1 + Math.floor(Math.random() * 6));
+      setSending(() => Math.floor(Math.random() * SESSIONS.length) + 1);
       setFeed(f => [
         { id: idRef.current++, group: GROUPS[Math.floor(Math.random() * GROUPS.length)].name, time: "just now" },
-        ...f.slice(0, 3).map(x => ({ ...x, time: x.time === "just now" ? "3s ago" : x.time })),
+        ...f.slice(0, 6).map(x => ({ ...x, time: x.time === "just now" ? "2s ago" : x.time })),
       ]);
     }, 2000);
     return () => clearInterval(t);
   }, [visible]);
 
+  const card = "rounded-xl border border-[#1f1f22] bg-[#0e0e10] overflow-hidden";
+  const head = "flex items-center justify-between px-4 py-3 border-b border-[#1f1f22]";
+
   return (
-    <div className="rounded-lg border border-[#1f1f22] bg-[#0e0e10] overflow-hidden">
-      <div className="flex items-center justify-between px-5 py-3 border-b border-[#1f1f22]">
-        <span className="flex items-center gap-2 text-[12px] text-[#8b8b93]">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-          Network — live
-        </span>
-        <span className="text-[11px] text-[#5d5d66] tabular-nums">~35 posts/min across all campaigns</span>
-      </div>
+    <div className="space-y-4">
+      <div className="grid lg:grid-cols-3 gap-4">
 
-      <div className="grid grid-cols-2 md:grid-cols-4 divide-x divide-[#1f1f22] border-b border-[#1f1f22]">
-        {[
-          { label: "Active groups", value: "9,412" },
-          { label: "Messages sent today", value: fmt(sent) },
-          { label: "Views generated", value: `${viewsK}M` },
-          { label: "Clicks generated", value: fmt(clicks) },
-        ].map((s, i) => (
-          <div key={s.label} className={`px-5 py-4 ${i > 1 ? "border-t md:border-t-0 border-[#1f1f22]" : ""}`}>
-            <p className="text-[10px] text-[#5d5d66] uppercase tracking-wider mb-1.5">{s.label}</p>
-            <Tick value={s.value} className="text-xl md:text-2xl font-semibold text-white tracking-tight" />
-          </div>
-        ))}
-      </div>
-
-      {/* delivery feed */}
-      <div className="px-5 py-3">
-        {feed.map((f) => (
-          <div key={f.id} className="msg-in flex items-center justify-between py-1.5">
-            <span className="flex items-center gap-2 text-[12px] text-[#8b8b93]">
-              <CheckCheck className="w-3.5 h-3.5" style={{ color: TG }} />
-              Ad delivered to <span className="text-[#c9c9cf]">{f.group}</span>
+        {/* ── Live Delivery Feed ── */}
+        <div className={card}>
+          <div className={head}>
+            <span className="flex items-center gap-2 text-[13px] font-medium text-white">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              Live Delivery Feed
             </span>
-            <span className="text-[11px] text-[#5d5d66]">{f.time}</span>
+          </div>
+          <div className="px-4 py-2.5">
+            {feed.map((f) => (
+              <div key={f.id} className="msg-in flex items-center justify-between gap-3 py-[7px]">
+                <span className="flex items-center gap-2 text-[12px] text-[#8b8b93] min-w-0">
+                  <Send className="w-3.5 h-3.5 flex-shrink-0" style={{ color: TG }} />
+                  <span className="flex-shrink-0">Ad delivered to</span>
+                  <span className="text-[#e6e6ea] font-medium truncate">{f.group}</span>
+                </span>
+                <span className="flex items-center gap-1.5 flex-shrink-0">
+                  <span className="text-[11px] text-[#5d5d66]">{f.time}</span>
+                  <Check className="w-3 h-3 text-emerald-500" />
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Active Sessions ── */}
+        <div className={card}>
+          <div className={head}>
+            <span className="flex items-center gap-2 text-[13px] font-medium text-white">
+              <Users className="w-4 h-4" style={{ color: TG }} />
+              Active Sessions
+            </span>
+            <span className="text-[11px] text-[#8b8b93] tabular-nums">{SESSIONS.length} / {SESSIONS.length} active</span>
+          </div>
+          <div className="px-4 py-2.5 divide-y divide-[#161618]">
+            {SESSIONS.map((s) => {
+              const isSending = sending === s.n;
+              return (
+                <div key={s.n} className="flex items-center justify-between gap-3 py-[9px]">
+                  <span className="flex items-center gap-2.5 min-w-0">
+                    <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-[#161618] border border-[#1f1f22]">
+                      <User className="w-3.5 h-3.5 text-[#8b8b93]" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-[12px] font-medium text-[#e6e6ea] leading-tight">Session {s.n}</span>
+                      <span className="block text-[11px] text-[#5d5d66] font-mono leading-tight">{s.phone}</span>
+                    </span>
+                  </span>
+                  <span className="flex items-center gap-2 flex-shrink-0">
+                    <span className="text-[11px] font-medium" style={{ color: isSending ? TG : "#34d399" }}>
+                      {isSending ? "Sending" : "Ready"}
+                    </span>
+                    <SignalBars active={isSending} />
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* ── Campaign Overview ── */}
+        <div className={card}>
+          <div className={head}>
+            <span className="flex items-center gap-2 text-[13px] font-medium text-white">
+              <Activity className="w-4 h-4" style={{ color: TG }} />
+              Campaign Overview
+            </span>
+            <span className="flex items-center gap-1.5 text-[11px] text-[#8b8b93]">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Live
+            </span>
+          </div>
+          <div className="grid grid-cols-2">
+            {[
+              { label: "Active Groups", value: "9,412" },
+              { label: "Messages Sent Today", value: fmt(sent) },
+              { label: "Views Generated", value: `${viewsK}M` },
+              { label: "Clicks Generated", value: fmt(clicks) },
+            ].map((s, i) => (
+              <div key={s.label} className={`px-4 py-4 ${i % 2 === 0 ? "border-r border-[#1f1f22]" : ""} ${i < 2 ? "border-b border-[#1f1f22]" : ""}`}>
+                <p className="text-[10px] text-[#5d5d66] uppercase tracking-wider mb-1.5">{s.label}</p>
+                <Tick value={s.value} className="text-xl md:text-2xl font-semibold text-white tracking-tight" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Trust badges ── */}
+      <div className="grid grid-cols-2 md:grid-cols-4 rounded-xl border border-[#1f1f22] bg-[#0e0e10] divide-x divide-y md:divide-y-0 divide-[#1f1f22] overflow-hidden">
+        {[
+          { icon: ShieldCheck, title: "Telethon Powered", sub: "Secure. Fast. Reliable." },
+          { icon: Lock, title: "Your Data is Safe", sub: "Encrypted & private." },
+          { icon: Zap, title: "High Delivery Rate", sub: "Optimized multi-accounting." },
+          { icon: Clock, title: "Real-time Tracking", sub: "Live stats & reports." },
+        ].map((b) => (
+          <div key={b.title} className="flex items-center gap-3 px-4 py-4">
+            <b.icon className="w-5 h-5 flex-shrink-0" style={{ color: TG }} />
+            <span className="min-w-0">
+              <span className="block text-[13px] font-medium text-white leading-tight">{b.title}</span>
+              <span className="block text-[11px] text-[#5d5d66] leading-tight mt-0.5">{b.sub}</span>
+            </span>
           </div>
         ))}
       </div>
