@@ -438,7 +438,7 @@ export default function LandingPage() {
       }`}>
         <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2">
-            <BrandMark height={20} />
+            <BrandMark height={22} />
           </Link>
 
           <div className="hidden md:flex items-center gap-0.5">
@@ -831,7 +831,7 @@ export default function LandingPage() {
         <div className="max-w-5xl mx-auto px-6 py-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
           <div className="flex items-center gap-2">
             <BrandMark height={18} />
-            <span className="text-[12px] text-[#5d5d66] ml-2">© 2025</span>
+            <span className="text-[12px] text-[#5d5d66] ml-3">© 2025</span>
           </div>
           <div className="flex items-center gap-5 text-[12px] text-[#5d5d66]">
             <a href="#pricing" className="hover:text-white transition-colors duration-150">Pricing</a>
