@@ -307,10 +307,14 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
     if (o.get("source") or "") == "web":
         from . import token_pool
         update_order_status(order_id, "paid", paid_at=now)
-        # Issue the access code NOW so the buyer can log in immediately — even if we have to
+        # Issue the Secret Code NOW so the buyer can log in immediately — even if we have to
         # queue the build (no token / low sessions). The same code is bound to the bot later.
-        import random as _rnd, string as _str
-        web_token = (o.get("web_token") or "").strip() or "".join(_rnd.choices(_str.ascii_letters + _str.digits, k=8))
+        # Format: ADB-XXXX-XXXX (unambiguous chars) so it reads like a real access code.
+        import random as _rnd
+        _alpha = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        web_token = (o.get("web_token") or "").strip() or (
+            "ADB-" + "".join(_rnd.choices(_alpha, k=4)) + "-" + "".join(_rnd.choices(_alpha, k=4))
+        )
         o["web_token"] = web_token
         update_order(order_id, {"web_token": web_token})
         # Reserve a token NOW (at payment), not at order creation — so unpaid/spam orders
@@ -354,6 +358,9 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
             plan_obj = {"sessions": 1, "cycle": 3600, "gap": 5}
         sessions_count = int(plan_obj.get("sessions", 1))
         free_count = len(load_adbot().get("free_sessions", []))
+        # Persist the reserved token+username on the order NOW, so a later recreate
+        # (if we have to queue) has everything it needs and never loses the binding.
+        update_order(order_id, {"bot_token": tok, "bot_username": username})
         if free_count < sessions_count:
             update_order_status(order_id, "pending_creation")
             add_admin_alert("pending_creation", f"Web order {order_id} — need {sessions_count} sessions, only {free_count} free. Recreate after adding sessions.")

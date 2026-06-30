@@ -7,7 +7,7 @@ import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import ConfirmModal from "@/components/ConfirmModal";
 import { TableSkeleton } from "@/components/ui/Skeleton";
-import { CheckCircle, Search, Ban, RotateCw, Copy, Check } from "lucide-react";
+import { CheckCircle, Search, Ban, RotateCw, Copy, Check, Hammer } from "lucide-react";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
 import { formatDateTime, formatUSD, truncate } from "@/lib/utils";
@@ -55,7 +55,12 @@ export default function PaymentsPage() {
     (o) => !search || o.order_id.includes(search) || String(o.user_id || "").includes(search) || (o.payment_id || "").includes(search)
   );
 
-  const doAction = async (orderId: string, action: "mark-paid" | "cancel") => {
+  // An order can be rebuilt when it's stuck waiting for stock: pending_creation
+  // (low sessions / bad token), or a web order that's paid+queued (no token yet).
+  const canRecreate = (o: OrderRow) =>
+    o.status === "pending_creation" || (o.source === "web" && o.status === "paid" && !!o.queued);
+
+  const doAction = async (orderId: string, action: "mark-paid" | "cancel" | "recreate") => {
     setActionLoading(true);
     try {
       await api.post(`/api/orders/${orderId}/${action}`);
@@ -187,6 +192,11 @@ export default function PaymentsPage() {
                         <Button variant="ghost" size="sm" onClick={() => syncOrder(o.order_id)} title="Sync from NOWPayments">
                           <RotateCw className="h-3.5 w-3.5 text-accent" />
                         </Button>
+                        {canRecreate(o) && (
+                          <Button variant="ghost" size="sm" loading={actionLoading} onClick={() => doAction(o.order_id, "recreate")} title="Recreate bot">
+                            <Hammer className="h-3.5 w-3.5 text-warning" />
+                          </Button>
+                        )}
                         {!["completed", "cancelled"].includes(o.status) && (
                           <>
                             <Button variant="ghost" size="sm" onClick={() => setMarkPaidTarget(o.order_id)} title="Mark Paid">
@@ -279,6 +289,13 @@ export default function PaymentsPage() {
               <Row label="Paid at" value={detail.paid_at ? formatDateTime(detail.paid_at) : ""} />
               <Row label="Invoice expires" value={detail.invoice_expires_at ? formatDateTime(detail.invoice_expires_at) : ""} />
             </div>
+
+            {canRecreate(detail) && (
+              <Button variant="secondary" size="sm" className="w-full" loading={actionLoading}
+                onClick={async () => { await doAction(detail.order_id, "recreate"); }}>
+                <Hammer className="h-3.5 w-3.5 text-warning" /> Recreate bot (keeps access code)
+              </Button>
+            )}
 
             {!["completed", "cancelled"].includes(detail.status) && (
               <div className="flex gap-2 pt-1">

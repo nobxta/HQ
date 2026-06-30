@@ -1385,21 +1385,37 @@ async def recreate_pending_order(order_id: str) -> tuple[bool, str]:
     Recreate an AdBot for a pending_creation order. Sends progress message to buyer via Shop Bot, then submits create job.
     Returns (success, message).
     """
-    from ..utils import load_adbot
+    from ..utils import load_adbot, validate_bot_token
     from ..admin_ptb import submit_create_job
+    from . import token_pool
     order = get_order(order_id)
     if not order:
         return False, "Order not found"
-    if order.get("status") != "pending_creation":
-        return False, f"Order status is {order.get('status')}, not pending_creation"
+    status = order.get("status")
+    is_web = (order.get("source") or "") == "web"
+    # Recreatable: pending_creation (low sessions / invalid token), or — for web orders —
+    # a paid+queued order that had no token in the pool when it was confirmed.
+    if status != "pending_creation" and not (is_web and status == "paid"):
+        return False, f"Order status is {status}, not recreatable"
     user_id = order.get("user_id")
-    if not user_id:
+    if not is_web and not user_id:
         return False, "Order has no user_id"
     bot_token = (order.get("bot_token") or "").strip()
     bot_name = (order.get("bot_name") or "AdBot").strip()
     bot_username = (order.get("bot_username") or "").strip()
-    if not bot_token or not bot_username:
-        return False, "Order missing bot_token or bot_username"
+    # No token bound yet (the no-token queued case) → reserve one from the pool now.
+    if not bot_token:
+        reserved = token_pool.reserve_token(order_id)
+        bot_token = ((reserved or {}).get("token") or "").strip()
+        bot_username = ((reserved or {}).get("username") or "").strip()
+        if not bot_token:
+            return False, "No bot token available in pool — add one first"
+    if not bot_username:
+        ok, bot_username = await validate_bot_token(bot_token)
+        if not ok or not bot_username:
+            return False, "Pooled token invalid — replace it, then recreate"
+    # Persist what we resolved so the binding survives.
+    update_order(order_id, {"bot_token": bot_token, "bot_username": bot_username})
     plans = load_plans()
     plan_obj = None
     for mode_plans in plans.values():
@@ -1432,6 +1448,10 @@ async def recreate_pending_order(order_id: str) -> tuple[bool, str]:
         "name": bot_name,
         "bot_token": bot_token,
         "bot_username": bot_username,
+        # Preserve the buyer's original access code so the rebuilt bot keeps the same
+        # ADB-XXXX-XXXX they were already shown — without this, a fresh random code is
+        # generated and the buyer is locked out.
+        "_web_token": (order.get("web_token") or "").strip(),
         "sessions_count": need,
         "cycle": int(plan_obj.get("cycle", 3600)),
         "gap": int(plan_obj.get("gap", 5)),
@@ -1442,9 +1462,14 @@ async def recreate_pending_order(order_id: str) -> tuple[bool, str]:
         "plan_name": order.get("plan_name", ""),
         "renewal_price": renewal_price,
         "order_id": order_id,
-        "source": "shop",
-        "user_id": user_id,
+        "source": "web" if is_web else "shop",
+        "user_id": user_id or 0,
     }
+    # Web orders build headlessly (no Shop Bot user to message); shop orders send a
+    # progress message to the buyer first.
+    if is_web:
+        submit_create_job(0, 0, form, web=True)
+        return True, "Create job submitted"
     from .. import bot_ptb
     ok, msg_id = await bot_ptb.send_message_with_bot_return_id(
         user_id, CREATION_PROGRESS_MESSAGE, bot_token=config.SHOP_BOT_TOKEN
