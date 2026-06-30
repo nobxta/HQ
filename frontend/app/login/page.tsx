@@ -4,6 +4,7 @@ import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Shield, Key, Loader2, Eye, EyeOff } from "lucide-react";
 import Button from "@/components/ui/Button";
+import BrandMark from "@/components/BrandMark";
 import portalApi, { setPortalSession } from "@/lib/portal-api";
 import { Suspense } from "react";
 
@@ -97,10 +98,7 @@ function LoginContent() {
       <div className="w-full max-w-sm space-y-6">
         {/* Logo */}
         <div className="flex flex-col items-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent shadow-lg shadow-accent/20 mb-4">
-            <Shield className="h-7 w-7 text-white" />
-          </div>
-          <h1 className="text-xl sm:text-2xl font-bold text-white">HQAdz Panel</h1>
+          <BrandMark height={34} className="mb-4" />
           <p className="text-sm text-dark-400 mt-1">Enter your access code to continue</p>
         </div>
 

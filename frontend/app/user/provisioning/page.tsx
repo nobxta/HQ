@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import portalApi, { setPortalSession } from "@/lib/portal-api";
+import BrandMark from "@/components/BrandMark";
 import {
   Send, Bell, Check, Clock, Server, Lock, RefreshCw, Loader2,
   Mail, AtSign, Hash, MessageCircle, ChevronRight, X as XIcon,
@@ -211,8 +212,7 @@ export default function ProvisioningPage() {
       <header className="sticky top-0 z-20 border-b border-[#1f1f22] bg-[#0a0a0a]/90 backdrop-blur">
         <div className="mx-auto max-w-[1280px] px-5 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <Send className="h-5 w-5" style={{ color: TG }} />
-            <span className="text-[18px] font-semibold tracking-tight">HQAdz</span>
+            <BrandMark height={22} />
           </div>
           <div className="flex items-center gap-4">
             <Bell className="h-[18px] w-[18px] text-[#8b8b93]" />

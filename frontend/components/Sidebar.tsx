@@ -2,11 +2,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
+import BrandMark from "@/components/BrandMark";
 import { useState } from "react";
 import {
   LayoutDashboard, Bot, HardDrive, FolderOpen,
   CreditCard, Tag, Settings, Megaphone, Shield, X,
-  ChevronDown, Zap, HelpCircle, KeyRound,
+  ChevronDown, HelpCircle, KeyRound,
 } from "lucide-react";
 
 const mainNav = [
@@ -86,12 +87,9 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
         {/* Logo */}
         <div className="flex items-center justify-between px-5 py-5">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-accent to-violet-400 shadow-lg shadow-accent/20">
-              <Zap className="h-5 w-5 text-white" />
-            </div>
             <div>
-              <h1 className="text-lg font-bold text-white tracking-tight">HQAdz</h1>
-              <p className="text-[10px] uppercase tracking-[0.2em] text-dark-600 font-medium">Admin Panel</p>
+              <BrandMark height={20} />
+              <p className="text-[10px] uppercase tracking-[0.2em] text-dark-600 font-medium mt-1">Admin Panel</p>
             </div>
           </div>
           <button onClick={onClose} className="lg:hidden text-dark-400 hover:text-dark-200 p-1">

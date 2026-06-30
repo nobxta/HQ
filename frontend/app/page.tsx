@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import axios from "axios";
 import PurchaseFlow, { PurchasePlan } from "@/components/portal/PurchaseFlow";
+import BrandMark from "@/components/BrandMark";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const TG = "#2AABEE";
@@ -437,10 +438,7 @@ export default function LandingPage() {
       }`}>
         <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-md flex items-center justify-center" style={{ background: TG }}>
-              <Send className="w-3 h-3 text-white -translate-x-px translate-y-px" />
-            </div>
-            <span className="text-[14px] font-semibold text-white tracking-tight">HQAdz</span>
+            <BrandMark height={20} />
           </Link>
 
           <div className="hidden md:flex items-center gap-0.5">
@@ -832,10 +830,7 @@ export default function LandingPage() {
       <footer className="border-t border-[#1f1f22]">
         <div className="max-w-5xl mx-auto px-6 py-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
           <div className="flex items-center gap-2">
-            <div className="w-5 h-5 rounded flex items-center justify-center" style={{ background: TG }}>
-              <Send className="w-2.5 h-2.5 text-white -translate-x-px translate-y-px" />
-            </div>
-            <span className="text-[13px] font-semibold text-white">HQAdz</span>
+            <BrandMark height={18} />
             <span className="text-[12px] text-[#5d5d66] ml-2">© 2025</span>
           </div>
           <div className="flex items-center gap-5 text-[12px] text-[#5d5d66]">
