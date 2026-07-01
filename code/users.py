@@ -1566,7 +1566,7 @@ def _mark_bot_dead(bot_token: str, reason: str) -> None:
         return
     name_display = cfg.get("name") or bot_token[:20]
     _save_bot_config(bot_token, lambda c: c.update({"state": "dead", "dead_reason": reason}))
-    add_admin_alert("bot_dead", f"AdBot **{name_display}** marked dead: {reason[:200]}")
+    add_admin_alert("bot_dead", f"AdBot {name_display} marked dead: {reason[:200]}")
     logger.warning("Bot marked dead: %s — %s", name_display, reason)
 
 
@@ -1611,7 +1611,7 @@ def _auto_replace_dead_session(bot_token: str, user_name: str, dead_session_file
         save_user_data(user_name, cfg)
         add_admin_alert(
             "session_auto_replaced",
-            f"Session **{dead_session_file}** died → auto-replaced with **{candidate}** from free pool.",
+            f"Session {dead_session_file} died → auto-replaced with {candidate} from free pool.",
         )
         logger.info("[AutoReplace] Replaced dead %s with free %s", dead_session_file, candidate)
         return
@@ -1986,7 +1986,7 @@ async def _async_session_loop(
                     report_user_log=report_user_log,
                 ):
                     bot_name = cfg.get("name") or bot_token[:20]
-                    msg = f"AdBot **{bot_name}** — session **{session_file}** failed to connect. Will retry next cycle."
+                    msg = f"AdBot {bot_name} — session {session_file} failed to connect. Will retry next cycle."
                     if report_alert:
                         report_alert("session_disconnected", msg)
                     else:
@@ -3215,7 +3215,7 @@ async def _session_worker_wrapper(
                 name = cfg.get("name") or bot_token[:20]
                 add_admin_alert(
                     "session_worker_stopped",
-                    f"AdBot **{name}** — session worker **{session_file}** stopped unexpectedly. Use /health and Run again if needed.",
+                    f"AdBot {name} — session worker {session_file} stopped unexpectedly. Use /health and Run again if needed.",
                 )
                 logger.warning("Session worker %s stopped unexpectedly for bot %s", session_file, name)
 
@@ -3565,7 +3565,7 @@ async def _start_posting(
         _save_bot_config(bot_token, lambda c: c.update({"state": "stopped"}))
         add_admin_alert(
             "worker_start_failed",
-            f"AdBot **{cfg.get('name') or bot_token[:20]}** — worker failed to start: {str(e)[:150]}. Check logs.",
+            f"AdBot {cfg.get('name') or bot_token[:20]} — worker failed to start: {str(e)[:150]}. Check logs.",
         )
         return False
     _worker_handles[bot_token] = workers_list
@@ -3935,7 +3935,7 @@ async def run_session_health_monitor() -> None:
                     cleanup_active_sessions_for_bot(bot_token)
                     add_admin_alert(
                         "session_health",
-                        f"AdBot **{name}** — {reason}. Restarting posting.",
+                        f"AdBot {name} — {reason}. Restarting posting.",
                     )
                     logger.warning("Health monitor: bot %s %s; restarting posting", name, reason)
                     try:
@@ -3944,7 +3944,7 @@ async def run_session_health_monitor() -> None:
                         logger.exception("Health monitor: failed to restart posting for %s: %s", name, e)
                         add_admin_alert(
                             "session_health_restart_failed",
-                            f"AdBot **{name}** — restart failed: {str(e)[:150]}",
+                            f"AdBot {name} — restart failed: {str(e)[:150]}",
                         )
         except asyncio.CancelledError:
             raise

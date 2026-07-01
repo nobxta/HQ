@@ -769,7 +769,7 @@ async def _core_create_adbot_async(
                     pfp_alert_sent = True
                     add_admin_alert(
                         "bot_pfp_failed",
-                        f"AdBot **{name}** created but profile photo could not be set. Error: {err_msg}. You can set it manually in BotFather.",
+                        f"AdBot {name} created but profile photo could not be set. Error: {err_msg}. You can set it manually in BotFather.",
                     )
         if not pfp_set and not any((config.BASE_DIR / p).is_file() for p in BOT_PFP_REL):
             logger.debug("No bot pfp file found (data/Bot 1.jpeg or data/bot 2.jpeg), skipping profile photo.")
@@ -1040,7 +1040,7 @@ async def _core_create_adbot_async(
                 save_user_data(safe_name, entry)
         except Exception as e:
             logger.warning("[CREATE_PIPELINE] Default chatlist join failed (non-fatal): %s", e)
-        add_admin_alert("bot_created", f"AdBot **{name}** created: @{bot_username}")
+        add_admin_alert("bot_created", f"AdBot {name} created: @{bot_username}")
         await log_async(f"AdBot successfully created: @{bot_username}")
         form["_web_token"] = web_token
         return f"@{bot_username}"
