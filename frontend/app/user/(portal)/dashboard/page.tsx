@@ -12,7 +12,7 @@ import {
   Target, TrendingUp, ArrowUpRight, ArrowDownRight,
   Users, BarChart3, Gauge, Sparkles, Timer,
 } from "lucide-react";
-import { formatDate } from "@/lib/utils";
+import { formatDate, parseFlexibleDate } from "@/lib/utils";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -314,8 +314,8 @@ export default function UserDashboard() {
   const todayFailed = stats?.last24h_failed || 0;
   const todayTotal = todaySent + todayFailed;
 
-  const validTill = bot.valid_till ? (typeof bot.valid_till === "number" ? new Date(bot.valid_till * 1000) : new Date(bot.valid_till)) : null;
-  const daysLeft = validTill ? Math.ceil((validTill.getTime() - Date.now()) / 86400000) : null;
+  const validTill = bot.valid_till ? parseFlexibleDate(bot.valid_till) : null;
+  const daysLeft = validTill && !isNaN(validTill.getTime()) ? Math.ceil((validTill.getTime() - Date.now()) / 86400000) : null;
   const expiringSoon = daysLeft !== null && daysLeft <= 3 && daysLeft >= 0;
   const expired = daysLeft !== null && daysLeft < 0;
 

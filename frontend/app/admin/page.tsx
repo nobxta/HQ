@@ -15,13 +15,16 @@ import {
   CalendarClock, ShoppingCart, Activity,
   ArrowRightLeft, Loader2, Play, Trash2, RefreshCw,
   HelpCircle, MessageSquare, AlertTriangle, HardDrive,
-  ExternalLink,
+  ExternalLink, Hammer, Square, CheckSquare,
 } from "lucide-react";
 import { formatDateTime, timeAgo } from "@/lib/utils";
 import useSWR from "swr";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
 import Link from "next/link";
+import Modal from "@/components/ui/Modal";
+import Button from "@/components/ui/Button";
+import { usePendingOrders } from "@/lib/hooks/usePayments";
 
 /* ── Replacement Queue types ── */
 type ReplEntry = {
@@ -62,6 +65,40 @@ export default function DashboardPage() {
   const [processing, setProcessing] = useState(false);
   const [cancelling, setCancelling] = useState<string | null>(null);
 
+  // Orders that got paid but are stuck (insufficient/bad sessions, no token, etc.) —
+  // payment is already received, so these need attention, not silence.
+  const { data: pendingOrdersData, mutate: mutatePendingOrders } = usePendingOrders();
+  const stuckOrders = (pendingOrdersData?.orders || []).filter((o: any) =>
+    o.status === "pending_creation" || (o.source === "web" && o.status === "paid" && !!o.queued)
+  );
+  const [recreateTarget, setRecreateTarget] = useState<any | null>(null);
+  const [recreateSkipHealth, setRecreateSkipHealth] = useState(false);
+  const [recreateSkipChatlist, setRecreateSkipChatlist] = useState(false);
+  const [recreating, setRecreating] = useState(false);
+
+  const openRecreate = (o: any) => {
+    setRecreateSkipHealth(false);
+    setRecreateSkipChatlist(false);
+    setRecreateTarget(o);
+  };
+
+  const confirmRecreate = async () => {
+    if (!recreateTarget) return;
+    setRecreating(true);
+    try {
+      await api.post(`/api/orders/${recreateTarget.order_id}/recreate`, {
+        skip_health_check: recreateSkipHealth,
+        skip_chatlist_join: recreateSkipChatlist,
+      });
+      toast.success(`Order ${recreateTarget.order_id} — recreate submitted`);
+      mutatePendingOrders();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Recreate failed");
+    }
+    setRecreating(false);
+    setRecreateTarget(null);
+  };
+
   if (isLoading) return <PageSkeleton />;
 
   const b = data?.bots || { total: 0, running: 0, stopped: 0, expired: 0, dead: 0 };
@@ -92,6 +129,38 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6 animate-fade-in">
+
+      {/* ────── Paid-but-stuck orders — payment received, cannot ignore ────── */}
+      {stuckOrders.length > 0 && (
+        <div className="rounded-2xl border border-warning/30 bg-warning/5 overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-warning/20">
+            <div className="flex items-center gap-2.5">
+              <AlertTriangle className="h-4 w-4 text-warning shrink-0" />
+              <h3 className="text-sm font-semibold text-warning">
+                {stuckOrders.length} order{stuckOrders.length > 1 ? "s" : ""} paid but stuck in queue
+              </h3>
+            </div>
+            <Link href="/admin/payments" className="text-[11px] text-dark-400 hover:text-dark-200 flex items-center gap-1">
+              View all in Payments <ExternalLink className="h-3 w-3" />
+            </Link>
+          </div>
+          <div className="divide-y divide-warning/10 max-h-64 overflow-y-auto">
+            {stuckOrders.slice(0, 8).map((o: any) => (
+              <div key={o.order_id} className="flex items-center justify-between gap-3 px-5 py-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-mono text-dark-200 truncate">{o.order_id}</p>
+                  <p className="text-[11px] text-dark-500 truncate mt-0.5">
+                    {o.plan_name || "—"} {o.amount_usd ? `· $${o.amount_usd}` : ""} {o.creation_step ? `— ${o.creation_step}` : ""}
+                  </p>
+                </div>
+                <Button variant="secondary" size="sm" className="shrink-0" onClick={() => openRecreate(o)}>
+                  <Hammer className="h-3.5 w-3.5 text-warning" /> Recreate
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ────── Stat Cards ────── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-5">
@@ -676,7 +745,7 @@ export default function DashboardPage() {
                 </span>
                 <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0 ${
                   a.type === "error" || a.type === "critical" ? "bg-red-500/10 text-red-400" :
-                  a.type === "warning" ? "bg-amber-500/10 text-amber-400" :
+                  a.type === "warning" || a.type === "pending_creation" || a.type === "queue_sessions" ? "bg-amber-500/10 text-amber-400" :
                   a.type === "bot" ? "bg-accent/10 text-accent" :
                   "bg-emerald-500/10 text-emerald-400"
                 }`}>
@@ -688,6 +757,53 @@ export default function DashboardPage() {
           </div>
         </div>
       )}
+
+      {/* Recreate modal — pick which steps to skip */}
+      <Modal open={!!recreateTarget} onClose={() => setRecreateTarget(null)} title="Recreate Bot" size="sm">
+        {recreateTarget && (
+          <div className="space-y-4">
+            <p className="text-xs text-dark-400">
+              Rebuild the bot for order <span className="font-mono text-dark-200">{recreateTarget.order_id}</span>.
+              {recreateTarget.creation_step && (
+                <span className="block mt-2 rounded-lg bg-warning/10 border border-warning/20 px-2.5 py-2 text-[11px] text-warning">
+                  {recreateTarget.creation_step}
+                </span>
+              )}
+            </p>
+            <div className="space-y-2">
+              <p className="text-[11px] font-medium text-dark-500 uppercase tracking-wider">Skip steps</p>
+              <button type="button" onClick={() => setRecreateSkipHealth((v) => !v)}
+                className={`w-full flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-all ${
+                  recreateSkipHealth ? "border-warning/40 bg-warning/5" : "border-dark-700 bg-dark-800 hover:border-dark-600"
+                }`}
+              >
+                {recreateSkipHealth ? <CheckSquare className="h-4 w-4 text-warning shrink-0 mt-0.5" /> : <Square className="h-4 w-4 text-dark-500 shrink-0 mt-0.5" />}
+                <span>
+                  <span className={`block text-xs font-medium ${recreateSkipHealth ? "text-warning" : "text-dark-300"}`}>Skip session health check</span>
+                  <span className="block text-[11px] text-dark-500 mt-0.5">Use sessions even if they'd normally fail validation (lets bad/dead sessions through).</span>
+                </span>
+              </button>
+              <button type="button" onClick={() => setRecreateSkipChatlist((v) => !v)}
+                className={`w-full flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-all ${
+                  recreateSkipChatlist ? "border-warning/40 bg-warning/5" : "border-dark-700 bg-dark-800 hover:border-dark-600"
+                }`}
+              >
+                {recreateSkipChatlist ? <CheckSquare className="h-4 w-4 text-warning shrink-0 mt-0.5" /> : <Square className="h-4 w-4 text-dark-500 shrink-0 mt-0.5" />}
+                <span>
+                  <span className={`block text-xs font-medium ${recreateSkipChatlist ? "text-warning" : "text-dark-300"}`}>Skip default chatlist auto-join</span>
+                  <span className="block text-[11px] text-dark-500 mt-0.5">Don't auto-join assigned sessions to the mode's default chatlist folders.</span>
+                </span>
+              </button>
+            </div>
+            <div className="flex gap-2 pt-1">
+              <Button variant="ghost" size="sm" className="flex-1" onClick={() => setRecreateTarget(null)}>Cancel</Button>
+              <Button variant="primary" size="sm" className="flex-1" loading={recreating} onClick={confirmRecreate}>
+                <Hammer className="h-3.5 w-3.5" /> Recreate
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

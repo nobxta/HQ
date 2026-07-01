@@ -25,7 +25,7 @@ import {
 } from "lucide-react";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
-import { formatDate, formatDateTime, timeAgo, formatUSD } from "@/lib/utils";
+import { formatDate, formatDateTime, timeAgo, formatUSD, ddmmyyyyToIso, isoToDdmmyyyy } from "@/lib/utils";
 import type { BotUpdatePayload } from "@/lib/types";
 
 const tabs = [
@@ -1886,7 +1886,7 @@ function PlanTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: ()
   const { register, handleSubmit } = useForm({
     defaultValues: {
       plan_name: bot.plan_name || "",
-      valid_till: bot.valid_till?.split("T")[0] || "",
+      valid_till: ddmmyyyyToIso(bot.valid_till),
     },
   });
   const [saving, setSaving] = useState(false);
@@ -1894,7 +1894,7 @@ function PlanTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: ()
   const onSubmit = async (data: any) => {
     setSaving(true);
     try {
-      await api.patch(`/api/bots/${name}`, { valid_till: data.valid_till });
+      await api.patch(`/api/bots/${name}`, { valid_till: isoToDdmmyyyy(data.valid_till) });
       toast.success("Plan updated");
       onUpdate();
     } catch (e: any) {
@@ -1962,7 +1962,7 @@ function ConfigTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: 
       cycle: bot.cycle,
       gap: bot.gap,
       group_file: bot.group_file,
-      valid_till: bot.valid_till?.split("T")[0],
+      valid_till: ddmmyyyyToIso(bot.valid_till),
     },
   });
   const [loading, setLoading] = useState(false);
@@ -1970,7 +1970,7 @@ function ConfigTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: 
   const onSubmit = async (data: BotUpdatePayload) => {
     setLoading(true);
     try {
-      await api.patch(`/api/bots/${name}`, data);
+      await api.patch(`/api/bots/${name}`, { ...data, valid_till: data.valid_till ? isoToDdmmyyyy(data.valid_till) : data.valid_till });
       toast.success("Config updated");
       onUpdate();
     } catch (e: any) {

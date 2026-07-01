@@ -4,9 +4,24 @@ export function cn(...inputs: ClassValue[]) {
   return clsx(inputs);
 }
 
+// The backend stores plan/validity dates as DD/MM/YYYY (not ISO) almost everywhere
+// (shop orders, renewals, the Telegram admin bot). Native `new Date("25/12/2026")`
+// is parsed as US MM/DD/YYYY, which is wrong for day<=12 and "Invalid Date" for day>12.
+export function parseFlexibleDate(d: string | number): Date {
+  if (typeof d === "number") return new Date(d * 1000);
+  const s = d.trim();
+  const ddmmyyyy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (ddmmyyyy) {
+    const [, dd, mm, yyyy] = ddmmyyyy;
+    return new Date(Number(yyyy), Number(mm) - 1, Number(dd));
+  }
+  return new Date(s);
+}
+
 export function formatDate(d: string | number | undefined): string {
   if (!d) return "—";
-  const date = typeof d === "number" ? new Date(d * 1000) : new Date(d);
+  const date = parseFlexibleDate(d);
+  if (isNaN(date.getTime())) return "—";
   return date.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -16,13 +31,34 @@ export function formatDate(d: string | number | undefined): string {
 
 export function formatDateTime(d: string | number | undefined): string {
   if (!d) return "—";
-  const date = typeof d === "number" ? new Date(d * 1000) : new Date(d);
+  const date = parseFlexibleDate(d);
+  if (isNaN(date.getTime())) return "—";
   return date.toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+/** Convert an HTML <input type="date"> value (YYYY-MM-DD) to the backend's DD/MM/YYYY. */
+export function isoToDdmmyyyy(iso: string): string {
+  const m = iso.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return iso;
+  const [, yyyy, mm, dd] = m;
+  return `${dd}/${mm}/${yyyy}`;
+}
+
+/** Convert the backend's DD/MM/YYYY validity date to an HTML <input type="date"> value (YYYY-MM-DD). */
+export function ddmmyyyyToIso(v: string | undefined): string {
+  if (!v) return "";
+  const m = v.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) {
+    const [, dd, mm, yyyy] = m;
+    return `${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}`;
+  }
+  // Already ISO (or ISO datetime) — keep just the date part.
+  return v.split("T")[0];
 }
 
 export function timeAgo(seconds: number): string {

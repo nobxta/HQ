@@ -15,7 +15,7 @@ import { Play, Square, Trash2, Plus, Search, RotateCw, CheckCircle, XCircle, Loa
 import { getSession } from "next-auth/react";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
-import { formatDate } from "@/lib/utils";
+import { formatDate, isoToDdmmyyyy } from "@/lib/utils";
 import type { BotCreatePayload } from "@/lib/types";
 
 export default function AdbotsPage() {
@@ -231,6 +231,7 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
   const [resultMsg, setResultMsg] = useState("");
   const wsRef = useRef<WebSocket | null>(null);
   const progressEndRef = useRef<HTMLDivElement>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     progressEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -239,6 +240,32 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
   const cleanup = useCallback(() => {
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
   }, []);
+
+  // Safety net: the WS terminal message ("success"/"failed") can be missed if the
+  // socket drops mid-creation (long-running step, network blip, tab backgrounding),
+  // leaving the modal stuck on "Creating..." forever even though the bot exists.
+  // Poll the bot record directly so we notice completion even without the WS event.
+  useEffect(() => {
+    if (step !== "creating" || !data.name) {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      return;
+    }
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await api.get(`/api/bots/${encodeURIComponent(data.name)}`);
+        if (res.data) {
+          setResultMsg((prev) => prev || `Bot created: @${res.data.bot_username || data.bot_username}`);
+          setStep("success");
+          cleanup();
+        }
+      } catch {
+        // Not created yet (404) — keep waiting.
+      }
+    }, 4000);
+    return () => {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    };
+  }, [step, data.name, data.bot_username, cleanup]);
 
   // Load context when opened
   useEffect(() => {
@@ -309,7 +336,7 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
         gap: data.gap,
         mode: data.mode,
         group_file: data.group_file,
-        valid_till: data.valid_till,
+        valid_till: isoToDdmmyyyy(data.valid_till),
         renewal_price: data.renewal_price,
         plan_name: "Custom",
         skip_health_check: data.skip_health_check,
