@@ -547,6 +547,21 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
                 </div>
               </div>
 
+              {/* Invoice reference — kept for records / support lookups, not actionable */}
+              <div className="rounded-lg border border-[#1f1f22] bg-[#101012] divide-y divide-[#1f1f22]">
+                <Row label="Order ID" value={order.order_id} muted />
+                <Row label="Amount due" value={`${order.pay_amount} ${order.pay_currency}`} muted />
+                <div className="flex items-start justify-between gap-3 px-4 py-2.5">
+                  <span className="text-[12px] text-[#8b8b93] shrink-0 pt-0.5">Address</span>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <code className="text-[11px] text-[#c9c9cf] font-mono break-all text-right">{order.pay_address}</code>
+                    <button onClick={() => copy(order.pay_address, "addr")} className="shrink-0 text-[#5d5d66] hover:text-white transition-colors" aria-label="Copy address">
+                      {copied === "addr" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               <button onClick={startOver}
                 className="w-full inline-flex items-center justify-center gap-2 text-[14px] font-semibold text-white py-3 rounded-xl transition-all active:scale-[0.99] hover:shadow-[0_8px_24px_rgba(59,168,255,0.3)]"
                 style={{ background: "linear-gradient(135deg, #3BA8FF 0%, #6366F1 100%)" }}>
