@@ -102,6 +102,9 @@ def serialize_order(order: dict) -> dict:
         "created_at": order.get("created_at", ""),
         "paid_at": order.get("paid_at", ""),
         "bot_username": order.get("created_bot_username", ""),
+        # Live Shop Bot invoice (still in temppay.json, not yet a real order) — admin
+        # actions like sync/mark-paid/cancel don't apply until payment confirms.
+        "is_temppay": bool(order.get("is_temppay")),
     }
 
 

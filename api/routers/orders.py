@@ -10,6 +10,33 @@ from api.schemas import OrderActionResponse, RecreateOrderRequest
 router = APIRouter(prefix="/api/orders", tags=["orders"], dependencies=[Depends(get_current_admin)])
 
 
+def _temppay_as_order_rows() -> list[dict]:
+    """Unpaid Shop Bot invoices live in temppay.json until payment confirms, so they are
+    invisible to orders.json readers. Surface them as payment_waiting rows for the admin UI."""
+    from code.shop.storage import temppay_load_all, order_from_temppay_entry
+    rows = []
+    for entry in temppay_load_all():
+        o = order_from_temppay_entry(entry, status="payment_waiting")
+        o["source"] = "shop"
+        o["order_type"] = "purchase"
+        o["is_temppay"] = True
+        o["invoice_expires_at"] = (entry.get("expiry_at") or "").strip()
+        rows.append(o)
+    return rows
+
+
+async def _orders_with_temppay() -> list[dict]:
+    """orders.json plus live bot invoices, deduped by order_id/payment_id."""
+    orders = await wrappers.load_orders()
+    temppay_rows = await asyncio.to_thread(_temppay_as_order_rows)
+    seen_ids = {o.get("order_id") for o in orders}
+    seen_pids = {(o.get("payment_id") or "").strip() for o in orders if o.get("payment_id")}
+    return orders + [
+        t for t in temppay_rows
+        if t.get("order_id") not in seen_ids and (t.get("payment_id") or "") not in seen_pids
+    ]
+
+
 @router.get("")
 async def list_orders(
     status: str = Query(None),
@@ -17,7 +44,7 @@ async def list_orders(
     order_type: str = Query(None),
     pagination: Pagination = Depends(),
 ):
-    orders = await wrappers.load_orders()
+    orders = await _orders_with_temppay()
     results = []
     for o in orders:
         if status and o.get("status") != status:
@@ -34,7 +61,7 @@ async def list_orders(
 
 @router.get("/pending")
 async def pending_orders():
-    orders = await wrappers.load_orders()
+    orders = await _orders_with_temppay()
     pending = [
         serialize_order(o) for o in orders
         if o.get("status") in ("payment_waiting", "confirming", "paid", "pending_creation", "creating")
@@ -45,8 +72,8 @@ async def pending_orders():
 
 @router.get("/stats")
 async def order_stats():
-    """Aggregate metrics across ALL orders for the payments dashboard."""
-    orders = await wrappers.load_orders()
+    """Aggregate metrics across ALL orders (incl. live bot invoices) for the payments dashboard."""
+    orders = await _orders_with_temppay()
     by_status: dict[str, int] = {}
     revenue = 0.0
     for o in orders:

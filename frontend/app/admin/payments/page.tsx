@@ -21,6 +21,7 @@ interface OrderRow {
   ref_name?: string; ref_email?: string; ref_username?: string;
   bot_name?: string; web_token?: string; creation_step?: string; queued?: boolean;
   created_at?: string; paid_at?: string; bot_username?: string;
+  is_temppay?: boolean;
 }
 
 function Row({ label, value, mono = false }: { label: string; value: any; mono?: boolean }) {
@@ -208,22 +209,30 @@ export default function PaymentsPage() {
                     <Td className="text-xs">{formatDateTime(o.created_at || "")}</Td>
                     <Td className="text-right">
                       <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
-                        <Button variant="ghost" size="sm" onClick={() => syncOrder(o.order_id)} title="Sync from NOWPayments">
-                          <RotateCw className="h-3.5 w-3.5 text-accent" />
-                        </Button>
-                        {canRecreate(o) && (
-                          <Button variant="ghost" size="sm" onClick={() => openRecreate(o)} title="Recreate bot">
-                            <Hammer className="h-3.5 w-3.5 text-warning" />
-                          </Button>
-                        )}
-                        {!["completed", "cancelled"].includes(o.status) && (
+                        {o.is_temppay ? (
+                          <span className="text-[10px] text-dark-500 whitespace-nowrap" title="Live Shop Bot invoice — becomes an order once payment confirms">
+                            Bot invoice
+                          </span>
+                        ) : (
                           <>
-                            <Button variant="ghost" size="sm" onClick={() => setMarkPaidTarget(o.order_id)} title="Mark Paid">
-                              <CheckCircle className="h-3.5 w-3.5 text-success" />
+                            <Button variant="ghost" size="sm" onClick={() => syncOrder(o.order_id)} title="Sync from NOWPayments">
+                              <RotateCw className="h-3.5 w-3.5 text-accent" />
                             </Button>
-                            <Button variant="ghost" size="sm" onClick={() => setCancelTarget(o.order_id)} title="Cancel">
-                              <Ban className="h-3.5 w-3.5 text-danger" />
-                            </Button>
+                            {canRecreate(o) && (
+                              <Button variant="ghost" size="sm" onClick={() => openRecreate(o)} title="Recreate bot">
+                                <Hammer className="h-3.5 w-3.5 text-warning" />
+                              </Button>
+                            )}
+                            {!["completed", "cancelled"].includes(o.status) && (
+                              <>
+                                <Button variant="ghost" size="sm" onClick={() => setMarkPaidTarget(o.order_id)} title="Mark Paid">
+                                  <CheckCircle className="h-3.5 w-3.5 text-success" />
+                                </Button>
+                                <Button variant="ghost" size="sm" onClick={() => setCancelTarget(o.order_id)} title="Cancel">
+                                  <Ban className="h-3.5 w-3.5 text-danger" />
+                                </Button>
+                              </>
+                            )}
                           </>
                         )}
                       </div>
@@ -252,9 +261,13 @@ export default function PaymentsPage() {
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <Badge status={detail.status} />
-              <Button variant="secondary" size="sm" loading={syncing} onClick={() => syncOrder(detail.order_id)}>
-                <RotateCw className="h-3.5 w-3.5" /> Sync now
-              </Button>
+              {detail.is_temppay ? (
+                <span className="text-[11px] text-dark-500">Live Shop Bot invoice</span>
+              ) : (
+                <Button variant="secondary" size="sm" loading={syncing} onClick={() => syncOrder(detail.order_id)}>
+                  <RotateCw className="h-3.5 w-3.5" /> Sync now
+                </Button>
+              )}
             </div>
 
             <div className="rounded-xl border border-white/[0.06] bg-dark-900/50 px-4 py-2 divide-y divide-white/[0.04]">
@@ -319,21 +332,29 @@ export default function PaymentsPage() {
               <Row label="Invoice expires" value={detail.invoice_expires_at ? formatDateTime(detail.invoice_expires_at) : ""} />
             </div>
 
-            {canRecreate(detail) && (
-              <Button variant="secondary" size="sm" className="w-full" onClick={() => openRecreate(detail)}>
-                <Hammer className="h-3.5 w-3.5 text-warning" /> Recreate bot (keeps access code)
-              </Button>
-            )}
+            {detail.is_temppay ? (
+              <p className="text-[11px] text-dark-500 text-center pt-1">
+                This is a live Shop Bot invoice. It becomes a manageable order once the buyer pays, or moves to Expired if the window closes.
+              </p>
+            ) : (
+              <>
+                {canRecreate(detail) && (
+                  <Button variant="secondary" size="sm" className="w-full" onClick={() => openRecreate(detail)}>
+                    <Hammer className="h-3.5 w-3.5 text-warning" /> Recreate bot (keeps access code)
+                  </Button>
+                )}
 
-            {!["completed", "cancelled"].includes(detail.status) && (
-              <div className="flex gap-2 pt-1">
-                <Button variant="primary" size="sm" className="flex-1" onClick={() => { setMarkPaidTarget(detail.order_id); }}>
-                  <CheckCircle className="h-3.5 w-3.5" /> Mark paid
-                </Button>
-                <Button variant="ghost" size="sm" className="flex-1" onClick={() => { setCancelTarget(detail.order_id); }}>
-                  <Ban className="h-3.5 w-3.5 text-danger" /> Cancel
-                </Button>
-              </div>
+                {!["completed", "cancelled"].includes(detail.status) && (
+                  <div className="flex gap-2 pt-1">
+                    <Button variant="primary" size="sm" className="flex-1" onClick={() => { setMarkPaidTarget(detail.order_id); }}>
+                      <CheckCircle className="h-3.5 w-3.5" /> Mark paid
+                    </Button>
+                    <Button variant="ghost" size="sm" className="flex-1" onClick={() => { setCancelTarget(detail.order_id); }}>
+                      <Ban className="h-3.5 w-3.5 text-danger" /> Cancel
+                    </Button>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}

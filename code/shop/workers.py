@@ -187,10 +187,36 @@ def _poll_interval_sec(elapsed_sec: float) -> int:
     return POLL_INTERVAL_AFTER_30_MIN
 
 
+async def _expire_temppay_to_orders(entry: dict) -> None:
+    """Expire a bot invoice still in temppay: record it as an 'expired' order so the
+    admin panel keeps history (web orders already get an expired record), remove it
+    from temppay, clear the buyer's pending-payment state, and update their message."""
+    pid = (entry.get("invoice_id") or entry.get("payment_id") or "").strip()
+    if pid and not get_order_by_payment_id(pid):
+        order = append_order_from_temppay(entry, status="expired")
+        update_order(order["order_id"], {
+            "source": "shop",
+            "invoice_expires_at": (entry.get("expiry_at") or "").strip(),
+        })
+    if pid:
+        temppay_remove_by_invoice_id(pid)
+    try:
+        from code.shop.handlers import clear_pending_payment_state
+        clear_pending_payment_state(entry.get("user_id"))
+    except Exception:
+        pass
+    chat_id = entry.get("payment_chat_id") or 0
+    msg_id = entry.get("payment_message_id") or 0
+    if chat_id and msg_id:
+        await notify.notify_edit_message(
+            chat_id, msg_id, EXPIRED_MESSAGE, bot_token=config.SHOP_BOT_TOKEN
+        )
+
+
 async def _process_temppay_entry(entry: dict, now_utc: datetime) -> None:
     """
-    Process one temppay entry: expiry (remove + edit msg), or poll and on confirming/confirmed
-    move to orders.json and remove from temppay.
+    Process one temppay entry: expiry (record expired order + edit msg), or poll and on
+    confirming/confirmed move to orders.json and remove from temppay.
     """
     invoice_id = (entry.get("invoice_id") or entry.get("payment_id") or "").strip()
     if not invoice_id:
@@ -198,18 +224,7 @@ async def _process_temppay_entry(entry: dict, now_utc: datetime) -> None:
     expiry_at = (entry.get("expiry_at") or "").strip()
     expiry_dt = _parse_iso(expiry_at) if expiry_at else None
     if expiry_dt and now_utc > expiry_dt:
-        temppay_remove_by_invoice_id(invoice_id)
-        try:
-            from code.shop.handlers import clear_pending_payment_state
-            clear_pending_payment_state(entry.get("user_id"))
-        except Exception:
-            pass
-        chat_id = entry.get("payment_chat_id") or 0
-        msg_id = entry.get("payment_message_id") or 0
-        if chat_id and msg_id:
-            await notify.notify_edit_message(
-                chat_id, msg_id, EXPIRED_MESSAGE, bot_token=config.SHOP_BOT_TOKEN
-            )
+        await _expire_temppay_to_orders(entry)
         return
     details = await asyncio.to_thread(get_payment_details, invoice_id)
     if details is None:
@@ -502,21 +517,12 @@ async def webhook_temppay_partial(payment_id: str, amount_received: float) -> bo
 
 
 async def webhook_temppay_expired(payment_id: str) -> bool:
-    """Expired bot invoice (still in temppay): remove it and tell the buyer. For the webhook."""
+    """Expired bot invoice (still in temppay): record as expired order and tell the buyer. For the webhook."""
     pid = (payment_id or "").strip()
     entry = temppay_get_by_invoice_id(pid)
     if not entry:
         return False
-    chat_id = entry.get("payment_chat_id") or 0
-    msg_id = entry.get("payment_message_id") or 0
-    temppay_remove_by_invoice_id(pid)
-    try:
-        from .handlers import clear_pending_payment_state
-        clear_pending_payment_state(entry.get("user_id"))
-    except Exception:
-        pass
-    if chat_id and msg_id:
-        await notify.notify_edit_message(chat_id, msg_id, EXPIRED_MESSAGE, bot_token=config.SHOP_BOT_TOKEN)
+    await _expire_temppay_to_orders(entry)
     return True
 
 
@@ -584,6 +590,15 @@ async def payment_safety_sweep() -> None:
                 if st in ("confirmed", "finished", "sent"):
                     logger.info("[SWEEP] webhook missed — confirming temppay %s", pid)
                     await confirm_payment_for_invoice(pid, d)
+                elif st in ("expired", "failed", "refunded"):
+                    logger.info("[SWEEP] temppay %s -> expired (provider %s)", pid, st)
+                    await _expire_temppay_to_orders(entry)
+                else:
+                    # Provider still 'waiting' but our invoice window has passed → expire it.
+                    exp = _parse_iso((entry.get("expiry_at") or "").strip())
+                    if exp and now > exp:
+                        logger.info("[SWEEP] temppay %s expired (invoice window passed, unpaid)", pid)
+                        await _expire_temppay_to_orders(entry)
         except Exception as e:
             logger.warning("Payment safety sweep error: %s", e)
 
