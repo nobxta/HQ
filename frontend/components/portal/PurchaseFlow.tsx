@@ -5,8 +5,7 @@ import axios from "axios";
 import {
   X, ArrowLeft, ArrowRight, Check, Search, Copy, Clock,
   AlertTriangle, Loader2, Tag, ChevronRight, Sparkles, Wallet,
-  Bell, ShieldCheck, RotateCw, Hourglass, Zap, Headphones,
-  Lock, BadgeCheck, FileWarning,
+  Bell, ShieldCheck, RotateCw,
 } from "lucide-react";
 
 const TELEGRAM_SUPPORT_URL = "https://t.me/hqadz_support";
@@ -533,40 +532,43 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
           )}
 
           {/* ── STEP: pay ── */}
-          {step === "pay" && order && selected && (
-            <div className="space-y-4">
-              {isExpired ? (
-                /* ── Payment expired hero ── */
-                <div className="text-center pf-fade-up pt-1 pb-1">
-                  <div className="relative flex justify-center mb-5">
-                    <span className="expired-particle ep-1"><X className="w-3 h-3" /></span>
-                    <span className="expired-particle ep-2"><Sparkles className="w-3 h-3" /></span>
-                    <span className="expired-particle ep-3"><span className="block w-1.5 h-1.5 rounded-full bg-blue-400" /></span>
-                    <span className="expired-particle ep-4"><span className="block w-1.5 h-1.5 rotate-45 bg-red-400" /></span>
-                    <div className="expired-ring">
-                      <Clock className="w-8 h-8 text-red-400" strokeWidth={2} />
-                    </div>
-                  </div>
-                  <h2 className="text-[26px] sm:text-[30px] font-semibold text-white tracking-[-0.02em]">
-                    Payment <span className="text-red-400">Expired</span>
-                  </h2>
-                  <p className="text-[13px] text-[#8b94a8] mt-2.5 max-w-[320px] mx-auto leading-relaxed">
-                    This invoice has expired for security reasons. Please create a new payment to continue.
+          {step === "pay" && order && selected && isExpired && (
+            <div className="space-y-4 pf-fade-up">
+              {/* Compact, left-aligned expired notice — no hero, no repeated "expired" copy */}
+              <div className="rounded-xl border border-red-500/20 bg-red-500/[0.05] p-4 flex gap-3.5">
+                <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-red-500/10 border border-red-500/20">
+                  <Clock className="w-[18px] h-[18px] text-red-400" />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-[15px] font-semibold text-white">Payment window closed</p>
+                  <p className="text-[12.5px] text-[#8b94a8] mt-1 leading-relaxed">
+                    We didn&apos;t receive any funds before this invoice expired, so you haven&apos;t been charged. Start a new payment to continue with the {plan.label} plan.
                   </p>
-                  <button onClick={startOver}
-                    className="mt-5 w-full inline-flex items-center justify-center gap-2 text-[14px] font-semibold text-white py-3 rounded-xl transition-all active:scale-[0.99] hover:shadow-[0_8px_24px_rgba(59,168,255,0.3)]"
-                    style={{ background: "linear-gradient(135deg, #3BA8FF 0%, #6366F1 100%)" }}>
-                    <RotateCw className="w-4 h-4" /> Create New Payment
-                  </button>
                 </div>
-              ) : (
-                <div className="flex items-center justify-between">
-                  <h3 className="text-[18px] font-semibold text-white">Send payment</h3>
-                  <span className={`flex items-center gap-1.5 text-[12px] font-medium tabular-nums ${timeLeft === "Expired" ? "text-red-400" : ""}`} style={timeLeft !== "Expired" ? { color: TG } : undefined}>
-                    <Clock className="w-3.5 h-3.5" /> {timeLeft || "—"}
-                  </span>
-                </div>
-              )}
+              </div>
+
+              <button onClick={startOver}
+                className="w-full inline-flex items-center justify-center gap-2 text-[14px] font-semibold text-white py-3 rounded-xl transition-all active:scale-[0.99] hover:shadow-[0_8px_24px_rgba(59,168,255,0.3)]"
+                style={{ background: "linear-gradient(135deg, #3BA8FF 0%, #6366F1 100%)" }}>
+                <RotateCw className="w-4 h-4" /> Create New Payment
+              </button>
+
+              <a href={TELEGRAM_SUPPORT_URL} target="_blank" rel="noopener noreferrer"
+                className="block text-center text-[12px] font-medium text-[#5a6377] hover:text-[#3BA8FF] transition-colors">
+                Already sent it? Contact support
+              </a>
+            </div>
+          )}
+
+          {/* ── STEP: pay (active invoice) ── */}
+          {step === "pay" && order && selected && !isExpired && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-[18px] font-semibold text-white">Send payment</h3>
+                <span className="flex items-center gap-1.5 text-[12px] font-medium tabular-nums" style={{ color: TG }}>
+                  <Clock className="w-3.5 h-3.5" /> {timeLeft || "—"}
+                </span>
+              </div>
 
               {/* QR */}
               <div className="flex justify-center">
@@ -609,22 +611,8 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
                 </p>
               </div>
 
-              {/* status: expired → partial → waiting */}
-              {isExpired ? (
-                <div className="rounded-2xl border border-red-500/20 bg-red-500/[0.05] p-5 flex items-center gap-4 pf-fade-up">
-                  <span className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-red-500/10 border border-red-500/20">
-                    <FileWarning className="w-5 h-5 text-red-400" />
-                  </span>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[14px] font-semibold text-red-400">Invoice Expired</p>
-                    <p className="text-[12px] text-[#8b8b93] mt-1 leading-relaxed">This invoice is no longer valid. Start a new order to get a fresh address &amp; amount.</p>
-                    <button onClick={startOver} className="mt-2.5 text-[12px] font-medium inline-flex items-center gap-1 text-red-400 hover:text-red-300 transition-colors">
-                      <RotateCw className="w-3.5 h-3.5" /> Start New Order
-                    </button>
-                  </div>
-                  <Hourglass className="w-9 h-9 text-red-400/25 flex-shrink-0 hidden sm:block" />
-                </div>
-              ) : status?.underpaid ? (
+              {/* status: partial → waiting */}
+              {status?.underpaid ? (
                 <div className="rounded-lg border border-amber-500/25 bg-amber-500/[0.07] px-4 py-3">
                   <p className="text-[13px] font-medium text-amber-400">Partial payment received</p>
                   <p className="text-[12px] text-[#c9c9cf] mt-1 leading-relaxed">
@@ -642,25 +630,6 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
                     </p>
                   </div>
                 </div>
-              )}
-
-              {/* trust badges + security footer — shown once the invoice has expired */}
-              {isExpired && (
-                <>
-                  <div className="grid grid-cols-3 gap-2.5 pf-fade-up">
-                    <TrustBadge icon={ShieldCheck} color="#3BA8FF" label="Secure Payment" sub="Your transactions are protected" />
-                    <TrustBadge icon={Zap} color="#8B5CF6" label="Instant Activation" sub="Get access immediately after payment" />
-                    <TrustBadge icon={Headphones} color="#22C55E" label="24/7 Support" sub="We're here to help you anytime" />
-                  </div>
-                  <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:justify-between rounded-lg border border-[#1c2333] bg-[#0a0f1c] px-4 py-3 pf-fade-up">
-                    <span className="flex items-center gap-2 text-[11px] text-[#8b94a8]">
-                      <Lock className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" /> Your payment is secured with industry-standard encryption.
-                    </span>
-                    <span className="flex items-center gap-1 text-[11px] font-medium flex-shrink-0" style={{ color: TG }}>
-                      hqadz.io <BadgeCheck className="w-3.5 h-3.5" />
-                    </span>
-                  </div>
-                </>
               )}
             </div>
           )}
@@ -882,21 +851,6 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
         @keyframes active-dot-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(0.8); } }
         .active-dot { animation: active-dot-pulse 1.6s ease-in-out infinite; }
 
-        /* Payment-expired hero: red pulse ring + scattered twinkling particles around the clock */
-        .expired-ring { position: relative; z-index: 1; width: 72px; height: 72px; border-radius: 9999px;
-          display: flex; align-items: center; justify-content: center;
-          background: radial-gradient(circle at center, rgba(248,113,113,0.14), transparent 70%);
-          border: 2px solid rgba(248,113,113,0.35);
-          animation: expired-ring-pulse 2.2s ease-in-out infinite; }
-        @keyframes expired-ring-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(248,113,113,0.0); } 50% { box-shadow: 0 0 22px 2px rgba(248,113,113,0.22); } }
-        .expired-particle { position: absolute; display: flex; align-items: center; justify-content: center;
-          color: #f87171; animation: expired-twinkle 2.6s ease-in-out infinite; }
-        .ep-1 { top: -6px; left: 34%; animation-delay: 0s; color: #f87171; }
-        .ep-2 { top: 6px; right: 22%; animation-delay: 0.6s; color: #60a5fa; }
-        .ep-3 { bottom: 4px; left: 24%; animation-delay: 1.2s; }
-        .ep-4 { bottom: -2px; right: 30%; animation-delay: 1.8s; }
-        @keyframes expired-twinkle { 0%, 100% { opacity: 0.25; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.15); } }
-
         /* Modal content fade/stagger */
         @keyframes pf-fade-up { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         .pf-fade-up { animation: pf-fade-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }
@@ -911,18 +865,6 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
 }
 
 /* ── sub-components ── */
-function TrustBadge({ icon: Icon, color, label, sub }: { icon: typeof ShieldCheck; color: string; label: string; sub: string }) {
-  return (
-    <div className="flex flex-col items-center text-center gap-1.5 rounded-xl border border-[#1c2333] bg-[#0a0f1c] px-2 py-3.5">
-      <span className="flex h-8 w-8 items-center justify-center rounded-full flex-shrink-0" style={{ background: `${color}1f` }}>
-        <Icon className="w-4 h-4" style={{ color }} />
-      </span>
-      <p className="text-[11px] font-semibold text-white leading-tight">{label}</p>
-      <p className="text-[10px] text-[#5a6377] leading-snug">{sub}</p>
-    </div>
-  );
-}
-
 function Row({ label, value, muted, accent }: { label: string; value: string; muted?: boolean; accent?: boolean }) {
   return (
     <div className="flex items-center justify-between px-4 py-2.5">
