@@ -48,6 +48,8 @@ class BotCreateRequest(BaseModel):
     valid_till: str
     renewal_price: float = 0.0
     plan_name: str = "Custom"
+    skip_health_check: bool = False
+    skip_chatlist_join: bool = False
 
 
 class BotUpdateRequest(BaseModel):
@@ -90,6 +92,11 @@ class OrderInfo(BaseModel):
 class OrderActionResponse(BaseModel):
     success: bool
     message: str
+
+
+class RecreateOrderRequest(BaseModel):
+    skip_health_check: bool = False
+    skip_chatlist_join: bool = False
 
 
 class GroupFileInfo(BaseModel):

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from api.deps import get_current_admin, Pagination
 from api.services import wrappers
 from api.services.serializers import serialize_order, paginate
-from api.schemas import OrderActionResponse
+from api.schemas import OrderActionResponse, RecreateOrderRequest
 
 router = APIRouter(prefix="/api/orders", tags=["orders"], dependencies=[Depends(get_current_admin)])
 
@@ -95,10 +95,14 @@ async def cancel_order(order_id: str):
 
 
 @router.post("/{order_id}/recreate", response_model=OrderActionResponse)
-async def recreate_order(order_id: str):
+async def recreate_order(order_id: str, body: RecreateOrderRequest = RecreateOrderRequest()):
     from code.shop.handlers import recreate_pending_order
     try:
-        success, msg = await recreate_pending_order(order_id)
+        success, msg = await recreate_pending_order(
+            order_id,
+            skip_health_check=body.skip_health_check,
+            skip_chatlist_join=body.skip_chatlist_join,
+        )
     except Exception as e:
         raise HTTPException(500, f"Recreate failed: {e}")
     if not success:

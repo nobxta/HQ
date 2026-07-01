@@ -114,6 +114,8 @@ async def create_bot(body: BotCreateRequest):
         "valid_till": body.valid_till,
         "renewal_price": body.renewal_price,
         "plan_name": body.plan_name,
+        "skip_health_check": body.skip_health_check,
+        "skip_chatlist_join": body.skip_chatlist_join,
     }
     try:
         submit_create_job(chat_id=ADMIN_USER_ID, msg_id=0, form=form, web=True)

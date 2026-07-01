@@ -11,7 +11,7 @@ import Modal from "@/components/ui/Modal";
 import ConfirmModal from "@/components/ConfirmModal";
 import { TableSkeleton } from "@/components/ui/Skeleton";
 import { useForm } from "react-hook-form";
-import { Play, Square, Trash2, Plus, Search, RotateCw, CheckCircle, XCircle, Loader2 } from "lucide-react";
+import { Play, Square, Trash2, Plus, Search, RotateCw, CheckCircle, XCircle, Loader2, CheckSquare, AlertTriangle } from "lucide-react";
 import { getSession } from "next-auth/react";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
@@ -188,6 +188,8 @@ interface WizardData {
   group_file: string;
   valid_till: string;
   renewal_price: number;
+  skip_health_check: boolean;
+  skip_chatlist_join: boolean;
 }
 
 type WizardStep = "loading" | "name" | "bot_token" | "sessions" | "timing" | "mode" | "group_file" | "validity" | "summary" | "creating" | "success" | "failed";
@@ -221,6 +223,7 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
     name: "", bot_token: "", bot_username: "", sessions_count: 1,
     cycle: 300, gap: 5, mode: "starter", group_file: "",
     valid_till: "", renewal_price: 0,
+    skip_health_check: false, skip_chatlist_join: false,
   });
   const [error, setError] = useState("");
   const [validating, setValidating] = useState(false);
@@ -243,7 +246,7 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
       cleanup();
       setStep("loading");
       setCtx(null);
-      setData({ name: "", bot_token: "", bot_username: "", sessions_count: 1, cycle: 300, gap: 5, mode: "starter", group_file: "", valid_till: "", renewal_price: 0 });
+      setData({ name: "", bot_token: "", bot_username: "", sessions_count: 1, cycle: 300, gap: 5, mode: "starter", group_file: "", valid_till: "", renewal_price: 0, skip_health_check: false, skip_chatlist_join: false });
       setError("");
       setProgressLines([]);
       setResultMsg("");
@@ -309,6 +312,8 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
         valid_till: data.valid_till,
         renewal_price: data.renewal_price,
         plan_name: "Custom",
+        skip_health_check: data.skip_health_check,
+        skip_chatlist_join: data.skip_chatlist_join,
       });
     } catch (e: any) {
       toast.error(e?.response?.data?.detail || "Failed to create bot");
@@ -362,6 +367,28 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
       ) : <div />}
       <Button size="sm" onClick={onNext} disabled={nextDisabled} loading={nextLoading}>{nextLabel}</Button>
     </div>
+  );
+
+  /* ── Tick toggle (skip-step options) ── */
+  const TickOption = ({ label, hint, checked, onChange }: {
+    label: string; hint?: string; checked: boolean; onChange: (v: boolean) => void;
+  }) => (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      className={`w-full flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-all ${
+        checked ? "border-warning/40 bg-warning/5" : "border-dark-700 bg-dark-800 hover:border-dark-600"
+      }`}
+    >
+      {checked
+        ? <CheckSquare className="h-4 w-4 text-warning shrink-0 mt-0.5" />
+        : <Square className="h-4 w-4 text-dark-500 shrink-0 mt-0.5" />
+      }
+      <span>
+        <span className={`block text-xs font-medium ${checked ? "text-warning" : "text-dark-300"}`}>{label}</span>
+        {hint && <span className="block text-[11px] text-dark-500 mt-0.5">{hint}</span>}
+      </span>
+    </button>
   );
 
   /* ── Chip selector ── */
@@ -462,6 +489,29 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
             />
             <span className="text-xs text-dark-500 mt-5">sessions</span>
           </div>
+
+          <div className="mt-5 space-y-2">
+            <p className="text-[11px] font-medium text-dark-500 uppercase tracking-wider">Advanced — skip steps</p>
+            <TickOption
+              label="Skip session health check"
+              hint="Use sessions even if they fail validation, instead of rejecting them (lets you assign dead/limited sessions)."
+              checked={data.skip_health_check}
+              onChange={(v) => update({ skip_health_check: v })}
+            />
+            <TickOption
+              label="Skip default chatlist auto-join"
+              hint="Don't auto-join the assigned sessions to the mode's default chatlist folders."
+              checked={data.skip_chatlist_join}
+              onChange={(v) => update({ skip_chatlist_join: v })}
+            />
+            {data.skip_health_check && (
+              <div className="flex items-start gap-2 rounded-lg bg-warning/10 border border-warning/20 px-3 py-2">
+                <AlertTriangle className="h-3.5 w-3.5 text-warning shrink-0 mt-0.5" />
+                <span className="text-[11px] text-warning/90">Health check is skipped — bad or dead sessions can be assigned and the bot may be unstable.</span>
+              </div>
+            )}
+          </div>
+
           <NavButtons
             onBack={() => { setError(""); setStep("bot_token"); }}
             onNext={() => { setError(""); setStep("timing"); }}
@@ -618,6 +668,8 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
         ["Group File", data.group_file || "—"],
         ["Valid Until", data.valid_till],
         ["Renewal", data.renewal_price > 0 ? `$${data.renewal_price}` : "—"],
+        ["Health check", data.skip_health_check ? "Skipped" : "Enabled"],
+        ["Chatlist auto-join", data.skip_chatlist_join ? "Skipped" : "Enabled"],
       ];
       return (
         <>
@@ -645,16 +697,22 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
         <div className="space-y-4">
           <StepHeader title={step === "creating" ? "Creating Bot..." : step === "success" ? "Created!" : "Failed"} />
           <div className="rounded-lg bg-dark-950 border border-dark-700 p-3 max-h-64 overflow-y-auto font-mono text-xs space-y-1.5">
-            {progressLines.map((line, i) => (
-              <div key={i} className="flex items-start gap-2 animate-fade-in">
-                {i === progressLines.length - 1 && step === "creating" ? (
-                  <Loader2 className="h-3.5 w-3.5 text-accent animate-spin shrink-0 mt-0.5" />
-                ) : (
-                  <CheckCircle className="h-3.5 w-3.5 text-green-500 shrink-0 mt-0.5" />
-                )}
-                <span className="text-dark-300 break-all">{line.message}</span>
-              </div>
-            ))}
+            {progressLines.map((line, i) => {
+              const isIssue = /invalid|missing|not enough|restrict|cannot|failed|skip/i.test(line.message);
+              const isLast = i === progressLines.length - 1;
+              return (
+                <div key={i} className="flex items-start gap-2 animate-fade-in">
+                  {isLast && step === "creating" ? (
+                    <Loader2 className="h-3.5 w-3.5 text-accent animate-spin shrink-0 mt-0.5" />
+                  ) : isIssue ? (
+                    <AlertTriangle className="h-3.5 w-3.5 text-warning shrink-0 mt-0.5" />
+                  ) : (
+                    <CheckCircle className="h-3.5 w-3.5 text-green-500 shrink-0 mt-0.5" />
+                  )}
+                  <span className={`break-all ${isIssue ? "text-warning" : "text-dark-300"}`}>{line.message}</span>
+                </div>
+              );
+            })}
             <div ref={progressEndRef} />
           </div>
           {step === "success" && (

@@ -781,7 +781,9 @@ async def _core_create_adbot_async(
             short_description=BOT_PROFILE_SHORT_DESCRIPTION,
         )
 
-        await log_async("Assigning sessions…")
+        skip_health_check = bool(form.get("skip_health_check"))
+        skip_chatlist_join = bool(form.get("skip_chatlist_join"))
+        await log_async("Assigning sessions…" if not skip_health_check else "Assigning sessions (health check skipped)…")
         free_list = list(adbot_data.get("free_sessions", []))
         assigned: list[dict] = []
         for fn in free_list:
@@ -795,17 +797,23 @@ async def _core_create_adbot_async(
                     adbot_data["dead_sessions"].append(fn)
                 await log_async(f"Session {fn} missing; trying next.")
                 continue
-            ok = await validate_session(path)
-            if not ok:
-                adbot_data["free_sessions"] = [x for x in adbot_data["free_sessions"] if x != fn]
-                adbot_data.setdefault("dead_sessions", [])
-                if fn not in adbot_data["dead_sessions"]:
-                    adbot_data["dead_sessions"].append(fn)
-                await log_async(f"Session {fn} invalid; trying next.")
-                continue
+            if not skip_health_check:
+                ok = await validate_session(path)
+                if not ok:
+                    adbot_data["free_sessions"] = [x for x in adbot_data["free_sessions"] if x != fn]
+                    adbot_data.setdefault("dead_sessions", [])
+                    if fn not in adbot_data["dead_sessions"]:
+                        adbot_data["dead_sessions"].append(fn)
+                    await log_async(f"Session {fn} invalid; trying next.")
+                    continue
             if fn in adbot_data.get("free_sessions", []):
                 adbot_data["free_sessions"] = [x for x in adbot_data["free_sessions"] if x != fn]
-            info = await get_session_user(path)
+            try:
+                info = await get_session_user(path)
+            except Exception as e:
+                info = None
+                if skip_health_check:
+                    await log_async(f"Session {fn} info lookup failed (using anyway): {e!s}")
             real_name = str(info[1]) if info else fn
             user_id = int(info[0]) if info else 0
             assigned.append({"file": fn, "real_name": real_name, "user_id": user_id, "index": len(assigned) + 1})
@@ -1019,9 +1027,11 @@ async def _core_create_adbot_async(
         save_user_data(safe_name, entry)
         logger.info("[CREATE_PIPELINE] user JSON created name=%s order_id=%s", safe_name, form.get("order_id", ""))
         # Auto-join default chatlist for this mode (so sessions have the right groups)
+        if skip_chatlist_join:
+            await log_async("Default chatlist auto-join skipped.")
         try:
             from .chatlist import default_chatlist_links_for_mode, join_default_chatlist_on_sessions
-            default_links = default_chatlist_links_for_mode(mode)
+            default_links = [] if skip_chatlist_join else default_chatlist_links_for_mode(mode)
             if default_links:
                 await log_async(f"Joining {len(default_links)} default chatlist folder(s) on sessions…")
                 joined, failed = await join_default_chatlist_on_sessions(entry, mode, progress_cb=log_async)

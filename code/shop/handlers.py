@@ -1380,9 +1380,13 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
 
-async def recreate_pending_order(order_id: str) -> tuple[bool, str]:
+async def recreate_pending_order(
+    order_id: str, skip_health_check: bool = False, skip_chatlist_join: bool = False
+) -> tuple[bool, str]:
     """
     Recreate an AdBot for a pending_creation order. Sends progress message to buyer via Shop Bot, then submits create job.
+    skip_health_check/skip_chatlist_join let an admin force-continue with unhealthy sessions (e.g. dead pool)
+    when the pool is short on healthy ones.
     Returns (success, message).
     """
     from ..utils import load_adbot, validate_bot_token
@@ -1464,6 +1468,8 @@ async def recreate_pending_order(order_id: str) -> tuple[bool, str]:
         "order_id": order_id,
         "source": "web" if is_web else "shop",
         "user_id": user_id or 0,
+        "skip_health_check": skip_health_check,
+        "skip_chatlist_join": skip_chatlist_join,
     }
     # Web orders build headlessly (no Shop Bot user to message); shop orders send a
     # progress message to the buyer first.

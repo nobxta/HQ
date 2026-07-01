@@ -7,7 +7,7 @@ import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import ConfirmModal from "@/components/ConfirmModal";
 import { TableSkeleton } from "@/components/ui/Skeleton";
-import { CheckCircle, Search, Ban, RotateCw, Copy, Check, Hammer } from "lucide-react";
+import { CheckCircle, Search, Ban, RotateCw, Copy, Check, Hammer, AlertTriangle, Square, CheckSquare } from "lucide-react";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
 import { formatDateTime, formatUSD, truncate } from "@/lib/utils";
@@ -45,6 +45,9 @@ export default function PaymentsPage() {
   const [detail, setDetail] = useState<OrderRow | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  const [recreateTarget, setRecreateTarget] = useState<OrderRow | null>(null);
+  const [recreateSkipHealth, setRecreateSkipHealth] = useState(false);
+  const [recreateSkipChatlist, setRecreateSkipChatlist] = useState(false);
   const [stats, setStats] = useState<{ total: number; revenue_usd: number; completed: number; pending: number; expired: number } | null>(null);
 
   useEffect(() => {
@@ -60,16 +63,32 @@ export default function PaymentsPage() {
   const canRecreate = (o: OrderRow) =>
     o.status === "pending_creation" || (o.source === "web" && o.status === "paid" && !!o.queued);
 
-  const doAction = async (orderId: string, action: "mark-paid" | "cancel" | "recreate") => {
+  const doAction = async (orderId: string, action: "mark-paid" | "cancel" | "recreate", body?: any) => {
     setActionLoading(true);
     try {
-      await api.post(`/api/orders/${orderId}/${action}`);
+      await api.post(`/api/orders/${orderId}/${action}`, body);
       toast.success(`Order ${orderId} — ${action}`);
       mutate();
     } catch (e: any) {
       toast.error(e?.response?.data?.detail || `Failed: ${action}`);
     }
     setActionLoading(false);
+  };
+
+  const openRecreate = (o: OrderRow) => {
+    setRecreateSkipHealth(false);
+    setRecreateSkipChatlist(false);
+    setRecreateTarget(o);
+  };
+
+  const confirmRecreate = async () => {
+    if (!recreateTarget) return;
+    await doAction(recreateTarget.order_id, "recreate", {
+      skip_health_check: recreateSkipHealth,
+      skip_chatlist_join: recreateSkipChatlist,
+    });
+    setRecreateTarget(null);
+    setDetail(null);
   };
 
   const syncOrder = async (orderId: string) => {
@@ -193,7 +212,7 @@ export default function PaymentsPage() {
                           <RotateCw className="h-3.5 w-3.5 text-accent" />
                         </Button>
                         {canRecreate(o) && (
-                          <Button variant="ghost" size="sm" loading={actionLoading} onClick={() => doAction(o.order_id, "recreate")} title="Recreate bot">
+                          <Button variant="ghost" size="sm" onClick={() => openRecreate(o)} title="Recreate bot">
                             <Hammer className="h-3.5 w-3.5 text-warning" />
                           </Button>
                         )}
@@ -280,7 +299,17 @@ export default function PaymentsPage() {
                     </button>
                   </div>
                 )}
-                <Row label="Build step" value={detail.creation_step} />
+                {!canRecreate(detail) && <Row label="Build step" value={detail.creation_step} />}
+              </div>
+            )}
+
+            {canRecreate(detail) && detail.creation_step && (
+              <div className="rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 flex items-start gap-2.5">
+                <AlertTriangle className="h-4 w-4 text-warning shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-[11px] font-medium text-warning uppercase tracking-wider">Stuck in queue</p>
+                  <p className="text-xs text-dark-200 mt-0.5 break-words">{detail.creation_step}</p>
+                </div>
               </div>
             )}
 
@@ -291,8 +320,7 @@ export default function PaymentsPage() {
             </div>
 
             {canRecreate(detail) && (
-              <Button variant="secondary" size="sm" className="w-full" loading={actionLoading}
-                onClick={async () => { await doAction(detail.order_id, "recreate"); }}>
+              <Button variant="secondary" size="sm" className="w-full" onClick={() => openRecreate(detail)}>
                 <Hammer className="h-3.5 w-3.5 text-warning" /> Recreate bot (keeps access code)
               </Button>
             )}
@@ -330,6 +358,53 @@ export default function PaymentsPage() {
         confirmText="Cancel Order"
         loading={actionLoading}
       />
+
+      {/* Recreate modal — pick which steps to skip */}
+      <Modal open={!!recreateTarget} onClose={() => setRecreateTarget(null)} title="Recreate Bot" size="sm">
+        {recreateTarget && (
+          <div className="space-y-4">
+            <p className="text-xs text-dark-400">
+              Rebuild the bot for order <span className="font-mono text-dark-200">{truncate(recreateTarget.order_id, 16)}</span>.
+              {recreateTarget.creation_step && (
+                <span className="block mt-2 rounded-lg bg-warning/10 border border-warning/20 px-2.5 py-2 text-[11px] text-warning">
+                  {recreateTarget.creation_step}
+                </span>
+              )}
+            </p>
+            <div className="space-y-2">
+              <p className="text-[11px] font-medium text-dark-500 uppercase tracking-wider">Skip steps</p>
+              <button type="button" onClick={() => setRecreateSkipHealth((v) => !v)}
+                className={`w-full flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-all ${
+                  recreateSkipHealth ? "border-warning/40 bg-warning/5" : "border-dark-700 bg-dark-800 hover:border-dark-600"
+                }`}
+              >
+                {recreateSkipHealth ? <CheckSquare className="h-4 w-4 text-warning shrink-0 mt-0.5" /> : <Square className="h-4 w-4 text-dark-500 shrink-0 mt-0.5" />}
+                <span>
+                  <span className={`block text-xs font-medium ${recreateSkipHealth ? "text-warning" : "text-dark-300"}`}>Skip session health check</span>
+                  <span className="block text-[11px] text-dark-500 mt-0.5">Use sessions even if they'd normally fail validation (lets bad/dead sessions through).</span>
+                </span>
+              </button>
+              <button type="button" onClick={() => setRecreateSkipChatlist((v) => !v)}
+                className={`w-full flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-all ${
+                  recreateSkipChatlist ? "border-warning/40 bg-warning/5" : "border-dark-700 bg-dark-800 hover:border-dark-600"
+                }`}
+              >
+                {recreateSkipChatlist ? <CheckSquare className="h-4 w-4 text-warning shrink-0 mt-0.5" /> : <Square className="h-4 w-4 text-dark-500 shrink-0 mt-0.5" />}
+                <span>
+                  <span className={`block text-xs font-medium ${recreateSkipChatlist ? "text-warning" : "text-dark-300"}`}>Skip default chatlist auto-join</span>
+                  <span className="block text-[11px] text-dark-500 mt-0.5">Don't auto-join assigned sessions to the mode's default chatlist folders.</span>
+                </span>
+              </button>
+            </div>
+            <div className="flex gap-2 pt-1">
+              <Button variant="ghost" size="sm" className="flex-1" onClick={() => setRecreateTarget(null)}>Cancel</Button>
+              <Button variant="primary" size="sm" className="flex-1" loading={actionLoading} onClick={confirmRecreate}>
+                <Hammer className="h-3.5 w-3.5" /> Recreate
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
