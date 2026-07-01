@@ -197,7 +197,7 @@ def _payment_summary_text(st: dict) -> str:
         f"*Plan:* {plan_display}\n"
         f"*Amount:* ${amount:.2f}\n\n"
         f"{TERMS_LINE_MARKDOWN}\n\n"
-        "Select cryptocurrency:"
+        "Choose a coin to pay with:"
     )
 
 
@@ -268,11 +268,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     pending = get_active_pending_order_for_user(user_id)
     if pending:
         await update.message.reply_text(
-            "You already have a pending payment. Use /cancel to cancel the current order before creating a new one.",
+            "You already have an open invoice. Finish that payment, or use /cancel to start fresh.",
         )
         return
     _clear_shop_state(user_id)
-    text, entities = build_emoji_message("Choose an option:", "wave")
+    text, entities = build_emoji_message("Welcome to HQAdz.\nWhat would you like to do?", "shop")
     await update.message.reply_text(
         text,
         reply_markup=_start_menu_keyboard(),
@@ -280,10 +280,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-# Cancelled payment message: edit the payment address message to this (dustbin custom emoji).
+# Cancelled payment message: edit the payment address message to this (declined custom emoji).
 CANCELLED_PAYMENT_MESSAGE = (
-    "Payment Invoice Cancelled\n\n"
-    "This order has been cancelled. You may create a new order anytime using /start."
+    "Order cancelled.\n\n"
+    "Nothing was charged. Start a new order anytime with /start."
 )
 
 
@@ -300,7 +300,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     pending = get_active_pending_order_for_user(user_id)
     if not pending:
         await update.message.reply_text(
-            "No pending payment to cancel.",
+            "No open invoice to cancel.",
             reply_markup=_main_menu_keyboard(),
         )
         return
@@ -314,7 +314,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     chat_id = pending.get("payment_chat_id") or 0
     msg_id = pending.get("payment_message_id") or 0
     if chat_id and msg_id and update.message and context.bot:
-        cancel_text, entities = build_emoji_message(CANCELLED_PAYMENT_MESSAGE, "cancelled")
+        cancel_text, entities = build_emoji_message(CANCELLED_PAYMENT_MESSAGE, "declined")
         try:
             await context.bot.edit_message_text(
                 chat_id=chat_id,
@@ -325,7 +325,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             )
         except Exception as e:
             logger.debug("Could not edit payment message on cancel: %s", e)
-    text, entities = build_emoji_message("Choose an option:", "wave")
+    text, entities = build_emoji_message("Welcome to HQAdz.\nWhat would you like to do?", "shop")
     await update.message.reply_text(
         text,
         reply_markup=_main_menu_keyboard(),
@@ -353,17 +353,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         order_id = (raw.split(":", 1)[1] or "").strip()
         order = get_order(order_id) if order_id else None
         if not order or order.get("user_id") != user_id or order.get("status") != "paid":
-            await q.answer("Order not found or already completed.", show_alert=True)
+            await q.answer("That order's already been handled.", show_alert=True)
             return
         if order.get("awaiting_field") not in ("proceed", "name"):
-            await q.answer("Setup already in progress.", show_alert=False)
+            await q.answer("Already setting up — one moment.", show_alert=False)
             return
         update_order(order_id, {"awaiting_field": "name"})
         try:
             await q.edit_message_reply_markup(reply_markup=None)
         except Exception:
             pass
-        text, entities = build_emoji_message(STEP5_MESSAGE, "trust")
+        text, entities = build_emoji_message(STEP5_MESSAGE, "pointer")
         await context.bot.send_message(chat_id=chat_id, text=text, entities=entities)
         _clear_shop_state(user_id)
         st = {"step": "enter_name", "order_id": order_id, "data": {}}
@@ -377,13 +377,15 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             [InlineKeyboardButton("Starter Plans", callback_data="shop_category:starter")],
             [InlineKeyboardButton("Enterprise Plans", callback_data="shop_category:enterprise")],
         ])
-        text, entities = build_emoji_message("Choose Plan Category", "plans")
+        text, entities = build_emoji_message("Choose your track.\nStarter for individuals — Enterprise for scale.", "plans")
         await q.edit_message_text(text, reply_markup=keyboard, entities=entities)
         return
 
     if raw == "shop_faq":
+        faq_text, faq_entities = build_emoji_message("Quick answers before you buy.", "pointer")
         await q.edit_message_text(
-            "FAQ",
+            faq_text,
+            entities=faq_entities,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("How to Buy", callback_data="shop_how")],
                 [InlineKeyboardButton("How it Works", callback_data="shop_faq_how_it_works")],
@@ -395,44 +397,47 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if raw == "shop_how":
         how = (
-            "How purchase works:\n\n"
-            "1. Buy AdBot → Choose plan category (Starter / Enterprise)\n"
-            "2. Select a plan from the list (e.g. Bronze, Gold)\n"
-            "3. View plan details → Buy Weekly or Buy Monthly\n"
-            "4. Choose crypto → you get a payment address and amount\n"
-            "5. Pay the exact amount to that address\n"
-            "6. When payment is confirmed, enter your Bot Name\n"
-            "7. Send your Bot Token (from @BotFather)\n"
-            "8. We create your AdBot and send you the link\n\n"
-            "You can check validity anytime in your AdBot with the Validity button."
+            "How buying works:\n\n"
+            "1. Buy AdBot — pick a category and plan\n"
+            "2. Choose weekly or monthly billing\n"
+            "3. Pay in crypto to the address we generate\n"
+            "4. Name your bot once payment confirms\n"
+            "5. We build it and send your access link here\n\n"
+            "Check validity anytime via My Bots."
         )
+        how_text, how_entities = build_emoji_message(how, "pointer")
         await q.edit_message_text(
-            how,
+            how_text,
+            entities=how_entities,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="shop_faq")]]),
         )
         return
 
     if raw == "shop_faq_how_it_works":
         msg = (
-            "We post your advertisement in targeted high-reach Telegram marketplace and niche groups "
+            "We place your ad in high-reach, niche-targeted Telegram marketplace groups "
             "to maximize visibility and engagement."
         )
+        hiw_text, hiw_entities = build_emoji_message(msg, "pointer")
         await q.edit_message_text(
-            msg,
+            hiw_text,
+            entities=hiw_entities,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="shop_faq")]]),
         )
         return
 
     if raw == "shop_faq_replacement":
         msg = (
-            "We provide a one-time free replacement for banned sessions.\n"
-            "Example: If two accounts in your plan are banned, both will be replaced together.\n\n"
-            "Free replacement is available:\n"
-            "- Starter plans: monthly plans only\n"
-            "- Enterprise plans: included for all plans"
+            "One free swap for banned accounts in your plan.\n"
+            "If multiple accounts go down together, they're replaced together.\n\n"
+            "Included with:\n"
+            "• Starter — monthly plans only\n"
+            "• Enterprise — all plans"
         )
+        fr_text, fr_entities = build_emoji_message(msg, "pointer")
         await q.edit_message_text(
-            msg,
+            fr_text,
+            entities=fr_entities,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="shop_faq")]]),
         )
         return
@@ -460,13 +465,15 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 valid_till = (cfg.get("valid_till") or "").strip() or "—"
             else:
                 valid_till = "—"
-            lines.append(f"Bot: {username}\nValidity: {valid_till}")
+            lines.append(f"{username}\nValid until: {valid_till}")
         if not lines:
-            body = "You do not have any active bots."
+            body = "No active bots yet — tap Buy AdBot to get started."
         else:
             body = "\n\n".join(lines)
+        mb_text, mb_entities = build_emoji_message(body, "plan_info")
         await q.edit_message_text(
-            body,
+            mb_text,
+            entities=mb_entities,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="shop_back")]]),
         )
         return
@@ -476,16 +483,20 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         support_id = getattr(config, "SUPPORT_CHAT_ID", 0) or getattr(config, "SUPPORT_USER_ID", 0) or 0
         contact = getattr(config, "ADMIN_CONTACT", "admin")
         if support_id:
+            sup_text, sup_entities = build_emoji_message("Need a hand? Tap below to message support directly.", "pointer")
             await q.edit_message_text(
-                "Tap the button below to open a chat with support.",
+                sup_text,
+                entities=sup_entities,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("Contact Support", url=f"tg://user?id={support_id}")],
                     [InlineKeyboardButton("Back", callback_data="shop_back")],
                 ]),
             )
         else:
+            sup_text, sup_entities = build_emoji_message(f"Need a hand? Reach us at @{contact}.", "pointer")
             await q.edit_message_text(
-                f"Support: Contact @{contact} for help.",
+                sup_text,
+                entities=sup_entities,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="shop_back")]]),
             )
         return
@@ -501,7 +512,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if raw == "shop_back":
-        text, entities = build_emoji_message("Choose an option:", "wave")
+        text, entities = build_emoji_message("Welcome to HQAdz.\nWhat would you like to do?", "shop")
         await q.edit_message_text(text, reply_markup=_main_menu_keyboard(), entities=entities)
         return
 
@@ -511,7 +522,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         plans = load_plans()
         plan_list = plans.get(mode, [])
         if not plan_list:
-            await q.edit_message_text("No plans available for this category.", reply_markup=_main_menu_keyboard())
+            await q.edit_message_text("Nothing available in this category right now.", reply_markup=_main_menu_keyboard())
             return
         _shop_state[user_id] = {"step": "plan_list", "mode": mode, "data": {}}
         title = "*Starter Plans*" if mode == "starter" else "*Enterprise Plans*"
@@ -524,7 +535,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             pw = float(p.get("price_week", 0))
             name_pad = sid.ljust(max_name_len)
             lines.append(f"{name_pad} | {acc_str} | ${pw:.0f} / week")
-        msg = f"{title}\n\n" + "\n".join(lines) + "\n\nSelect a plan:"
+        msg = f"{title}\n\n" + "\n".join(lines) + "\n\nPick a plan to see full details:"
         # 2-column button grid: pairs of plans, then Back
         rows = []
         for i in range(0, len(plan_list), 2):
@@ -548,12 +559,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         plan_list = plans.get(mode, [])
         plan = next((p for p in plan_list if p.get("id") == plan_id), None)
         if not plan:
-            await q.edit_message_text("Plan not found.", reply_markup=_main_menu_keyboard())
+            await q.edit_message_text("That plan's no longer available.", reply_markup=_main_menu_keyboard())
             return
         _shop_state[user_id] = {"step": "plan_detail", "mode": mode, "plan": plan, "plan_id": plan_id, "data": {}}
         pw = float(plan.get("price_week", 0))
         pm = float(plan.get("price_month", 0))
-        msg = f"*{plan_id.title()} Plan*\n\nChoose billing duration:"
+        msg = f"*{plan_id.title()} Plan*\n\nChoose how long you want to run it:"
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(f"Weekly | ${pw:.0f}", callback_data=f"shop_buy:{plan_id}:7"),
@@ -561,7 +572,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             ],
             [InlineKeyboardButton("Back", callback_data=f"shop_category:{mode}")],
         ])
-        text, entities = build_emoji_message(msg, "plans")
+        text, entities = build_emoji_message(msg, "billing")
         await q.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown", entities=entities)
         return
 
@@ -575,12 +586,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         plan_list = plans.get(mode, [])
         plan = next((p for p in plan_list if p.get("id") == plan_id), None)
         if not plan:
-            await q.edit_message_text("Plan not found.", reply_markup=_main_menu_keyboard())
+            await q.edit_message_text("That plan's no longer available.", reply_markup=_main_menu_keyboard())
             return
         _shop_state[user_id] = {"step": "plan_detail", "mode": mode, "plan": plan, "plan_id": plan_id, "data": {}}
         pw = float(plan.get("price_week", 0))
         pm = float(plan.get("price_month", 0))
-        msg = f"*{plan_id.title()} Plan*\n\nChoose billing duration:"
+        msg = f"*{plan_id.title()} Plan*\n\nChoose how long you want to run it:"
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(f"Weekly | ${pw:.0f}", callback_data=f"shop_buy:{plan_id}:7"),
@@ -588,7 +599,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             ],
             [InlineKeyboardButton("Back", callback_data=f"shop_category:{mode}")],
         ])
-        text, entities = build_emoji_message(msg, "plans")
+        text, entities = build_emoji_message(msg, "billing")
         await q.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown", entities=entities)
         return
 
@@ -602,7 +613,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         duration_days = int(dur_s) if dur_s.isdigit() else (30 if dur_s == "30" else 7)
         st = _shop_state.get(user_id)
         if not st or st.get("step") != "plan_detail":
-            await q.edit_message_text("Start from /start again.", reply_markup=_main_menu_keyboard())
+            await q.edit_message_text("Session expired — send /start to begin again.", reply_markup=_main_menu_keyboard())
             return
         plan = st.get("plan", {})
         if plan.get("id") != plan_id:
@@ -618,7 +629,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         st["amount_usd"] = amount
         _shop_state[user_id] = st
         summary = _payment_summary_text(st)
-        text, entities = build_emoji_message(summary, "cart")
+        text, entities = build_emoji_message(summary, "plan_info")
         await q.edit_message_text(
             text,
             reply_markup=_payment_crypto_keyboard(st),
@@ -632,7 +643,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         parent_order_id = raw.split(":", 1)[1]
         order = get_order(parent_order_id)
         if not order or order.get("status") != "completed":
-            await q.edit_message_text("Order not found or not completed.", reply_markup=_main_menu_keyboard())
+            await q.edit_message_text("Can't find that order — check My Bots.", reply_markup=_main_menu_keyboard())
             return
         _shop_state[user_id] = {"step": "renewal_duration", "parent_order_id": parent_order_id, "data": {}}
         keyboard = InlineKeyboardMarkup([
@@ -640,7 +651,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             [InlineKeyboardButton("30 Days", callback_data=f"shop_renew_dur:{parent_order_id}:30")],
             [InlineKeyboardButton("Back", callback_data="shop_back")],
         ])
-        text, entities = build_emoji_message("Select renewal duration:", "cart")
+        text, entities = build_emoji_message("Renewing your AdBot.\nPick a duration:", "billing")
         await q.edit_message_text(text, reply_markup=keyboard, entities=entities)
         return
 
@@ -652,7 +663,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         duration_days = int(parts[2]) if parts[2].isdigit() else 7
         order = get_order(parent_order_id)
         if not order:
-            await q.edit_message_text("Order not found.", reply_markup=_main_menu_keyboard())
+            await q.edit_message_text("Can't find that order — check My Bots.", reply_markup=_main_menu_keyboard())
             return
         from ..utils import get_name_by_token, load_user_data
         bot_token = order.get("bot_token")
@@ -666,8 +677,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             [InlineKeyboardButton("USDT", callback_data=f"shop_renew_network:{parent_order_id}:{duration_days}:usdt"), InlineKeyboardButton("USDC", callback_data=f"shop_renew_network:{parent_order_id}:{duration_days}:usdc")],
             [InlineKeyboardButton("Back", callback_data=f"shop_renew:{parent_order_id}")],
         ])
-        msg = f"Renewal: ${amount:.2f} USD\nSelect cryptocurrency:"
-        text, entities = build_emoji_message(msg, "crypto")
+        msg = f"Renewal total: ${amount:.2f}\nChoose a coin to pay with:"
+        text, entities = build_emoji_message(msg, "payment")
         await q.edit_message_text(text, reply_markup=keyboard, entities=entities)
         return
 
@@ -680,7 +691,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         duration_days = int(duration_days_s) if duration_days_s.isdigit() else 7
         parent = get_order(parent_order_id)
         if not parent:
-            await q.edit_message_text("Order not found.", reply_markup=_main_menu_keyboard())
+            await q.edit_message_text("Can't find that order — check My Bots.", reply_markup=_main_menu_keyboard())
             return
         if len(parts) == 4:
             # Show network selection for USDT/USDC
@@ -693,7 +704,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 rows.append(pair)
             rows.append([InlineKeyboardButton("Back", callback_data=f"shop_renew:{parent_order_id}")])
             label = "USDT" if coin == "usdt" else "USDC"
-            text, entities = build_emoji_message(f"Renewal — {label}\n\nSelect network:", "crypto")
+            text, entities = build_emoji_message(f"Renewal — {label}\nPick a network:", "payment")
             await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows), entities=entities)
             return
         network = (parts[4] or "").strip().upper()
@@ -723,18 +734,18 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     add_plan_user(user_id)
                 except Exception:
                     pass
-                text, entities = build_emoji_message("Renewal confirmed. Your AdBot validity has been extended.", "trust")
+                text, entities = build_emoji_message("Renewal confirmed.\n\nYour AdBot's validity has been extended — no further action needed.", "payment_confirmed")
                 await q.edit_message_text(text, entities=entities)
             else:
                 update_order_status(rev_order["order_id"], "failed")
-                text, entities = build_emoji_message("Renewal failed (could not extend validity).", "error")
+                text, entities = build_emoji_message("Renewal could not complete — validity was not extended. Please contact support.", "failed")
                 await q.edit_message_text(text, entities=entities)
             return
         invoice = create_invoice(amount_usd=amount, currency=internal_code, order_id=rev_order["order_id"], description=f"AdBot renewal {duration_days} days")
         if invoice.get("_invoice_failed"):
             update_order(rev_order["order_id"], {"status": "invoice_failed"})
-            msg = "Selected payment method is temporarily unavailable. Please choose another." if invoice.get("_reason") == "unavailable" else "Invoice creation failed. Please try again or contact support."
-            text, entities = build_emoji_message(msg, "error")
+            msg = "That coin is temporarily unavailable — please pick another." if invoice.get("_reason") == "unavailable" else "Couldn't generate the invoice. Try again, or contact support."
+            text, entities = build_emoji_message(msg, "failed")
             await q.edit_message_text(
                 text,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back to menu", callback_data="shop_back")]]),
@@ -779,7 +790,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         duration_days = int(duration_days_s) if duration_days_s.isdigit() else 7
         parent = get_order(parent_order_id)
         if not parent:
-            await q.edit_message_text("Order not found.", reply_markup=_main_menu_keyboard())
+            await q.edit_message_text("Can't find that order — check My Bots.", reply_markup=_main_menu_keyboard())
             return
         from ..utils import get_name_by_token, load_user_data
         name = get_name_by_token(parent.get("bot_token") or "")
@@ -806,18 +817,18 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     add_plan_user(user_id)
                 except Exception:
                     pass
-                text, entities = build_emoji_message("Renewal confirmed. Your AdBot validity has been extended.", "trust")
+                text, entities = build_emoji_message("Renewal confirmed.\n\nYour AdBot's validity has been extended — no further action needed.", "payment_confirmed")
                 await q.edit_message_text(text, entities=entities)
             else:
                 update_order_status(rev_order["order_id"], "failed")
-                text, entities = build_emoji_message("Renewal failed (could not extend validity).", "error")
+                text, entities = build_emoji_message("Renewal could not complete — validity was not extended. Please contact support.", "failed")
                 await q.edit_message_text(text, entities=entities)
             return
         invoice = create_invoice(amount_usd=amount, currency=internal_code, order_id=rev_order["order_id"], description=f"AdBot renewal {duration_days} days")
         if invoice.get("_invoice_failed"):
             update_order(rev_order["order_id"], {"status": "invoice_failed"})
-            msg = "Selected payment method is temporarily unavailable. Please choose another." if invoice.get("_reason") == "unavailable" else "Invoice creation failed. Please try again or contact support."
-            text, entities = build_emoji_message(msg, "error")
+            msg = "That coin is temporarily unavailable — please pick another." if invoice.get("_reason") == "unavailable" else "Couldn't generate the invoice. Try again, or contact support."
+            text, entities = build_emoji_message(msg, "failed")
             await q.edit_message_text(
                 text,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back to menu", callback_data="shop_back")]]),
@@ -858,12 +869,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if raw == "shop_crypto_back":
         st = _shop_state.get(user_id)
         if not st or st.get("step") not in ("crypto", "crypto_network"):
-            await q.edit_message_text("Choose an option:", reply_markup=_main_menu_keyboard())
+            _t, _e = build_emoji_message("Welcome to HQAdz.\nWhat would you like to do?", "shop")
+            await q.edit_message_text(_t, reply_markup=_main_menu_keyboard(), entities=_e)
             return
         st["step"] = "crypto"
         _shop_state[user_id] = st
         summary = _payment_summary_text(st)
-        text, entities = build_emoji_message(summary, "cart")
+        text, entities = build_emoji_message(summary, "plan_info")
         await q.edit_message_text(
             text,
             reply_markup=_payment_crypto_keyboard(st),
@@ -877,7 +889,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if raw == "shop_more_crypto":
         st = _shop_state.get(user_id)
         if not st or st.get("step") != "crypto":
-            await q.edit_message_text("Start from /start again.", reply_markup=_main_menu_keyboard())
+            await q.edit_message_text("Session expired — send /start to begin again.", reply_markup=_main_menu_keyboard())
             return
         rows = []
         for i in range(0, len(MORE_CURRENCIES), 2):
@@ -886,7 +898,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 pair.append(InlineKeyboardButton(MORE_CURRENCIES[i + 1][0], callback_data=f"shop_crypto:{MORE_CURRENCIES[i + 1][1]}"))
             rows.append(pair)
         rows.append([InlineKeyboardButton("Back", callback_data="shop_crypto_back")])
-        text, entities = build_emoji_message("More currencies", "crypto")
+        text, entities = build_emoji_message("More coins accepted:", "payment")
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows), entities=entities)
         return
 
@@ -895,7 +907,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         coin = raw.split(":", 1)[1].lower()  # usdt or usdc
         st = _shop_state.get(user_id)
         if not st or st.get("step") != "crypto":
-            await q.edit_message_text("Start from /start again.", reply_markup=_main_menu_keyboard())
+            await q.edit_message_text("Session expired — send /start to begin again.", reply_markup=_main_menu_keyboard())
             return
         st["step"] = "crypto_network"
         st["network_coin"] = coin
@@ -913,8 +925,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 ))
             rows.append(pair)
         rows.append([InlineKeyboardButton("Back", callback_data="shop_crypto_back")])
-        msg = f"*{label}*\n\nSelect network:"
-        text, entities = build_emoji_message(msg, "crypto")
+        msg = f"*{label}*\n\nPick a network — this sets your deposit address:"
+        text, entities = build_emoji_message(msg, "payment")
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown", entities=entities)
         return
 
@@ -926,12 +938,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         coin, network = parts[1].lower(), parts[2].strip().upper()
         st = _shop_state.get(user_id)
         if not st or st.get("step") not in ("crypto", "crypto_network"):
-            await q.edit_message_text("Start from /start again.", reply_markup=_main_menu_keyboard())
+            await q.edit_message_text("Session expired — send /start to begin again.", reply_markup=_main_menu_keyboard())
             return
         if get_active_pending_order_for_user(user_id):
             text, entities = build_emoji_message(
-                "You already have a pending payment. Use /cancel to cancel the current order before creating a new one.",
-                "error",
+                "You already have an open invoice. Finish that payment, or use /cancel to start fresh.",
+                "failed",
             )
             await q.edit_message_text(text, reply_markup=_main_menu_keyboard(), entities=entities)
             return
@@ -964,7 +976,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             st["step"] = "enter_name"
             st["order_id"] = order_id
             _shop_state[user_id] = st
-            await q.edit_message_text(STEP5_MESSAGE, parse_mode="Markdown")
+            s5_text, s5_entities = build_emoji_message(STEP5_MESSAGE, "pointer")
+            await q.edit_message_text(s5_text, entities=s5_entities)
             return
         invoice = create_invoice(
             amount_usd=st["amount_usd"],
@@ -973,8 +986,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             description=f"AdBot {plan_name} {st['duration_days']} days",
         )
         if invoice.get("_invoice_failed"):
-            msg = "Selected payment method is temporarily unavailable. Please choose another." if invoice.get("_reason") == "unavailable" else "Invoice creation failed. Please try again or contact support."
-            text, entities = build_emoji_message(msg, "error")
+            msg = "That coin is temporarily unavailable — please pick another." if invoice.get("_reason") == "unavailable" else "Couldn't generate the invoice. Try again, or contact support."
+            text, entities = build_emoji_message(msg, "failed")
             await q.edit_message_text(
                 text,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back to menu", callback_data="shop_back")]]),
@@ -1013,8 +1026,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         }
         if not temppay_add(temppay_entry):
             text, entities = build_emoji_message(
-                "You already have a pending payment. Use /cancel to cancel the current order before creating a new one.",
-                "error",
+                "You already have an open invoice. Finish that payment, or use /cancel to start fresh.",
+                "failed",
             )
             await q.edit_message_text(text, reply_markup=_main_menu_keyboard(), entities=entities)
             return
@@ -1042,12 +1055,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         internal_code = raw.split(":", 1)[1].strip().upper()
         st = _shop_state.get(user_id)
         if not st or st.get("step") != "crypto":
-            await q.edit_message_text("Start from /start again.", reply_markup=_main_menu_keyboard())
+            await q.edit_message_text("Session expired — send /start to begin again.", reply_markup=_main_menu_keyboard())
             return
         if get_active_pending_order_for_user(user_id):
             text, entities = build_emoji_message(
-                "You already have a pending payment. Use /cancel to cancel the current order before creating a new one.",
-                "error",
+                "You already have an open invoice. Finish that payment, or use /cancel to start fresh.",
+                "failed",
             )
             await q.edit_message_text(text, reply_markup=_main_menu_keyboard(), entities=entities)
             return
@@ -1091,8 +1104,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             description=f"AdBot {plan_name} {st['duration_days']} days",
         )
         if invoice.get("_invoice_failed"):
-            msg = "Selected payment method is temporarily unavailable. Please choose another." if invoice.get("_reason") == "unavailable" else "Invoice creation failed. Please try again or contact support."
-            text, entities = build_emoji_message(msg, "error")
+            msg = "That coin is temporarily unavailable — please pick another." if invoice.get("_reason") == "unavailable" else "Couldn't generate the invoice. Try again, or contact support."
+            text, entities = build_emoji_message(msg, "failed")
             await q.edit_message_text(
                 text,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back to menu", callback_data="shop_back")]]),
@@ -1131,8 +1144,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         }
         if not temppay_add(temppay_entry):
             text, entities = build_emoji_message(
-                "You already have a pending payment. Use /cancel to cancel the current order before creating a new one.",
-                "error",
+                "You already have an open invoice. Finish that payment, or use /cancel to start fresh.",
+                "failed",
             )
             await q.edit_message_text(text, reply_markup=_main_menu_keyboard(), entities=entities)
             return
@@ -1187,12 +1200,12 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     step = st.get("step")
     if step == "enter_name":
         if not text:
-            await update.message.reply_text("Enter a non-empty bot name.")
+            await update.message.reply_text("Name can't be empty — try again.")
             return
         order_id = st.get("order_id")
         order = get_order(order_id) if order_id else None
         if not order or order.get("status") != "paid":
-            await update.message.reply_text("Order not found or not paid. Start from /start.")
+            await update.message.reply_text("Couldn't find a paid order — send /start to begin.")
             _clear_shop_state(user_id)
             return
         st["bot_name"] = text
@@ -1215,7 +1228,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             ok, username = await validate_bot_token(bot_token)
             if not ok:
                 release_order(order_id)
-                await update.message.reply_text("Couldn't provision a bot right now — please contact support.")
+                await update.message.reply_text("Couldn't reserve a bot slot — support has been notified. Please reach out to support to finish setup.")
                 _clear_shop_state(user_id)
                 return
 
@@ -1276,7 +1289,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await update.message.reply_text(QUEUE_EDIT_MESSAGE)
             _clear_shop_state(user_id)
             return
-        progress_text, progress_entities = build_emoji_message(CREATION_PROGRESS_MESSAGE, "rocket")
+        progress_text, progress_entities = build_emoji_message(CREATION_PROGRESS_MESSAGE, "processing")
         progress_msg = await update.message.reply_text(progress_text, entities=progress_entities)
         update_order(order_id, {
             "bot_name": text,
@@ -1300,7 +1313,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         order_id = st.get("order_id")
         order = get_order(order_id) if order_id else None
         if not order or order.get("status") != "paid":
-            await update.message.reply_text("Order not found or not paid. Start from /start.")
+            await update.message.reply_text("Couldn't find a paid order — send /start to begin.")
             _clear_shop_state(user_id)
             return
         ok, username = await validate_bot_token(text)
@@ -1367,7 +1380,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await update.message.reply_text(QUEUE_EDIT_MESSAGE)
             _clear_shop_state(user_id)
             return
-        text, entities = build_emoji_message(CREATION_PROGRESS_MESSAGE, "rocket")
+        text, entities = build_emoji_message(CREATION_PROGRESS_MESSAGE, "processing")
         progress_msg = await update.message.reply_text(text, entities=entities)
         # Do not set status to "creating" here — worker sets it when it actually starts (avoids "already_creating" skip).
         submit_create_job(

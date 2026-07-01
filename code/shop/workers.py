@@ -83,7 +83,7 @@ def build_payment_confirmation_screen(order: dict, payment_details: dict | None 
     )
     if explorer_link:
         body_html += f'<b>View on Blockchain:</b>\n<a href="{html.escape(explorer_link)}">Open Explorer</a>\n\n'
-    body_html += "Press <b>Proceed</b> to continue setup."
+    body_html += "Tap <b>Continue Setup</b> to name your AdBot."
 
     full_text = f"{PLACEHOLDER} {body_html}"
     entities = []
@@ -95,7 +95,7 @@ def build_payment_confirmation_screen(order: dict, payment_details: dict | None 
             custom_emoji_id=CUSTOM_EMOJIS["payment_confirmed"],
         ))
     reply_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Proceed", callback_data=f"shop_proceed_setup:{order_id}")]
+        [InlineKeyboardButton("Continue Setup", callback_data=f"shop_proceed_setup:{order_id}")]
     ])
     return full_text, entities, reply_markup
 
@@ -113,29 +113,31 @@ RENEWAL_HOURS_BEFORE = 24
 # User-facing messages: professional, clear, one emoji at start when appropriate. Telegram Markdown.
 
 EXPIRED_MESSAGE = (
-    "Payment expired.\n\n"
-    "This invoice is no longer valid. Create a new order to continue."
+    "This invoice has expired.\n\n"
+    "No charge was made. Start a new order anytime with /start."
 )
 
 CONFIRMING_MESSAGE = (
-    "Transaction detected.\n\n"
-    "Waiting for blockchain confirmations. You will be notified when the payment is confirmed. No action needed."
+    "Transaction detected on-chain.\n\n"
+    "Waiting for network confirmations — no action needed. We'll message you the moment it clears."
 )
 
 CONFIRMED_PREP_MESSAGE = (
     "Payment confirmed.\n\n"
-    "Your order is complete. You will receive a separate message with the next step: enter your bot name, then your bot token."
+    "Your order is complete. The next step — naming your AdBot — arrives in a separate message."
 )
 
-# Single leading emoji for payment status (used when editing payment message)
-CONFIRMING_MESSAGE_DISPLAY = "✅ " + CONFIRMING_MESSAGE
-CONFIRMED_PREP_MESSAGE_DISPLAY = "✅ " + CONFIRMED_PREP_MESSAGE
+# Payment status display texts: leading premium emoji via precomputed (text, entities)
+# pairs — pass *_ENTITIES alongside the text at each send site.
+CONFIRMING_MESSAGE_DISPLAY, CONFIRMING_ENTITIES = build_emoji_message(CONFIRMING_MESSAGE, "waiting_alt")
+CONFIRMED_PREP_MESSAGE_DISPLAY, CONFIRMED_PREP_ENTITIES = build_emoji_message(CONFIRMED_PREP_MESSAGE, "payment_confirmed")
+EXPIRED_MESSAGE_DISPLAY, EXPIRED_ENTITIES = build_emoji_message(EXPIRED_MESSAGE, "countdown")
 
 # Wizard step messages: plain text (no **) so formatting is never shown literally when parse_mode varies.
 STEP5_MESSAGE = (
-    "Enter your AdBot name.\n\n"
-    "Reply with the name you want for your AdBot (e.g. MyAdBot).\n\n"
-    "That's all we need — we'll set up your AdBot and send you the link when it's ready."
+    "Name your AdBot.\n\n"
+    "Reply with any name you like (e.g. MyAdBot) — it's just for your reference.\n\n"
+    "That's the last thing we need. We'll build your AdBot and send your access link here."
 )
 
 STEP6_MESSAGE = (
@@ -145,29 +147,29 @@ STEP6_MESSAGE = (
 
 RENEWAL_CONFIRMED_MESSAGE = (
     "Payment confirmed.\n\n"
-    "Your AdBot validity has been extended."
+    "Your AdBot's validity has been extended — no further action needed."
 )
 
 CREATION_PROGRESS_MESSAGE = (
-    "Creating your AdBot.\n\n"
-    "Assigning sessions and setting up. This message will update with progress."
+    "Building your AdBot.\n\n"
+    "Assigning sessions and configuring everything now — this message updates live."
 )
 
 # Single queue notification: edit progress message only (no separate DM).
 QUEUE_EDIT_MESSAGE = (
-    "Your AdBot is queued\n\n"
-    "We do not have enough sessions available to activate your plan at the moment.\n\n"
-    "Support has been notified. You will receive a message here when your AdBot is ready."
+    "Your AdBot is queued.\n\n"
+    "We're briefly at capacity, so activation is on hold.\n\n"
+    "Support has been notified — you'll get a message here the moment your AdBot is ready."
 )
 
 FAILURE_CREATION_MESSAGE = (
-    "Creation failed.\n\n"
-    "Please contact support. You can retry from the main menu."
+    "Setup couldn't complete.\n\n"
+    "Your payment is safe. Please contact support and we'll finish it for you."
 )
 
 SUCCESS_ACTIVATED_MESSAGE = (
-    "AdBot successfully created: {username}\n"
-    "Your controller bot is ready."
+    "Your AdBot is live: {username}\n"
+    "Open it to manage posting, groups, and settings."
 )
 
 
@@ -209,7 +211,7 @@ async def _expire_temppay_to_orders(entry: dict) -> None:
     msg_id = entry.get("payment_message_id") or 0
     if chat_id and msg_id:
         await notify.notify_edit_message(
-            chat_id, msg_id, EXPIRED_MESSAGE, bot_token=config.SHOP_BOT_TOKEN
+            chat_id, msg_id, EXPIRED_MESSAGE_DISPLAY, entities=EXPIRED_ENTITIES, bot_token=config.SHOP_BOT_TOKEN
         )
 
 
@@ -243,17 +245,17 @@ async def _process_temppay_entry(entry: dict, now_utc: datetime) -> None:
             temppay_remove_by_invoice_id(invoice_id)
             if chat_id and msg_id:
                 await notify.notify_edit_message(
-                    chat_id, msg_id, CONFIRMING_MESSAGE_DISPLAY, bot_token=config.SHOP_BOT_TOKEN
+                    chat_id, msg_id, CONFIRMING_MESSAGE_DISPLAY, entities=CONFIRMING_ENTITIES, bot_token=config.SHOP_BOT_TOKEN
                 )
             return
         append_order_from_temppay(entry, status="confirming")
         temppay_remove_by_invoice_id(invoice_id)
         if chat_id and msg_id:
             await notify.notify_edit_message(
-                chat_id, msg_id, CONFIRMING_MESSAGE_DISPLAY, bot_token=config.SHOP_BOT_TOKEN
+                chat_id, msg_id, CONFIRMING_MESSAGE_DISPLAY, entities=CONFIRMING_ENTITIES, bot_token=config.SHOP_BOT_TOKEN
             )
         elif user_id:
-            await notify.notify_send_to_chat(user_id, CONFIRMING_MESSAGE_DISPLAY, bot_token=config.SHOP_BOT_TOKEN)
+            await notify.notify_send_to_chat(user_id, CONFIRMING_MESSAGE_DISPLAY, entities=CONFIRMING_ENTITIES, bot_token=config.SHOP_BOT_TOKEN)
         return
     if provider_status == "confirmed" and amount_received >= pay_amount:
         existing = get_order_by_payment_id(invoice_id)
@@ -427,10 +429,10 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
     network_key = normalize_network_for_explorer(details.get("pay_currency") or "", details.get("network") or "")
 
     if o.get("order_type") == "renewal":
-        confirm_edit = "✅ " + RENEWAL_CONFIRMED_MESSAGE
+        r_text, r_entities = build_emoji_message(RENEWAL_CONFIRMED_MESSAGE, "payment_confirmed")
         if chat_id and msg_id:
             await notify.notify_edit_message(
-                chat_id, msg_id, confirm_edit, bot_token=config.SHOP_BOT_TOKEN
+                chat_id, msg_id, r_text, entities=r_entities, bot_token=config.SHOP_BOT_TOKEN
             )
     else:
         conf_text, conf_ent, conf_rm = build_payment_confirmation_screen(o, details)
@@ -459,9 +461,11 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
                 except Exception:
                     pass
             if user_id and not (chat_id and msg_id):
+                r_text2, r_entities2 = build_emoji_message(RENEWAL_CONFIRMED_MESSAGE, "payment_confirmed")
                 await notify.notify_send_to_chat(
                     user_id,
-                    "✅ " + RENEWAL_CONFIRMED_MESSAGE,
+                    r_text2,
+                    entities=r_entities2,
                     bot_token=config.SHOP_BOT_TOKEN,
                 )
             add_admin_alert(
@@ -503,16 +507,17 @@ async def webhook_temppay_partial(payment_id: str, amount_received: float) -> bo
     chat_id = entry.get("payment_chat_id") or 0
     msg_id = entry.get("payment_message_id") or 0
     msg = (
-        "Payment detected but incomplete.\n\n"
-        f"Received: {amount_received}\n"
-        f"Required: {pay_amount}\n"
+        "Partial payment received.\n\n"
+        f"Sent: {amount_received}\n"
+        f"Needed: {pay_amount}\n"
         f"Remaining: {remaining}\n\n"
-        "Send the remaining amount to the same address to continue."
+        "Send the rest to the same address — it's detected automatically."
     )
+    p_text, p_entities = build_emoji_message(msg, "queue")
     if chat_id and msg_id:
-        await notify.notify_edit_message(chat_id, msg_id, msg, bot_token=config.SHOP_BOT_TOKEN)
+        await notify.notify_edit_message(chat_id, msg_id, p_text, entities=p_entities, bot_token=config.SHOP_BOT_TOKEN)
     elif entry.get("user_id"):
-        await notify.notify_send_to_chat(entry["user_id"], msg, bot_token=config.SHOP_BOT_TOKEN)
+        await notify.notify_send_to_chat(entry["user_id"], p_text, entities=p_entities, bot_token=config.SHOP_BOT_TOKEN)
     return True
 
 
@@ -699,7 +704,7 @@ async def payment_polling_worker() -> None:
                     msg_id = o.get("payment_message_id") or 0
                     if chat_id and msg_id:
                         await notify.notify_edit_message(
-                            chat_id, msg_id, EXPIRED_MESSAGE, bot_token=config.SHOP_BOT_TOKEN
+                            chat_id, msg_id, EXPIRED_MESSAGE_DISPLAY, entities=EXPIRED_ENTITIES, bot_token=config.SHOP_BOT_TOKEN
                         )
                     continue
 
@@ -732,21 +737,22 @@ async def payment_polling_worker() -> None:
                         if not o.get("_notified_partial"):
                             remaining = pay_amount - amount_received
                             msg = (
-                                "Payment detected but incomplete.\n\n"
-                                f"Received: {amount_received}\n"
-                                f"Required: {pay_amount}\n"
+                                "Partial payment received.\n\n"
+                                f"Sent: {amount_received}\n"
+                                f"Needed: {pay_amount}\n"
                                 f"Remaining: {remaining}\n\n"
-                                "Send the remaining amount to continue the process."
+                                "Send the rest to the same address — it's detected automatically."
                             )
+                            p_text, p_entities = build_emoji_message(msg, "queue")
                             chat_id = o.get("payment_chat_id") or 0
                             msg_id = o.get("payment_message_id") or 0
                             user_id = o.get("user_id")
                             if chat_id and msg_id:
                                 await notify.notify_edit_message(
-                                    chat_id, msg_id, msg, bot_token=config.SHOP_BOT_TOKEN
+                                    chat_id, msg_id, p_text, entities=p_entities, bot_token=config.SHOP_BOT_TOKEN
                                 )
                             elif user_id:
-                                await notify.notify_send_to_chat(user_id, msg, bot_token=config.SHOP_BOT_TOKEN)
+                                await notify.notify_send_to_chat(user_id, p_text, entities=p_entities, bot_token=config.SHOP_BOT_TOKEN)
                             update_order(order_id, {"_notified_partial": True})
                     continue
 
@@ -759,13 +765,14 @@ async def payment_polling_worker() -> None:
                             await notify.notify_edit_message(
                                 chat_id, msg_id,
                                 CONFIRMING_MESSAGE_DISPLAY,
+                                entities=CONFIRMING_ENTITIES,
                                 bot_token=config.SHOP_BOT_TOKEN,
                             )
                         else:
                             user_id = o.get("user_id")
                             if user_id:
                                 await notify.notify_send_to_chat(
-                                    user_id, CONFIRMING_MESSAGE_DISPLAY, bot_token=config.SHOP_BOT_TOKEN
+                                    user_id, CONFIRMING_MESSAGE_DISPLAY, entities=CONFIRMING_ENTITIES, bot_token=config.SHOP_BOT_TOKEN
                                 )
                         update_order(order_id, {"_notified_confirming": True})
                     continue
@@ -1013,8 +1020,9 @@ async def run_payment_reconciliation() -> int:
             if user_id and getattr(config, "SHOP_BOT_TOKEN", None):
                 try:
                     from .. import bot_ptb
+                    cp_text, cp_entities = build_emoji_message(CREATION_PROGRESS_MESSAGE, "processing")
                     ok, msg_id = await bot_ptb.send_message_with_bot_return_id(
-                        user_id, CREATION_PROGRESS_MESSAGE, bot_token=config.SHOP_BOT_TOKEN
+                        user_id, cp_text, entities=cp_entities, bot_token=config.SHOP_BOT_TOKEN
                     )
                     if ok and msg_id is not None:
                         submit_create_job(

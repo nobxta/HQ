@@ -56,7 +56,7 @@ def build_custom_emoji_text(
 
 def build_payment_message_with_emojis(body_markdown: str) -> tuple[str, list[MessageEntity]]:
     """
-    Payment message with cart emoji at start and time (watch) emoji on the validity line.
+    Payment message with the payment emoji at start and the countdown emoji on the validity line.
     body_markdown must contain PLACEHOLDER exactly once for the 'Address valid for 12 hours' line.
     Returns (text, entities) for edit_message_text(..., parse_mode="MarkdownV2", entities=entities).
     """
@@ -70,13 +70,13 @@ def build_payment_message_with_emojis(body_markdown: str) -> tuple[str, list[Mes
             type=MessageEntity.CUSTOM_EMOJI,
             offset=0,
             length=len(ph),
-            custom_emoji_id=CUSTOM_EMOJIS["cart"],
+            custom_emoji_id=CUSTOM_EMOJIS["payment"],
         ),
         MessageEntity(
             type=MessageEntity.CUSTOM_EMOJI,
             offset=time_offset,
             length=len(ph),
-            custom_emoji_id=CUSTOM_EMOJIS["time"],
+            custom_emoji_id=CUSTOM_EMOJIS["countdown"],
         ),
     ]
     return full_text, entities

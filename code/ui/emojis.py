@@ -42,6 +42,21 @@ CUSTOM_EMOJIS: dict[str, str] = {
     "gears": "5292186684119591112",
     "golden_dot": "5249224203567112577",
     "scanning": "5289761754174205430",
+    # ── Premium UI set (Shop Bot screens) — one leading emoji per screen, keep consistent ──
+    "shop": "5258024802010026053",         # shopping cart — main shop menu / purchase entry
+    "billing": "5244704935899056803",      # calendar — billing duration selection
+    "plan_info": "5408896647952348680",    # plan summary / order information
+    "payment": "6325790127478018778",      # complete payment / coin & network selection / invoice
+    "countdown": "5972210698636234017",    # valid-until timer / invoice expiry
+    "queue": "5408910404732595664",        # queue / pending / waiting (same glyph as "time")
+    "waiting_alt": "5021712394259268143",  # alternative waiting indicator (confirming on-chain)
+    "processing": "5292186684119591112",   # creating / configuring (same glyph as "gears")
+    "ready": "5845901478601953249",        # success / completed / ready
+    "failed": "5019523782004441717",       # error / failed / rejected (same glyph as "red_cross")
+    "declined": "5846210329700217522",     # cancelled / declined
+    "delete": "5408832111773757273",       # delete / remove (same glyph as "cancelled")
+    "link": "5454419255430767770",         # dashboard link / URL
+    "pointer": "5215480011322042129",      # details / information pointer
 }
 
 
