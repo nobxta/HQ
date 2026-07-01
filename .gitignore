@@ -2,13 +2,13 @@
 .env
 
 # Sessions (contain auth data)
-sessions/
+/sessions/
 
 # Logs
 /logs/
 
 # Per-user storage (contains bot configs, tokens)
-data/
+/data/
 
 # Node / JavaScript
 node_modules/
