@@ -187,7 +187,7 @@ def _build_plans_screen(mode: str, plan_list: list) -> tuple[str, list]:
     Builds MessageEntity offsets in UTF-16 code units (no parse_mode)."""
     from telegram import MessageEntity
     from ..ui.emojis import CUSTOM_EMOJIS
-    ph = PLACEHOLDER
+    from ..ui.emoji_entities import fallback_glyph, u16len
     is_ent = mode == "enterprise"
     title_key = "title_enterprise" if is_ent else "title_starter"
     mode_label = "Enterprise" if is_ent else "Starter"
@@ -198,16 +198,17 @@ def _build_plans_screen(mode: str, plan_list: list) -> tuple[str, list]:
     def emit(s: str) -> None:
         nonlocal u16
         parts.append(s)
-        u16 += len(s.encode("utf-16-le")) // 2
+        u16 += u16len(s)
 
     def emit_emoji(key: str) -> None:
         nonlocal u16
+        glyph = fallback_glyph(key)
         if key in CUSTOM_EMOJIS:
             entities.append(MessageEntity(
-                type=MessageEntity.CUSTOM_EMOJI, offset=u16, length=len(ph),
+                type=MessageEntity.CUSTOM_EMOJI, offset=u16, length=u16len(glyph),
                 custom_emoji_id=CUSTOM_EMOJIS[key],
             ))
-        emit(ph)
+        emit(glyph)
 
     emit_emoji(title_key)
     emit(f" Choose Your {mode_label} Plan\n")

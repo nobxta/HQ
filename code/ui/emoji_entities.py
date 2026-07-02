@@ -2,28 +2,83 @@
 Safe premium emoji message builder for Shop Bot and Admin Bot only.
 Use this helper for all custom-emoji messages to avoid Entity_text_invalid (offset/length).
 Controller bots (customer AdBots) must NOT use this; they use Unicode emojis only.
+
+Each custom emoji is overlaid on a real Unicode fallback glyph, so if the client
+cannot resolve the custom_emoji_id (e.g. the bot isn't permitted to use that set),
+the user still sees a fitting emoji instead of a blank placeholder.
 """
 from telegram import MessageEntity
 
 from .emojis import CUSTOM_EMOJIS
 
-# Visible placeholder: always length 2 (UTF-16 code units). Do not change.
+# Neutral placeholder (2 UTF-16 code units) used when a key has no specific fallback.
 PLACEHOLDER = "▫️"
+
+# Per-key Unicode fallback glyph shown under each custom emoji. Any length is fine —
+# the entity length is computed in UTF-16 code units at build time.
+EMOJI_FALLBACKS: dict[str, str] = {
+    "wave": "👋",
+    "shop": "🛒",
+    "plans": "📦",
+    "plan_info": "🧾",
+    "billing": "📅",
+    "payment": "💳",
+    "countdown": "⏳",
+    "queue": "⏳",
+    "waiting_alt": "🔄",
+    "processing": "⚙️",
+    "ready": "✅",
+    "failed": "❌",
+    "declined": "🚫",
+    "delete": "🗑",
+    "link": "🔗",
+    "pointer": "👉",
+    "payment_confirmed": "✅",
+    "cart": "🛒",
+    "time": "⏳",
+    "error": "❌",
+    "cancelled": "🚫",
+    "trust": "🔒",
+    "rocket": "🚀",
+    "crypto": "🪙",
+    # Plans-list title / tiers / trailing pointer
+    "title_starter": "👑",
+    "title_enterprise": "🔥",
+    "tier_bronze": "🥉",
+    "tier_silver": "🥈",
+    "tier_gold": "🥇",
+    "tier_diamond": "💎",
+    "tier_basic": "⭐",
+    "tier_pro": "⭐",
+    "tier_elite": "👑",
+    "choose_pointer": "↘️",
+}
+
+
+def u16len(s: str) -> int:
+    """Length of s in UTF-16 code units (what Telegram entity offsets/lengths use)."""
+    return len(s.encode("utf-16-le")) // 2
+
+
+def fallback_glyph(emoji_key: str) -> str:
+    """Unicode fallback glyph for a custom-emoji key (PLACEHOLDER if none defined)."""
+    return EMOJI_FALLBACKS.get(emoji_key, PLACEHOLDER)
 
 
 def build_emoji_message(label: str, emoji_key: str) -> tuple[str, list[MessageEntity]]:
     """
-    Returns (text, entities) safe for Telegram.
-    Ensures placeholder length and offset are always correct.
+    Returns (text, entities) safe for Telegram: a leading custom emoji overlaid on a
+    real Unicode fallback glyph, then the label.
     Use only in Shop Bot and Admin Bot. Not in controller/customer bots.
     """
     if emoji_key not in CUSTOM_EMOJIS:
         return label, []
-    text = f"{PLACEHOLDER} {label}"
+    glyph = fallback_glyph(emoji_key)
+    text = f"{glyph} {label}"
     entity = MessageEntity(
         type=MessageEntity.CUSTOM_EMOJI,
         offset=0,
-        length=len(PLACEHOLDER),
+        length=u16len(glyph),
         custom_emoji_id=CUSTOM_EMOJIS[emoji_key],
     )
     return text, [entity]
@@ -56,26 +111,30 @@ def build_custom_emoji_text(
 
 def build_payment_message_with_emojis(body_markdown: str) -> tuple[str, list[MessageEntity]]:
     """
-    Payment message with the payment emoji at start and the countdown emoji on the validity line.
-    body_markdown must contain PLACEHOLDER exactly once for the 'Address valid for 12 hours' line.
+    Payment message with the payment emoji at start and the countdown emoji on the validity line,
+    each overlaid on a real Unicode fallback glyph.
+    body_markdown must contain PLACEHOLDER exactly once (the 'valid for 12 hours' line).
     Returns (text, entities) for edit_message_text(..., parse_mode="MarkdownV2", entities=entities).
     """
     ph = PLACEHOLDER
     if ph not in body_markdown or body_markdown.count(ph) != 1:
         return body_markdown, []
-    full_text = f"{ph} {body_markdown}"
-    time_offset = len(ph) + 1 + body_markdown.find(ph)
+    start_glyph = fallback_glyph("payment")   # 💳
+    time_glyph = fallback_glyph("countdown")  # ⏳
+    body = body_markdown.replace(ph, time_glyph)
+    full_text = f"{start_glyph} {body}"
+    time_offset = u16len(f"{start_glyph} ") + u16len(body[: body.find(time_glyph)])
     entities = [
         MessageEntity(
             type=MessageEntity.CUSTOM_EMOJI,
             offset=0,
-            length=len(ph),
+            length=u16len(start_glyph),
             custom_emoji_id=CUSTOM_EMOJIS["payment"],
         ),
         MessageEntity(
             type=MessageEntity.CUSTOM_EMOJI,
             offset=time_offset,
-            length=len(ph),
+            length=u16len(time_glyph),
             custom_emoji_id=CUSTOM_EMOJIS["countdown"],
         ),
     ]
