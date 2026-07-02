@@ -72,11 +72,9 @@ USDC_NETWORKS = [("BEP-20", "BEP20"), ("ERC-20", "ERC20"), ("SOL", "SOL"), ("MAT
 MORE_CURRENCIES = [
     ("TRX", "TRX"),
     ("BNB", "BNB"),
-    ("DOGE", "DOGE"),
     ("XRP", "XRP"),
     ("SOL", "SOL"),
     ("MATIC", "MATIC"),
-    ("ADA", "ADA"),
     ("TON", "TON"),
 ]
 
