@@ -182,6 +182,53 @@ def _payment_message_markdown(
     return "\n".join(parts)
 
 
+def _build_plans_screen(mode: str, plan_list: list) -> tuple[str, list]:
+    """Premium plans list: title emoji + one per-tier emoji per plan + trailing pointer.
+    Builds MessageEntity offsets in UTF-16 code units (no parse_mode)."""
+    from telegram import MessageEntity
+    from ..ui.emojis import CUSTOM_EMOJIS
+    ph = PLACEHOLDER
+    is_ent = mode == "enterprise"
+    title_key = "title_enterprise" if is_ent else "title_starter"
+    mode_label = "Enterprise" if is_ent else "Starter"
+    parts: list[str] = []
+    entities: list = []
+    u16 = 0
+
+    def emit(s: str) -> None:
+        nonlocal u16
+        parts.append(s)
+        u16 += len(s.encode("utf-16-le")) // 2
+
+    def emit_emoji(key: str) -> None:
+        nonlocal u16
+        if key in CUSTOM_EMOJIS:
+            entities.append(MessageEntity(
+                type=MessageEntity.CUSTOM_EMOJI, offset=u16, length=len(ph),
+                custom_emoji_id=CUSTOM_EMOJIS[key],
+            ))
+        emit(ph)
+
+    emit_emoji(title_key)
+    emit(f" Choose Your {mode_label} Plan\n")
+    emit("______________________________\n\n")
+    for p in plan_list:
+        sid = (p.get("id") or "").strip()
+        name = sid.title()
+        sessions = int(p.get("sessions", 0))
+        pw = float(p.get("price_week", 0))
+        pmo = float(p.get("price_month", 0))
+        tier_key = f"tier_{sid.lower()}"
+        if tier_key in CUSTOM_EMOJIS:
+            emit_emoji(tier_key)
+            emit(" ")
+        emit(f"{name} • {sessions} Sessions\n")
+        emit(f"${pw:.0f}/wk • ${pmo:.0f}/mo\n\n")
+    emit("Choose a plan ")
+    emit_emoji("choose_pointer")
+    return "".join(parts), entities
+
+
 def _clear_shop_state(user_id: int) -> None:
     _shop_state.pop(user_id, None)
 
@@ -272,7 +319,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     _clear_shop_state(user_id)
-    text, entities = build_emoji_message("Welcome to HQAdz.\nWhat would you like to do?", "shop")
+    text, entities = build_emoji_message("Welcome to HQAdz.\nWhat would you like to do?", "wave")
     await update.message.reply_text(
         text,
         reply_markup=_start_menu_keyboard(),
@@ -325,7 +372,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             )
         except Exception as e:
             logger.debug("Could not edit payment message on cancel: %s", e)
-    text, entities = build_emoji_message("Welcome to HQAdz.\nWhat would you like to do?", "shop")
+    text, entities = build_emoji_message("Welcome to HQAdz.\nWhat would you like to do?", "wave")
     await update.message.reply_text(
         text,
         reply_markup=_main_menu_keyboard(),
@@ -512,7 +559,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if raw == "shop_back":
-        text, entities = build_emoji_message("Welcome to HQAdz.\nWhat would you like to do?", "shop")
+        text, entities = build_emoji_message("Welcome to HQAdz.\nWhat would you like to do?", "wave")
         await q.edit_message_text(text, reply_markup=_main_menu_keyboard(), entities=entities)
         return
 
@@ -525,17 +572,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await q.edit_message_text("Nothing available in this category right now.", reply_markup=_main_menu_keyboard())
             return
         _shop_state[user_id] = {"step": "plan_list", "mode": mode, "data": {}}
-        title = "*Starter Plans*" if mode == "starter" else "*Enterprise Plans*"
-        max_name_len = max(len(p.get("id", "")) for p in plan_list)
-        lines = []
-        for p in plan_list:
-            sid = p.get("id", "").title()
-            accounts = int(p.get("sessions", 0))
-            acc_str = "1 Account" if accounts == 1 else f"{accounts} Accounts"
-            pw = float(p.get("price_week", 0))
-            name_pad = sid.ljust(max_name_len)
-            lines.append(f"{name_pad} | {acc_str} | ${pw:.0f} / week")
-        msg = f"{title}\n\n" + "\n".join(lines) + "\n\nPick a plan to see full details:"
+        text, entities = _build_plans_screen(mode, plan_list)
         # 2-column button grid: pairs of plans, then Back
         rows = []
         for i in range(0, len(plan_list), 2):
@@ -546,8 +583,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 pair.append(InlineKeyboardButton(plan_list[i + 1].get("id", "").title(), callback_data=f"shop_plan:{plan_list[i + 1].get('id', '')}"))
             rows.append(pair)
         rows.append([InlineKeyboardButton("Back", callback_data="shop_buy")])
-        text, entities = build_emoji_message(msg, "plans")
-        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown", entities=entities)
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows), entities=entities)
         return
 
     # Step 2 → Step 3: plan selected → minimal plan detail (no cycle/gap), buttons with price
@@ -869,7 +905,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if raw == "shop_crypto_back":
         st = _shop_state.get(user_id)
         if not st or st.get("step") not in ("crypto", "crypto_network"):
-            _t, _e = build_emoji_message("Welcome to HQAdz.\nWhat would you like to do?", "shop")
+            _t, _e = build_emoji_message("Welcome to HQAdz.\nWhat would you like to do?", "wave")
             await q.edit_message_text(_t, reply_markup=_main_menu_keyboard(), entities=_e)
             return
         st["step"] = "crypto"

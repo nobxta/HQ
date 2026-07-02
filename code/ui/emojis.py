@@ -57,6 +57,17 @@ CUSTOM_EMOJIS: dict[str, str] = {
     "delete": "5408832111773757273",       # delete / remove (same glyph as "cancelled")
     "link": "5454419255430767770",         # dashboard link / URL
     "pointer": "5215480011322042129",      # details / information pointer
+    # ── Plans list: title + per-tier + trailing pointer ──
+    "title_starter": "5215713717672484003",    # crown — Starter plans title
+    "title_enterprise": "5424972470023104089",  # fire — Enterprise plans title
+    "tier_bronze": "5453902265922376865",
+    "tier_silver": "5447203607294265305",
+    "tier_gold": "5440539497383087970",
+    "tier_diamond": "6325347320644768017",
+    "tier_basic": "5212928663309261889",
+    "tier_pro": "5469641199348363998",
+    "tier_elite": "5219827798125846744",
+    "choose_pointer": "5201892882281162850",     # ↘️ — "Choose a plan"
 }
 
 
