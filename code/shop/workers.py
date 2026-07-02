@@ -90,9 +90,9 @@ def build_payment_confirmation_screen(order: dict, payment_details: dict | None 
         emit(s)
         entities.append(MessageEntity(type=etype, offset=start, length=u16 - start, **kw))
 
-    def emit_emoji(key: str, custom_id: str | None = None) -> None:
+    def emit_emoji(key: str, custom_id: str | None = None, glyph_override: str | None = None) -> None:
         nonlocal u16
-        glyph = fallback_glyph(key)
+        glyph = glyph_override or fallback_glyph(key)
         eid = custom_id or CUSTOM_EMOJIS.get(key)
         if eid:
             entities.append(MessageEntity(
@@ -113,6 +113,9 @@ def build_payment_confirmation_screen(order: dict, payment_details: dict | None 
     emit_entity("Payment Network:", MessageEntity.BOLD)
     emit(" ")
     if coin_eid:
+        # NOTE: Telegram requires a custom_emoji entity's underlying text to be a real
+        # emoji grapheme (ENTITY_TEXT_INVALID otherwise) — currency symbols like "Ξ" are
+        # rejected, so this must stay a generic emoji glyph, not a coin-specific symbol.
         emit_emoji("payment", coin_eid)
         emit(" ")
     emit(f"{network_display}\n\n")
