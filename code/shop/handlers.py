@@ -252,12 +252,18 @@ def _payment_summary_text(st: dict) -> str:
     )
 
 
-def _coin_label(code: str, label: str | None = None) -> str:
-    """Button label prefixed with the coin/network Unicode symbol (buttons can't use custom emoji)."""
-    from ..ui.emojis import coin_symbol
-    sym = coin_symbol(code)
+def _coin_button(code: str, callback_data: str, label: str | None = None) -> InlineKeyboardButton:
+    """Coin/network button. Verified live against the Bot API: InlineKeyboardButton supports
+    icon_custom_emoji_id (accepted + echoed by Telegram; unknown fields are stripped). PTB 21.7
+    has no native param, so we inject it via api_kwargs (serialized into the request). Coins with a
+    custom emoji show the premium icon (clean text); coins without one fall back to a Unicode symbol."""
+    from ..ui.emojis import coin_emoji_id, coin_symbol
     txt = label if label is not None else code.upper()
-    return f"{sym} {txt}" if sym else txt
+    eid = coin_emoji_id(code)
+    if eid:
+        return InlineKeyboardButton(txt, callback_data=callback_data, api_kwargs={"icon_custom_emoji_id": eid})
+    sym = coin_symbol(code)
+    return InlineKeyboardButton(f"{sym} {txt}" if sym else txt, callback_data=callback_data)
 
 
 def _payment_crypto_keyboard(st: dict) -> InlineKeyboardMarkup:
@@ -267,14 +273,14 @@ def _payment_crypto_keyboard(st: dict) -> InlineKeyboardMarkup:
     back_data = f"shop_plan_detail:{mode}:{plan_id}"
     rows = [
         [
-            InlineKeyboardButton(_coin_label("BTC"), callback_data="shop_crypto:BTC"),
-            InlineKeyboardButton(_coin_label("ETH"), callback_data="shop_crypto:ETH"),
-            InlineKeyboardButton(_coin_label("XMR"), callback_data="shop_crypto:XMR"),
+            _coin_button("BTC", "shop_crypto:BTC"),
+            _coin_button("ETH", "shop_crypto:ETH"),
+            _coin_button("XMR", "shop_crypto:XMR"),
         ],
         [
-            InlineKeyboardButton(_coin_label("USDT"), callback_data="shop_crypto_network:usdt"),
-            InlineKeyboardButton(_coin_label("USDC"), callback_data="shop_crypto_network:usdc"),
-            InlineKeyboardButton(_coin_label("LTC"), callback_data="shop_crypto:LTC"),
+            _coin_button("USDT", "shop_crypto_network:usdt"),
+            _coin_button("USDC", "shop_crypto_network:usdc"),
+            _coin_button("LTC", "shop_crypto:LTC"),
         ],
         [InlineKeyboardButton("More", callback_data="shop_more_crypto")],
         [InlineKeyboardButton("Back", callback_data=back_data)],
@@ -721,8 +727,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         amount = renewal_price * (duration_days / 30.0) if duration_days < 30 else renewal_price
         _shop_state[user_id] = {"step": "renewal_crypto", "parent_order_id": parent_order_id, "duration_days": duration_days, "amount_usd": amount, "data": {}}
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(_coin_label("BTC"), callback_data=f"shop_renew_crypto:{parent_order_id}:{duration_days}:BTC"), InlineKeyboardButton(_coin_label("ETH"), callback_data=f"shop_renew_crypto:{parent_order_id}:{duration_days}:ETH")],
-            [InlineKeyboardButton(_coin_label("USDT"), callback_data=f"shop_renew_network:{parent_order_id}:{duration_days}:usdt"), InlineKeyboardButton(_coin_label("USDC"), callback_data=f"shop_renew_network:{parent_order_id}:{duration_days}:usdc")],
+            [_coin_button("BTC", f"shop_renew_crypto:{parent_order_id}:{duration_days}:BTC"), _coin_button("ETH", f"shop_renew_crypto:{parent_order_id}:{duration_days}:ETH")],
+            [_coin_button("USDT", f"shop_renew_network:{parent_order_id}:{duration_days}:usdt"), _coin_button("USDC", f"shop_renew_network:{parent_order_id}:{duration_days}:usdc")],
             [InlineKeyboardButton("Back", callback_data=f"shop_renew:{parent_order_id}")],
         ])
         msg = f"Renewal total: ${amount:.2f}\nChoose a coin to pay with:"
@@ -746,9 +752,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             networks = USDT_NETWORKS if coin == "usdt" else USDC_NETWORKS
             rows = []
             for i in range(0, len(networks), 2):
-                pair = [InlineKeyboardButton(_coin_label(networks[i][1], networks[i][0]), callback_data=f"shop_renew_network:{parent_order_id}:{duration_days}:{coin}:{networks[i][1].lower()}")]
+                pair = [_coin_button(networks[i][1], f"shop_renew_network:{parent_order_id}:{duration_days}:{coin}:{networks[i][1].lower()}", networks[i][0])]
                 if i + 1 < len(networks):
-                    pair.append(InlineKeyboardButton(_coin_label(networks[i + 1][1], networks[i + 1][0]), callback_data=f"shop_renew_network:{parent_order_id}:{duration_days}:{coin}:{networks[i + 1][1].lower()}"))
+                    pair.append(_coin_button(networks[i + 1][1], f"shop_renew_network:{parent_order_id}:{duration_days}:{coin}:{networks[i + 1][1].lower()}", networks[i + 1][0]))
                 rows.append(pair)
             rows.append([InlineKeyboardButton("Back", callback_data=f"shop_renew:{parent_order_id}")])
             label = "USDT" if coin == "usdt" else "USDC"
@@ -941,9 +947,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
         rows = []
         for i in range(0, len(MORE_CURRENCIES), 2):
-            pair = [InlineKeyboardButton(_coin_label(MORE_CURRENCIES[i][1], MORE_CURRENCIES[i][0]), callback_data=f"shop_crypto:{MORE_CURRENCIES[i][1]}")]
+            pair = [_coin_button(MORE_CURRENCIES[i][1], f"shop_crypto:{MORE_CURRENCIES[i][1]}", MORE_CURRENCIES[i][0])]
             if i + 1 < len(MORE_CURRENCIES):
-                pair.append(InlineKeyboardButton(_coin_label(MORE_CURRENCIES[i + 1][1], MORE_CURRENCIES[i + 1][0]), callback_data=f"shop_crypto:{MORE_CURRENCIES[i + 1][1]}"))
+                pair.append(_coin_button(MORE_CURRENCIES[i + 1][1], f"shop_crypto:{MORE_CURRENCIES[i + 1][1]}", MORE_CURRENCIES[i + 1][0]))
             rows.append(pair)
         rows.append([InlineKeyboardButton("Back", callback_data="shop_crypto_back")])
         text, entities = build_emoji_message("More coins accepted:", "payment")
@@ -965,11 +971,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         rows = []
         for i in range(0, len(networks), 2):
             pair = [
-                InlineKeyboardButton(_coin_label(networks[i][1], networks[i][0]), callback_data=f"shop_network:{coin}:{networks[i][1].lower()}")
+                _coin_button(networks[i][1], f"shop_network:{coin}:{networks[i][1].lower()}", networks[i][0])
             ]
             if i + 1 < len(networks):
-                pair.append(InlineKeyboardButton(
-                    _coin_label(networks[i + 1][1], networks[i + 1][0]), callback_data=f"shop_network:{coin}:{networks[i + 1][1].lower()}"
+                pair.append(_coin_button(
+                    networks[i + 1][1], f"shop_network:{coin}:{networks[i + 1][1].lower()}", networks[i + 1][0]
                 ))
             rows.append(pair)
         rows.append([InlineKeyboardButton("Back", callback_data="shop_crypto_back")])
