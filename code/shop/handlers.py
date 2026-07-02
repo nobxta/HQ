@@ -153,34 +153,69 @@ def _payment_message_markdown(
     order_id: str | None = None,
 ) -> str:
     """Build payment message in MarkdownV2. Format: Complete Your Payment, Plan, Validity, Amount, send exactly, address, 12h, auto-continue. All dynamic parts escaped."""
+    text, _entities = build_invoice_message(plan_name, duration_days, amount_usd, invoice, currency)
+    return text
+
+
+def build_invoice_message(plan_name, duration_days, amount_usd, invoice, currency):
+    """Invoice as plain text + an explicit entity list (bold/code/custom emoji), NO parse_mode.
+    Telegram drops entities when parse_mode is also set, so custom emoji only survive this way.
+    Custom emoji: 👛 header + 🕖 validity. Returns (text, entities)."""
+    from telegram import MessageEntity
+    from ..ui.emojis import CUSTOM_EMOJIS
+    from ..ui.emoji_entities import fallback_glyph, u16len
     pay_amount = invoice.get("pay_amount")
-    # Prefer passed currency (PAYMENT_CURRENCY_MAP key) for display so e.g. usdt_trc20 → "USDT (TRC-20)"
     pay_currency_raw = (currency or invoice.get("pay_currency") or "").strip()
     pay_currency_display = _crypto_display_name(pay_currency_raw)
     pay_address = (invoice.get("pay_address") or "").strip() or "(check payment link)"
-    from ..ui.emojis import coin_symbol
-    _csym = coin_symbol(currency or pay_currency_raw)
-    _csym = f"{_csym} " if _csym else ""
-    amount_display = f"{_csym}{pay_amount} {pay_currency_display}" if pay_amount is not None else f"{_csym}${amount_usd:.2f} {pay_currency_display}"
-    parts = [
-        "*Complete Your Payment*",
-        "",
-        f"*Plan:* {_esc(plan_name)}",
-        f"*Validity:* {_esc(str(duration_days))} days",
-        f"*Amount:* ${_esc(f'{amount_usd:.2f}')}",
-        "",
-        "*Action:* Send exactly",
-        f"`{_esc(amount_display)}`",
-        "",
-        "to this address:",
-        "",
-        f"`{_esc(pay_address)}`",
-        "",
-        f"{PLACEHOLDER} Valid for *12 hours*\\. After that, create a new order if needed\\.",
-        "",
-        _esc("When the transaction is confirmed, you will receive the next step here."),
-    ]
-    return "\n".join(parts)
+    amount_num = f"{pay_amount}" if pay_amount is not None else f"{amount_usd:.2f}"
+
+    parts: list[str] = []
+    entities: list = []
+    u16 = 0
+
+    def emit(s):
+        nonlocal u16
+        parts.append(s)
+        u16 += u16len(s)
+
+    def emit_entity(s, etype):
+        nonlocal u16
+        start = u16
+        emit(s)
+        entities.append(MessageEntity(type=etype, offset=start, length=u16 - start))
+
+    def emit_emoji(key):
+        nonlocal u16
+        glyph = fallback_glyph(key)
+        if key in CUSTOM_EMOJIS:
+            entities.append(MessageEntity(
+                type=MessageEntity.CUSTOM_EMOJI, offset=u16, length=u16len(glyph),
+                custom_emoji_id=CUSTOM_EMOJIS[key]))
+        emit(glyph)
+
+    emit_emoji("invoice_wallet")
+    emit(" ")
+    emit_entity("Complete Your Payment", MessageEntity.BOLD)
+    emit("\n\n")
+    emit_entity("Plan:", MessageEntity.BOLD)
+    emit(f" {plan_name}\n")
+    emit_entity("Validity:", MessageEntity.BOLD)
+    emit(f" {duration_days} days\n")
+    emit_entity("Amount:", MessageEntity.BOLD)
+    emit(f" ${amount_usd:.2f}\n\n")
+    emit("Send exactly ")
+    emit_entity(amount_num, MessageEntity.CODE)
+    emit(f" {pay_currency_display}\n\n")
+    emit("to this address:\n\n")
+    emit_entity(pay_address, MessageEntity.CODE)
+    emit("\n\n")
+    emit_emoji("invoice_clock")
+    emit(" Valid for ")
+    emit_entity("12 hours", MessageEntity.BOLD)
+    emit(". After that, create a new order if needed.\n\n")
+    emit("When the transaction is confirmed, you will receive the next step here.")
+    return "".join(parts), entities
 
 
 def _build_plans_screen(mode: str, plan_list: list) -> tuple[str, list]:
@@ -817,18 +852,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "payment_chat_id": chat_id,
             "payment_message_id": msg_id,
         })
-        msg = _payment_message_markdown(
-            plan_name="Renewal",
-            duration_days=duration_days,
-            amount_usd=amount,
-            invoice=invoice,
-            currency=internal_code,
-            order_id=rev_order["order_id"],
-        )
-        text, entities = build_payment_message_with_emojis(msg)
+        text, entities = build_invoice_message("Renewal", duration_days, amount, invoice, internal_code)
         await q.edit_message_text(
             text,
-            parse_mode="MarkdownV2",
             entities=entities,
             disable_web_page_preview=True,
         )
@@ -900,18 +926,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "payment_chat_id": chat_id,
             "payment_message_id": msg_id,
         })
-        msg = _payment_message_markdown(
-            plan_name="Renewal",
-            duration_days=duration_days,
-            amount_usd=amount,
-            invoice=invoice,
-            currency=internal_code,
-            order_id=rev_order["order_id"],
-        )
-        text, entities = build_payment_message_with_emojis(msg)
+        text, entities = build_invoice_message("Renewal", duration_days, amount, invoice, internal_code)
         await q.edit_message_text(
             text,
-            parse_mode="MarkdownV2",
             entities=entities,
             disable_web_page_preview=True,
         )
@@ -1086,18 +1103,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         st["step"] = "payment_waiting"
         st["order_id"] = order_id
         _shop_state[user_id] = st
-        msg = _payment_message_markdown(
-            plan_name=plan_name,
-            duration_days=st["duration_days"],
-            amount_usd=st["amount_usd"],
-            invoice=invoice,
-            currency=internal_code,
-            order_id=order_id,
-        )
-        text, entities = build_payment_message_with_emojis(msg)
+        text, entities = build_invoice_message(plan_name, st["duration_days"], st["amount_usd"], invoice, internal_code)
         await q.edit_message_text(
             text,
-            parse_mode="MarkdownV2",
             entities=entities,
             disable_web_page_preview=True,
         )
@@ -1204,18 +1212,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         st["step"] = "payment_waiting"
         st["order_id"] = order_id
         _shop_state[user_id] = st
-        msg = _payment_message_markdown(
-            plan_name=plan_name,
-            duration_days=st["duration_days"],
-            amount_usd=st["amount_usd"],
-            invoice=invoice,
-            currency=internal_code,
-            order_id=order_id,
-        )
-        text, entities = build_payment_message_with_emojis(msg)
+        text, entities = build_invoice_message(plan_name, st["duration_days"], st["amount_usd"], invoice, internal_code)
         await q.edit_message_text(
             text,
-            parse_mode="MarkdownV2",
             entities=entities,
             disable_web_page_preview=True,
         )

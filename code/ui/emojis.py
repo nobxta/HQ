@@ -68,6 +68,9 @@ CUSTOM_EMOJIS: dict[str, str] = {
     "tier_pro": "5469641199348363998",
     "tier_elite": "5219827798125846744",
     "choose_pointer": "5201892882281162850",     # ↘️ — "Choose a plan"
+    # ── Invoice / payment screen ──
+    "invoice_wallet": "5424976816530014958",  # 👛 purse — invoice header
+    "invoice_clock": "5852614259082530343",   # 🕖 clock — invoice validity line
 }
 
 # ── Coin / network custom emoji (message text only; buttons can't render custom emoji) ──

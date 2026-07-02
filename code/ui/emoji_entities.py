@@ -52,6 +52,8 @@ EMOJI_FALLBACKS: dict[str, str] = {
     "tier_pro": "⭐",
     "tier_elite": "👑",
     "choose_pointer": "↘️",
+    "invoice_wallet": "👛",
+    "invoice_clock": "🕖",
 }
 
 
@@ -119,8 +121,8 @@ def build_payment_message_with_emojis(body_markdown: str) -> tuple[str, list[Mes
     ph = PLACEHOLDER
     if ph not in body_markdown or body_markdown.count(ph) != 1:
         return body_markdown, []
-    start_glyph = fallback_glyph("payment")   # 💳
-    time_glyph = fallback_glyph("countdown")  # ⏳
+    start_glyph = fallback_glyph("invoice_wallet")  # 👛
+    time_glyph = fallback_glyph("invoice_clock")    # 🕖
     body = body_markdown.replace(ph, time_glyph)
     full_text = f"{start_glyph} {body}"
     time_offset = u16len(f"{start_glyph} ") + u16len(body[: body.find(time_glyph)])
@@ -129,13 +131,13 @@ def build_payment_message_with_emojis(body_markdown: str) -> tuple[str, list[Mes
             type=MessageEntity.CUSTOM_EMOJI,
             offset=0,
             length=u16len(start_glyph),
-            custom_emoji_id=CUSTOM_EMOJIS["payment"],
+            custom_emoji_id=CUSTOM_EMOJIS["invoice_wallet"],
         ),
         MessageEntity(
             type=MessageEntity.CUSTOM_EMOJI,
             offset=time_offset,
             length=u16len(time_glyph),
-            custom_emoji_id=CUSTOM_EMOJIS["countdown"],
+            custom_emoji_id=CUSTOM_EMOJIS["invoice_clock"],
         ),
     ]
     return full_text, entities
