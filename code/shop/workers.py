@@ -53,11 +53,14 @@ logger = logging.getLogger(__name__)
 
 def build_payment_confirmation_screen(order: dict, payment_details: dict | None = None):
     """
-    Build Message 1 — Payment Confirmation Screen: HTML body, premium emoji, [Proceed].
+    Build Message 1 — Payment Confirmation Screen: plain text + explicit entities (NO parse_mode).
+    Telegram silently drops custom-emoji entities whenever parse_mode is also set on the request
+    (proven against the live Bot API), so this must never be sent with parse_mode="HTML"/"Markdown".
     Uses real blockchain tx_hash and network-aware explorer link. Returns (text, entities, reply_markup).
     payment_details: from get_payment_details() when payment confirmed; supplies tx_hash, network, pay_currency.
     """
-    import html
+    from ..ui.emoji_entities import fallback_glyph, u16len
+    from ..ui.emojis import coin_emoji_id
     pay_currency = (payment_details or {}).get("pay_currency") or order.get("pay_currency") or order.get("currency") or ""
     network_api = (payment_details or {}).get("network") or order.get("network") or ""
     tx_hash = (payment_details or {}).get("tx_hash") or order.get("tx_hash") or ""
@@ -69,35 +72,64 @@ def build_payment_confirmation_screen(order: dict, payment_details: dict | None 
     duration_days = order.get("duration_days") or 0
     order_id = (order.get("order_id") or "").strip()
     today = datetime.utcnow().strftime("%Y-%m-%d")
+    tx_display = tx_hash or "—"
+    coin_eid = coin_emoji_id(pay_currency) or coin_emoji_id(network_key) or coin_emoji_id(network_api)
 
-    plan_esc = html.escape(plan_name)
-    tx_esc = html.escape(tx_hash) if tx_hash else "—"
-    # Coin/network custom emoji via HTML tg-emoji (renders on message text; falls back to 🪙).
-    from ..ui.emojis import coin_emoji_id
-    _cid = coin_emoji_id(pay_currency) or coin_emoji_id(network_key) or coin_emoji_id(network_api)
-    net_prefix = f'<tg-emoji emoji-id="{_cid}">🪙</tg-emoji> ' if _cid else ""
-    body_html = (
-        f"<b>Transaction Confirmed</b>\n\n"
-        f"<b>Plan:</b> {plan_esc}\n"
-        f"<b>Duration:</b> {duration_days} days\n"
-        f"<b>Date:</b> {today}\n\n"
-        f"<b>Payment Network:</b> {net_prefix}{html.escape(network_display)}\n\n"
-        f"<b>Transaction Hash:</b>\n"
-        f"<code>{tx_esc}</code>\n\n"
-    )
+    parts: list[str] = []
+    entities: list[MessageEntity] = []
+    u16 = 0
+
+    def emit(s: str) -> None:
+        nonlocal u16
+        parts.append(s)
+        u16 += u16len(s)
+
+    def emit_entity(s: str, etype: str, **kw) -> None:
+        nonlocal u16
+        start = u16
+        emit(s)
+        entities.append(MessageEntity(type=etype, offset=start, length=u16 - start, **kw))
+
+    def emit_emoji(key: str, custom_id: str | None = None) -> None:
+        nonlocal u16
+        glyph = fallback_glyph(key)
+        eid = custom_id or CUSTOM_EMOJIS.get(key)
+        if eid:
+            entities.append(MessageEntity(
+                type=MessageEntity.CUSTOM_EMOJI, offset=u16, length=u16len(glyph), custom_emoji_id=eid,
+            ))
+        emit(glyph)
+
+    emit_emoji("payment_confirmed")
+    emit(" ")
+    emit_entity("Transaction Confirmed", MessageEntity.BOLD)
+    emit("\n\n")
+    emit_entity("Plan:", MessageEntity.BOLD)
+    emit(f" {plan_name}\n")
+    emit_entity("Duration:", MessageEntity.BOLD)
+    emit(f" {duration_days} days\n")
+    emit_entity("Date:", MessageEntity.BOLD)
+    emit(f" {today}\n\n")
+    emit_entity("Payment Network:", MessageEntity.BOLD)
+    emit(" ")
+    if coin_eid:
+        emit_emoji("payment", coin_eid)
+        emit(" ")
+    emit(f"{network_display}\n\n")
+    emit_entity("Transaction Hash:", MessageEntity.BOLD)
+    emit("\n")
+    emit_entity(tx_display, MessageEntity.CODE)
+    emit("\n\n")
     if explorer_link:
-        body_html += f'<b>View on Blockchain:</b>\n<a href="{html.escape(explorer_link)}">Open Explorer</a>\n\n'
-    body_html += "Tap <b>Continue Setup</b> to name your AdBot."
+        emit_entity("View on Blockchain:", MessageEntity.BOLD)
+        emit("\n")
+        emit_entity("Open Explorer", MessageEntity.TEXT_LINK, url=explorer_link)
+        emit("\n\n")
+    emit("Tap ")
+    emit_entity("Continue Setup", MessageEntity.BOLD)
+    emit(" to name your AdBot.")
 
-    full_text = f"{PLACEHOLDER} {body_html}"
-    entities = []
-    if "payment_confirmed" in CUSTOM_EMOJIS:
-        entities.append(MessageEntity(
-            type=MessageEntity.CUSTOM_EMOJI,
-            offset=0,
-            length=len(PLACEHOLDER),
-            custom_emoji_id=CUSTOM_EMOJIS["payment_confirmed"],
-        ))
+    full_text = "".join(parts)
     reply_markup = InlineKeyboardMarkup([
         [InlineKeyboardButton("Continue Setup", callback_data=f"shop_proceed_setup:{order_id}")]
     ])
@@ -268,7 +300,7 @@ async def _process_temppay_entry(entry: dict, now_utc: datetime) -> None:
             if chat_id and msg_id:
                 conf_text, conf_ent, conf_rm = build_payment_confirmation_screen(existing, details)
                 await notify.notify_edit_message(
-                    chat_id, msg_id, conf_text, parse_mode="HTML", reply_markup=conf_rm, entities=conf_ent,
+                    chat_id, msg_id, conf_text, reply_markup=conf_rm, entities=conf_ent,
                     disable_web_page_preview=True, bot_token=config.SHOP_BOT_TOKEN
                 )
             return
@@ -288,7 +320,7 @@ async def _process_temppay_entry(entry: dict, now_utc: datetime) -> None:
         conf_text, conf_ent, conf_rm = build_payment_confirmation_screen(order, details)
         if chat_id and msg_id:
             await notify.notify_edit_message(
-                chat_id, msg_id, conf_text, parse_mode="HTML", reply_markup=conf_rm, entities=conf_ent,
+                chat_id, msg_id, conf_text, reply_markup=conf_rm, entities=conf_ent,
                 disable_web_page_preview=True, bot_token=config.SHOP_BOT_TOKEN
             )
         logger.info(
@@ -442,7 +474,7 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
         conf_text, conf_ent, conf_rm = build_payment_confirmation_screen(o, details)
         if chat_id and msg_id:
             await notify.notify_edit_message(
-                chat_id, msg_id, conf_text, parse_mode="HTML", reply_markup=conf_rm, entities=conf_ent,
+                chat_id, msg_id, conf_text, reply_markup=conf_rm, entities=conf_ent,
                 disable_web_page_preview=True, bot_token=config.SHOP_BOT_TOKEN
             )
         logger.info(

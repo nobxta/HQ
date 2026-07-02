@@ -26,9 +26,8 @@ from ..maintenance import (
     add_to_maintenance_queue,
     is_maintenance_enabled,
 )
-from ..ui.emoji_entities import build_emoji_message, build_payment_message_with_emojis, PLACEHOLDER
+from ..ui.emoji_entities import build_emoji_message, build_emoji_bold_message
 from ..utils import load_adbot, validate_bot_token
-from telegram.helpers import escape_markdown
 from .workers import (
     STEP5_MESSAGE,
     STEP6_MESSAGE,
@@ -55,9 +54,8 @@ from .payment import create_invoice, check_payment_status
 
 logger = logging.getLogger(__name__)
 
-# Terms line: under order summary and payment message only. Hidden link, no preview.
+# Terms link shown under the order summary (as a TEXT_LINK entity, not markdown).
 TERMS_URL = "https://t.me/HQAdzTOS/3"
-TERMS_LINE_MARKDOWN = f"By proceeding with this purchase, you agree to our [Terms and Conditions]({TERMS_URL})."
 
 # User state: {user_id: {"step": str, "order_id": str, "data": dict}}
 _shop_state: dict[int, dict[str, Any]] = {}
@@ -113,11 +111,6 @@ def _crypto_display_name(currency_code: str) -> str:
     return CRYPTO_DISPLAY_NAMES.get(key, key.upper())
 
 
-def _esc(s: str) -> str:
-    """Escape for Telegram MarkdownV2."""
-    return escape_markdown(str(s or ""), version=2)
-
-
 def _invoice_expiry_hours(invoice: dict) -> tuple[int, str]:
     """
     Compute expiry in hours from invoice_expires_at - now.
@@ -142,19 +135,6 @@ def _invoice_expiry_hours(invoice: dict) -> tuple[int, str]:
         return expiry_hours, f"{expiry_hours} hours"
     except ValueError:
         return 12, "12 hours"
-
-
-def _payment_message_markdown(
-    plan_name: str,
-    duration_days: int,
-    amount_usd: float,
-    invoice: dict,
-    currency: str,
-    order_id: str | None = None,
-) -> str:
-    """Build payment message in MarkdownV2. Format: Complete Your Payment, Plan, Validity, Amount, send exactly, address, 12h, auto-continue. All dynamic parts escaped."""
-    text, _entities = build_invoice_message(plan_name, duration_days, amount_usd, invoice, currency)
-    return text
 
 
 def build_invoice_message(plan_name, duration_days, amount_usd, invoice, currency):
@@ -270,19 +250,52 @@ def _clear_shop_state(user_id: int) -> None:
     _shop_state.pop(user_id, None)
 
 
-def _payment_summary_text(st: dict) -> str:
-    """Build payment summary: Plan, Amount, Duration; includes Terms line (Markdown link, no preview)."""
+def _payment_summary_message(st: dict) -> tuple[str, list]:
+    """Payment summary as plain text + explicit entities (bold labels, Terms as a TEXT_LINK,
+    leading plan_info emoji) — NO parse_mode, so custom emoji + link survive together."""
+    from telegram import MessageEntity
+    from ..ui.emojis import CUSTOM_EMOJIS
+    from ..ui.emoji_entities import fallback_glyph, u16len
     amount = st.get("amount_usd", 0)
     plan_id = (st.get("plan_id") or "").title()
     mode = (st.get("mode") or "starter").title()
-    duration_days = st.get("duration_days", 7)
     plan_display = f"{plan_id} ({mode})" if plan_id else mode
-    return (
-        f"*Plan:* {plan_display}\n"
-        f"*Amount:* ${amount:.2f}\n\n"
-        f"{TERMS_LINE_MARKDOWN}\n\n"
-        "Choose a coin to pay with:"
-    )
+
+    parts: list[str] = []
+    entities: list = []
+    u16 = 0
+
+    def emit(s):
+        nonlocal u16
+        parts.append(s)
+        u16 += u16len(s)
+
+    def emit_entity(s, etype, **kw):
+        nonlocal u16
+        start = u16
+        emit(s)
+        entities.append(MessageEntity(type=etype, offset=start, length=u16 - start, **kw))
+
+    def emit_emoji(key):
+        nonlocal u16
+        glyph = fallback_glyph(key)
+        if key in CUSTOM_EMOJIS:
+            entities.append(MessageEntity(
+                type=MessageEntity.CUSTOM_EMOJI, offset=u16, length=u16len(glyph),
+                custom_emoji_id=CUSTOM_EMOJIS[key]))
+        emit(glyph)
+
+    emit_emoji("plan_info")
+    emit(" ")
+    emit_entity("Plan:", MessageEntity.BOLD)
+    emit(f" {plan_display}\n")
+    emit_entity("Amount:", MessageEntity.BOLD)
+    emit(f" ${amount:.2f}\n\n")
+    emit("By proceeding with this purchase, you agree to our ")
+    emit_entity("Terms and Conditions", MessageEntity.TEXT_LINK, url=TERMS_URL)
+    emit(".\n\n")
+    emit("Choose a coin to pay with:")
+    return "".join(parts), entities
 
 
 def _coin_button(code: str, callback_data: str, label: str | None = None) -> InlineKeyboardButton:
@@ -651,7 +664,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         _shop_state[user_id] = {"step": "plan_detail", "mode": mode, "plan": plan, "plan_id": plan_id, "data": {}}
         pw = float(plan.get("price_week", 0))
         pm = float(plan.get("price_month", 0))
-        msg = f"*{plan_id.title()} Plan*\n\nChoose how long you want to run it:"
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(f"Weekly | ${pw:.0f}", callback_data=f"shop_buy:{plan_id}:7"),
@@ -659,8 +671,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             ],
             [InlineKeyboardButton("Back", callback_data=f"shop_category:{mode}")],
         ])
-        text, entities = build_emoji_message(msg, "billing")
-        await q.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown", entities=entities)
+        text, entities = build_emoji_bold_message("billing", f"{plan_id.title()} Plan", "\n\nChoose how long you want to run it:")
+        await q.edit_message_text(text, reply_markup=keyboard, entities=entities)
         return
 
     # Back from crypto to plan detail (Step 3) — same minimal layout
@@ -678,7 +690,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         _shop_state[user_id] = {"step": "plan_detail", "mode": mode, "plan": plan, "plan_id": plan_id, "data": {}}
         pw = float(plan.get("price_week", 0))
         pm = float(plan.get("price_month", 0))
-        msg = f"*{plan_id.title()} Plan*\n\nChoose how long you want to run it:"
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(f"Weekly | ${pw:.0f}", callback_data=f"shop_buy:{plan_id}:7"),
@@ -686,8 +697,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             ],
             [InlineKeyboardButton("Back", callback_data=f"shop_category:{mode}")],
         ])
-        text, entities = build_emoji_message(msg, "billing")
-        await q.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown", entities=entities)
+        text, entities = build_emoji_bold_message("billing", f"{plan_id.title()} Plan", "\n\nChoose how long you want to run it:")
+        await q.edit_message_text(text, reply_markup=keyboard, entities=entities)
         return
 
     # Step 3 → crypto: Buy Weekly / Buy Monthly
@@ -715,13 +726,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         st["duration_days"] = duration_days
         st["amount_usd"] = amount
         _shop_state[user_id] = st
-        summary = _payment_summary_text(st)
-        text, entities = build_emoji_message(summary, "plan_info")
+        text, entities = _payment_summary_message(st)
         await q.edit_message_text(
             text,
             reply_markup=_payment_crypto_keyboard(st),
             entities=entities,
-            parse_mode="Markdown",
             disable_web_page_preview=True,
         )
         return
@@ -943,13 +952,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
         st["step"] = "crypto"
         _shop_state[user_id] = st
-        summary = _payment_summary_text(st)
-        text, entities = build_emoji_message(summary, "plan_info")
+        text, entities = _payment_summary_message(st)
         await q.edit_message_text(
             text,
             reply_markup=_payment_crypto_keyboard(st),
             entities=entities,
-            parse_mode="Markdown",
             disable_web_page_preview=True,
         )
         return
@@ -994,9 +1001,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 ))
             rows.append(pair)
         rows.append([InlineKeyboardButton("Back", callback_data="shop_crypto_back")])
-        msg = f"*{label}*\n\nPick a network — this sets your deposit address:"
-        text, entities = build_emoji_message(msg, "payment")
-        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown", entities=entities)
+        text, entities = build_emoji_bold_message("payment", label, "\n\nPick a network — this sets your deposit address:")
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows), entities=entities)
         return
 
     # Chosen stablecoin + network → internal code e.g. USDT_TRC20, USDC_BEP20 (SUPPORTED_PAY_CURRENCIES keys)
@@ -1153,7 +1159,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             conf_text, conf_ent, conf_rm = build_payment_confirmation_screen(o or order, None)
             await q.edit_message_text(
                 conf_text, reply_markup=conf_rm, entities=conf_ent,
-                parse_mode="HTML", disable_web_page_preview=True
+                disable_web_page_preview=True
             )
             _clear_shop_state(user_id)
             return
