@@ -72,12 +72,16 @@ def build_payment_confirmation_screen(order: dict, payment_details: dict | None 
 
     plan_esc = html.escape(plan_name)
     tx_esc = html.escape(tx_hash) if tx_hash else "—"
+    # Coin/network custom emoji via HTML tg-emoji (renders on message text; falls back to 🪙).
+    from ..ui.emojis import coin_emoji_id
+    _cid = coin_emoji_id(pay_currency) or coin_emoji_id(network_key) or coin_emoji_id(network_api)
+    net_prefix = f'<tg-emoji emoji-id="{_cid}">🪙</tg-emoji> ' if _cid else ""
     body_html = (
         f"<b>Transaction Confirmed</b>\n\n"
         f"<b>Plan:</b> {plan_esc}\n"
         f"<b>Duration:</b> {duration_days} days\n"
         f"<b>Date:</b> {today}\n\n"
-        f"<b>Payment Network:</b> {html.escape(network_display)}\n\n"
+        f"<b>Payment Network:</b> {net_prefix}{html.escape(network_display)}\n\n"
         f"<b>Transaction Hash:</b>\n"
         f"<code>{tx_esc}</code>\n\n"
     )

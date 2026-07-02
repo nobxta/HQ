@@ -70,6 +70,64 @@ CUSTOM_EMOJIS: dict[str, str] = {
     "choose_pointer": "5201892882281162850",     # ↘️ — "Choose a plan"
 }
 
+# ── Coin / network custom emoji (message text only; buttons can't render custom emoji) ──
+COIN_EMOJIS: dict[str, str] = {
+    "BTC": "6325624346035359985",
+    "ETH": "5246792045191771676",
+    "USDT": "5276454734310428522",
+    "USDC": "5276130322545661024",
+    "XMR": "5118831934218175182",
+    "LTC": "5287670332734324545",
+    "TON": "5443077947609072542",
+    "SOL": "5442887332665510738",
+    "TRX": "5276101653638958765",
+    "BNB": "5242272884897888500",
+    "MATIC": "5287612677093339691",
+    "POL": "5287612677093339691",
+    "ARB": "5440552944925690381",
+    "XRP": "5440752630840182514",
+}
+
+# Unicode symbol shown BEFORE the label on inline buttons (buttons can't use custom emoji).
+COIN_SYMBOLS: dict[str, str] = {
+    "BTC": "₿", "ETH": "Ξ", "USDT": "₮", "USDC": "Ⓤ", "XMR": "ɱ", "LTC": "Ł",
+    "BNB": "◈", "SOL": "◎", "MATIC": "⛓", "POL": "⛓", "ARB": "⬢", "XRP": "✕",
+    "TON": "◉", "TRX": "⨯", "DOGE": "Ð", "ADA": "₳",
+}
+
+# Network code → underlying-chain coin key (for its custom emoji / symbol).
+NETWORK_TO_COIN: dict[str, str] = {
+    "ERC20": "ETH", "ERC-20": "ETH",
+    "TRC20": "TRX", "TRC-20": "TRX",
+    "BEP20": "BNB", "BEP-20": "BNB",
+    "SOL": "SOL",
+    "MATIC": "MATIC", "POL": "POL",
+    "ARB": "ARB",
+    "TON": "TON",
+}
+
+
+def coin_symbol(code: str) -> str:
+    """Unicode button symbol for a coin/network code (empty string if none)."""
+    if not code:
+        return ""
+    c = code.strip().upper()
+    if c in COIN_SYMBOLS:
+        return COIN_SYMBOLS[c]
+    chain = NETWORK_TO_COIN.get(c) or NETWORK_TO_COIN.get(c.replace("_", "-"))
+    return COIN_SYMBOLS.get(chain, "") if chain else ""
+
+
+def coin_emoji_id(code: str) -> str:
+    """Custom emoji id for a coin/network code (empty string if none)."""
+    if not code:
+        return ""
+    c = code.strip().upper()
+    if c in COIN_EMOJIS:
+        return COIN_EMOJIS[c]
+    chain = NETWORK_TO_COIN.get(c) or NETWORK_TO_COIN.get(c.replace("_", "-"))
+    return COIN_EMOJIS.get(chain, "") if chain else ""
+
 
 def build_custom_emoji_entity(text_prefix: str, emoji_key: str) -> "MessageEntity":
     """Build a MessageEntity for a custom emoji at the given prefix length. Use with text = prefix + EMOJI_PLACEHOLDER + rest."""
