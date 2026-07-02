@@ -44,7 +44,7 @@ CUSTOM_EMOJIS: dict[str, str] = {
     "scanning": "5289761754174205430",
     # ── Premium UI set (Shop Bot screens) — one leading emoji per screen, keep consistent ──
     "shop": "5258024802010026053",         # shopping cart — main shop menu / purchase entry
-    "billing": "5244704935899056803",      # calendar — billing duration selection
+    "billing": "5408862447127772085",      # glowing star — billing duration selection
     "plan_info": "5408896647952348680",    # plan summary / order information
     "payment": "6325790127478018778",      # complete payment / coin & network selection / invoice
     "countdown": "5972210698636234017",    # valid-until timer / invoice expiry

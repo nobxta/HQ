@@ -21,7 +21,7 @@ EMOJI_FALLBACKS: dict[str, str] = {
     "shop": "🛒",
     "plans": "📦",
     "plan_info": "🧾",
-    "billing": "📅",
+    "billing": "🌟",
     "payment": "💳",
     "countdown": "⏳",
     "queue": "⏳",
@@ -86,24 +86,26 @@ def build_emoji_message(label: str, emoji_key: str) -> tuple[str, list[MessageEn
     return text, [entity]
 
 
-def build_emoji_bold_message(emoji_key: str, bold_text: str, rest_text: str = "") -> tuple[str, list[MessageEntity]]:
+def build_emoji_bold_message(emoji_key: str, bold_text: str, rest_text: str = "", sep: str = " ") -> tuple[str, list[MessageEntity]]:
     """
     Leading custom emoji (overlaid on a Unicode fallback) + a bold title line + optional
     plain rest, all as explicit entities — NO parse_mode. Use this instead of embedding
     literal *markdown* in a string that also carries emoji entities: Telegram silently
     drops ALL entities (including custom emoji) whenever parse_mode is set on the same
     request (proven against the live Bot API), so markdown syntax + entities is unsafe.
+    sep: separator between the emoji and bold_text (default a space; pass "" to butt them
+    together, e.g. "🌟Basic Plan").
     """
     glyph = fallback_glyph(emoji_key)
     entities: list[MessageEntity] = []
-    u16 = u16len(glyph) + 1  # glyph + following space
+    u16 = u16len(glyph) + u16len(sep)
     if emoji_key in CUSTOM_EMOJIS:
         entities.append(MessageEntity(
             type=MessageEntity.CUSTOM_EMOJI, offset=0, length=u16len(glyph),
             custom_emoji_id=CUSTOM_EMOJIS[emoji_key],
         ))
     entities.append(MessageEntity(type=MessageEntity.BOLD, offset=u16, length=u16len(bold_text)))
-    text = f"{glyph} {bold_text}{rest_text}"
+    text = f"{glyph}{sep}{bold_text}{rest_text}"
     return text, entities
 
 
