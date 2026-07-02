@@ -3,6 +3,7 @@ Repair module for AdBot maintenance: Fix Log Group, Fix Sessions, Fix Config, Fi
 Used by /fix command in admin and user controller bots.
 """
 import asyncio
+import hashlib
 import logging
 from datetime import datetime
 import random
@@ -13,12 +14,14 @@ from typing import Any, Awaitable, Callable
 
 from telethon import TelegramClient
 from telethon.errors import FloodError, FloodWaitError, PeerFloodError, UserRestrictedError
+from telethon.tl.functions.account import UpdateProfileRequest
 from telethon.tl.functions.channels import (
     CreateChannelRequest,
     EditAdminRequest,
     InviteToChannelRequest,
     UpdateUsernameRequest,
 )
+from telethon.tl.functions.photos import UploadProfilePhotoRequest
 from telethon.tl.types import ChatAdminRights, InputChannel
 
 from . import config
@@ -558,34 +561,111 @@ async def repair_fix_bot_token(
     from .users import _stop_posting, create_user_bot, disconnect_and_remove_controller_bot
     await _stop_posting(bot_token)
     await asyncio.sleep(1)
-    disconnect_and_remove_controller_bot(bot_token)
+    await disconnect_and_remove_controller_bot(bot_token)
     asyncio.create_task(create_user_bot(new_token.strip()))
+
+    # Set new bot's name/photo/bio to match the standard AdBot profile (same as at creation)
+    from .admin import BOT_PFP_REL, BOT_PROFILE_DESCRIPTION, BOT_PROFILE_SHORT_DESCRIPTION, _set_bot_profile_via_api
+    display_name = cfg.get("name", "AdBot")
+    tmp_path = config.DATA_DIR / f"_fix_bot_token_tmp_{hashlib.sha256(new_token.encode()).hexdigest()[:8]}"
+    profile_client = TelegramClient(str(tmp_path), config.API_ID, config.API_HASH, proxy=config.PROXY)
+    try:
+        await profile_client.start(bot_token=new_token.strip())
+        try:
+            await profile_client(UpdateProfileRequest(first_name=f"{display_name} Bot", about=BOT_PROFILE_DESCRIPTION))
+        except Exception as e:
+            logger.warning("Fix Bot Token: set name/about failed: %s", e)
+        pfp_set = False
+        pfp_candidates = list(BOT_PFP_REL)
+        random.shuffle(pfp_candidates)
+        for pfp_rel in pfp_candidates:
+            pfp_path = config.BASE_DIR / pfp_rel
+            if not pfp_path.is_file():
+                continue
+            try:
+                uploaded = await profile_client.upload_file(str(pfp_path))
+                await profile_client(UploadProfilePhotoRequest(file=uploaded))
+                pfp_set = True
+                break
+            except Exception as e:
+                logger.warning("Fix Bot Token: set profile photo failed (path=%s): %s", pfp_rel, e)
+        if not pfp_set:
+            add_admin_alert(
+                "fix_bot_token_pfp_failed",
+                f"Bot token for {display_name} replaced but profile photo could not be set on new bot @{new_username}.",
+            )
+    except Exception as e:
+        logger.warning("Fix Bot Token: profile setup failed: %s", e)
+    finally:
+        try:
+            await profile_client.disconnect()
+        except Exception:
+            pass
+        for ext in ("", ".session", ".session-journal"):
+            p = Path(str(tmp_path) + ext)
+            if p.exists():
+                try:
+                    p.unlink()
+                except OSError as e:
+                    logger.warning("Could not remove temp session %s: %s", p, e)
+    _set_bot_profile_via_api(
+        new_token.strip(),
+        bot_name=f"{display_name} Bot",
+        description=BOT_PROFILE_DESCRIPTION,
+        short_description=BOT_PROFILE_SHORT_DESCRIPTION,
+    )
 
     log_group = cfg.get("log_group")
     if log_group and cfg.get("sessions"):
-        fn = cfg["sessions"][0].get("file")
-        if fn:
+        added = False
+        tried: list[str] = []
+        for s in cfg["sessions"]:
+            fn = s.get("file")
+            if not fn:
+                continue
             path = config.SESSIONS_ACTIVE / fn
-            if path.is_file():
-                client = TelegramClient(
-                    str(path.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY
+            if not path.is_file():
+                continue
+            client = TelegramClient(
+                str(path.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY
+            )
+            try:
+                await client.connect()
+                if not await client.is_user_authorized():
+                    continue
+                entity = await client.get_entity(log_group)
+                input_ch = InputChannel(entity.id, getattr(entity, "access_hash", 0) or 0)
+                bot_input = await client.get_input_entity("@" + new_username)
+                await client(InviteToChannelRequest(input_ch, [bot_input]))
+                rights = ChatAdminRights(
+                    change_info=True, post_messages=True, edit_messages=True, delete_messages=True,
+                    invite_users=True, pin_messages=True, manage_call=True,
                 )
-                try:
-                    await client.connect()
-                    if await client.is_user_authorized():
-                        entity = await client.get_entity(log_group)
-                        input_ch = InputChannel(entity.id, getattr(entity, "access_hash", 0) or 0)
-                        bot_input = await client.get_input_entity("@" + new_username)
-                        await client(InviteToChannelRequest(input_ch, [bot_input]))
-                        rights = ChatAdminRights(
-                            change_info=True, post_messages=True, edit_messages=True, delete_messages=True,
-                            invite_users=True, pin_messages=True, manage_call=True,
-                        )
-                        await client(EditAdminRequest(input_ch, bot_input, rights, "AdBot"))
-                except Exception as e:
-                    logger.warning("Add new bot to log group failed: %s", e)
-                finally:
-                    await client.disconnect()
+                await client(EditAdminRequest(input_ch, bot_input, rights, "AdBot"))
+                added = True
+                logger.info("New bot added to log group using session: %s", fn)
+                break
+            except Exception as e:
+                msg = str(e)
+                if "already" in msg.lower() or "participant" in msg.lower():
+                    added = True
+                    break
+                tried.append(f"{fn}: {msg}")
+                logger.warning("Add new bot to log group failed with session %s: %s", fn, e)
+            finally:
+                await client.disconnect()
+
+        if not added:
+            fail_msg = (
+                f"Could not add new bot @{new_username} to log group — "
+                f"all {len(tried)} session(s) failed: " + "; ".join(tried) if tried
+                else f"Could not add new bot @{new_username} to log group — no usable sessions."
+            )
+            logger.warning(fail_msg)
+            log_bot_event(bot_token, f"[Fix Bot Token] {fail_msg}")
+            add_admin_alert("fix_bot_token_log_group_failed", fail_msg)
+            if log_async:
+                await log_async(fail_msg)
 
     log_bot_event(bot_token, f"[Fix Bot Token] Migrated from {old_username} to {new_username}")
     if log_async:
