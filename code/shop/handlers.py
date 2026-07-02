@@ -671,7 +671,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             ],
             [InlineKeyboardButton("Back", callback_data=f"shop_category:{mode}")],
         ])
-        text, entities = build_emoji_bold_message("billing", f"{plan_id.title()} Plan", "\n\nChoose how long you want to run it:", sep="")
+        text, entities = build_emoji_bold_message("billing", f"{plan_id.title()} Plan", "\nSelect a plan duration:", sep="")
         await q.edit_message_text(text, reply_markup=keyboard, entities=entities)
         return
 
@@ -697,7 +697,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             ],
             [InlineKeyboardButton("Back", callback_data=f"shop_category:{mode}")],
         ])
-        text, entities = build_emoji_bold_message("billing", f"{plan_id.title()} Plan", "\n\nChoose how long you want to run it:", sep="")
+        text, entities = build_emoji_bold_message("billing", f"{plan_id.title()} Plan", "\nSelect a plan duration:", sep="")
         await q.edit_message_text(text, reply_markup=keyboard, entities=entities)
         return
 
