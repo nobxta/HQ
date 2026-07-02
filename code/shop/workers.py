@@ -25,6 +25,32 @@ def _write_payment_heartbeat() -> None:
         logger.debug("Payment heartbeat write failed: %s", e)
 
 
+async def _send_order_confirmed_admin_notice(
+    title: str, order_id: str, plan_name: str, plan_mode: str,
+    duration_days: int, amount_usd: float | None, user_id: int,
+) -> None:
+    """Rich admin notification for a confirmed order/renewal, sent directly (not via the
+    plain-text add_admin_alert queue, which can't attach buttons — a raw 'tg://user?id=...'
+    in plain text isn't reliably tappable). Matches the "AdBot created (Shop)" pattern:
+    full order details + a Profile button instead of a bare deep link in the text."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    plan_display = f"{plan_name} ({plan_mode})" if plan_mode else plan_name
+    amount_str = f"${amount_usd:.2f}" if amount_usd is not None else "—"
+    lines = [
+        title,
+        f"Order: {order_id}",
+        f"Plan: {plan_display}",
+        f"Duration: {duration_days} days",
+        f"Amount: {amount_str}",
+    ]
+    if user_id:
+        lines.append(f"Buyer: {user_id}")
+    text = "\n".join(lines)
+    profile_url = f"tg://user?id={user_id}" if user_id else None
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Profile", url=profile_url)]]) if profile_url else None
+    await notify.notify_admin_send(text, parse_mode=None, reply_markup=kb)
+
+
 from .storage import (
     load_orders,
     load_plans,
@@ -333,9 +359,9 @@ async def _process_temppay_entry(entry: dict, now_utc: datetime) -> None:
         if build_explorer_link(network_key, details.get("tx_hash") or ""):
             logger.info("Explorer link generated for %s", network_key)
         logger.info("Confirmation message formatted successfully")
-        add_admin_alert(
-            "order_confirmed",
-            f"New order confirmed\nPlan: {plan_name}\nDuration: {duration_days} days\nUser: tg://user?id={user_id}",
+        await _send_order_confirmed_admin_notice(
+            "New order confirmed", order_id, plan_name, order.get("plan_mode") or "",
+            duration_days, order.get("amount_usd"), user_id,
         )
         logger.info("[CREATE_PIPELINE] temppay→order OK order_id=%s; confirmation screen shown (Proceed required)", order_id)
 
@@ -507,9 +533,10 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
                     entities=r_entities2,
                     bot_token=config.SHOP_BOT_TOKEN,
                 )
-            add_admin_alert(
-                "renewal_confirmed",
-                f"Renewal confirmed\nOrder: {order_id}\nDuration: {duration_days} days\nUser: tg://user?id={user_id}",
+            await _send_order_confirmed_admin_notice(
+                "Renewal confirmed", order_id,
+                parent.get("plan_name") or plan_name, parent.get("plan_mode") or "",
+                duration_days, o.get("amount_usd"), user_id,
             )
             logger.info("Renewal order %s completed for bot", order_id)
         else:
@@ -528,9 +555,9 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
                 add_plan_user(user_id)
             except Exception:
                 pass
-        add_admin_alert(
-            "order_confirmed",
-            f"New order confirmed\nPlan: {plan_name}\nDuration: {duration_days} days\nUser: tg://user?id={user_id}",
+        await _send_order_confirmed_admin_notice(
+            "New order confirmed", order_id, plan_name, o.get("plan_mode") or "",
+            duration_days, o.get("amount_usd"), user_id,
         )
         logger.info("[CREATE_PIPELINE] order→paid order_id=%s; confirmation screen shown (Proceed required)", order_id)
     return True
