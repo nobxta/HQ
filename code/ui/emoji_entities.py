@@ -54,6 +54,14 @@ EMOJI_FALLBACKS: dict[str, str] = {
     "choose_pointer": "↘️",
     "invoice_wallet": "👛",
     "invoice_clock": "🕖",
+    # Customer AdBot panel — same glyphs the panel already uses (unchanged for non-Premium users)
+    "panel_stats": "📊",
+    "panel_groups": "📂",
+    "panel_logs": "📋",
+    "panel_validity": "⏳",
+    "panel_start": "▶",
+    "panel_stop": "⏹",
+    "panel_message": "✉",
 }
 
 

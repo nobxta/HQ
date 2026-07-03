@@ -28,6 +28,7 @@ except ImportError:
 from . import config
 from . import bot_ptb
 from . import notify
+from .ui.emoji_entities_telethon import build_panel_message, panel_button
 from .user_config import get_plan_mode
 from .maintenance import (
     MAINTENANCE_MESSAGE,
@@ -671,23 +672,27 @@ def _is_expired(cfg: dict) -> bool:
 
 
 def _menu_buttons() -> list:
-    """Return main menu buttons. Fix is only via /fix command, not shown as button."""
+    """Return main menu buttons. Fix is only via /fix command, not shown as button.
+
+    The 7 concept buttons carry premium custom-emoji icons via panel_button()
+    (MTProto KeyboardButtonStyle.icon); Status has no premium emoji so keeps its
+    Unicode glyph. Icons render the emoji, so labels are kept clean (no glyph prefix)."""
     return [
         [
-            Button.inline("▶ Start", CB_RUN),
-            Button.inline("⏹ Stop", CB_STOP),
+            panel_button("Start", CB_RUN, "panel_start"),
+            panel_button("Stop", CB_STOP, "panel_stop"),
         ],
         [
-            Button.inline("📊 Stats", CB_STATS_MENU),
+            panel_button("Stats", CB_STATS_MENU, "panel_stats"),
             Button.inline("📋 Status", CB_STATUS),
         ],
         [
-            Button.inline("✉ Message", CB_SET_MSG),
-            Button.inline("📂 Groups", CB_CHATLIST),
+            panel_button("Message", CB_SET_MSG, "panel_message"),
+            panel_button("Groups", CB_CHATLIST, "panel_groups"),
         ],
         [
-            Button.inline("📋 Logs", CB_LOGS),
-            Button.inline("⏳ Validity", CB_VALIDITY),
+            panel_button("Logs", CB_LOGS, "panel_logs"),
+            panel_button("Validity", CB_VALIDITY, "panel_validity"),
         ],
     ]
 
@@ -4450,14 +4455,18 @@ async def create_user_bot(bot_token: str) -> None:
                     "If you use **custom text**, it will be posted in groups exactly as you type it (plain text, no markdown)."
                 )
                 try:
-                    await event.edit(
+                    text, entities = build_panel_message(
+                        "panel_start",
                         "Set a message before running.\n\n"
                         "• Add at least one **post link** (to forward a message), or\n"
                         "• Set **custom text** (to send as a new message in each group).\n\n"
                         f"{fmt_note}\n\n"
                         "Use **Set Message** below to add a post link or custom text.",
-                        parse_mode="md",
-                        buttons=[[Button.inline("Set Message", CB_SET_MSG)]] + _menu_buttons(),
+                    )
+                    await event.edit(
+                        text,
+                        formatting_entities=entities,
+                        buttons=[[panel_button("Set Message", CB_SET_MSG, "panel_message")]] + _menu_buttons(),
                     )
                 except MessageNotModifiedError:
                     pass
@@ -4519,12 +4528,14 @@ async def create_user_bot(bot_token: str) -> None:
             await event.answer()
             log_bot_event(bot_token, f"User {event.sender_id} stopped posting")
             try:
-                await event.edit("Stopping AdBot…", buttons=None)
+                text, entities = build_panel_message("panel_stop", "Stopping AdBot…")
+                await event.edit(text, formatting_entities=entities, buttons=None)
             except MessageNotModifiedError:
                 pass
             await _stop_posting(bot_token)
             try:
-                await event.edit("AdBot stopped.", buttons=_menu_buttons())
+                text, entities = build_panel_message("panel_stop", "AdBot stopped.")
+                await event.edit(text, formatting_entities=entities, buttons=_menu_buttons())
             except MessageNotModifiedError:
                 pass
         elif raw == CB_SET_MSG:
@@ -4551,10 +4562,11 @@ async def create_user_bot(bot_token: str) -> None:
                 set_msg_buttons.append([Button.inline("🗑 Delete custom text", CB_SET_MSG_TEXT_DEL)])
             set_msg_buttons.append([Button.inline("‹ Back", b"back")])
             try:
+                text, entities = build_panel_message("panel_message", f"Set message:\n\n{current}\n\n{fmt_note}")
                 await event.edit(
-                    f"Set message:\n\n{current}\n\n{fmt_note}",
+                    text,
                     buttons=set_msg_buttons,
-                    parse_mode="md",
+                    formatting_entities=entities,
                 )
             except MessageNotModifiedError:
                 pass
@@ -4586,7 +4598,8 @@ async def create_user_bot(bot_token: str) -> None:
                 set_msg_buttons.append([Button.inline("🗑 Delete custom text", CB_SET_MSG_TEXT_DEL)])
             set_msg_buttons.append([Button.inline("‹ Back", b"back")])
             try:
-                await event.edit(f"Set message:\n\nCustom text deleted.\n\n{current}\n\n{fmt_note}", buttons=set_msg_buttons, parse_mode="md")
+                text, entities = build_panel_message("panel_message", f"Set message:\n\nCustom text deleted.\n\n{current}\n\n{fmt_note}")
+                await event.edit(text, buttons=set_msg_buttons, formatting_entities=entities)
             except MessageNotModifiedError:
                 pass
         elif raw == CB_MSG_MODE_TEXT:
@@ -4614,7 +4627,8 @@ async def create_user_bot(bot_token: str) -> None:
                 set_msg_buttons.append([Button.inline("🗑 Delete custom text", CB_SET_MSG_TEXT_DEL)])
             set_msg_buttons.append([Button.inline("‹ Back", b"back")])
             try:
-                await event.edit(f"Set message:\n\nNow using **Custom text**.\n\n{current}\n\n{fmt_note}", buttons=set_msg_buttons, parse_mode="md")
+                text, entities = build_panel_message("panel_message", f"Set message:\n\nNow using **Custom text**.\n\n{current}\n\n{fmt_note}")
+                await event.edit(text, buttons=set_msg_buttons, formatting_entities=entities)
             except MessageNotModifiedError:
                 pass
         elif raw == CB_MSG_MODE_LINK:
@@ -4642,7 +4656,8 @@ async def create_user_bot(bot_token: str) -> None:
                 set_msg_buttons.append([Button.inline("🗑 Delete custom text", CB_SET_MSG_TEXT_DEL)])
             set_msg_buttons.append([Button.inline("‹ Back", b"back")])
             try:
-                await event.edit(f"Set message:\n\nNow using **Post link(s)**.\n\n{current}\n\n{fmt_note}", buttons=set_msg_buttons, parse_mode="md")
+                text, entities = build_panel_message("panel_message", f"Set message:\n\nNow using **Post link(s)**.\n\n{current}\n\n{fmt_note}")
+                await event.edit(text, buttons=set_msg_buttons, formatting_entities=entities)
             except MessageNotModifiedError:
                 pass
         elif raw == CB_SET_MSG_TEXT:
@@ -4773,9 +4788,10 @@ async def create_user_bot(bot_token: str) -> None:
             url = _log_group_link(log_group) if log_group else ""
             try:
                 if url:
-                    await event.edit(f"**📋 Log Group:** [Open]({url})", buttons=[[Button.inline("‹ Back", b"back")]], parse_mode="md")
+                    text, entities = build_panel_message("panel_logs", f"**Log Group:** [Open]({url})")
                 else:
-                    await event.edit("📋 Log group not set.", buttons=[[Button.inline("‹ Back", b"back")]], parse_mode="md")
+                    text, entities = build_panel_message("panel_logs", "Log group not set.")
+                await event.edit(text, buttons=[[Button.inline("‹ Back", b"back")]], formatting_entities=entities)
             except MessageNotModifiedError:
                 pass
         elif raw == CB_VALIDITY:
@@ -4783,7 +4799,8 @@ async def create_user_bot(bot_token: str) -> None:
             vt = cfg.get("valid_till", "")
             days = _validity_days_left(vt)
             try:
-                await event.edit(f"**⏳ Validity:** {days}", buttons=[[Button.inline("‹ Back", b"back")]], parse_mode="md")
+                text, entities = build_panel_message("panel_validity", f"**Validity:** {days}")
+                await event.edit(text, buttons=[[Button.inline("‹ Back", b"back")]], formatting_entities=entities)
             except MessageNotModifiedError:
                 pass
         elif raw == CB_CHATLIST:
@@ -4791,7 +4808,7 @@ async def create_user_bot(bot_token: str) -> None:
             from .chatlist import get_chatlist_config, load_custom_groups, MAX_CHATLIST_LINKS, MAX_GROUPS_PER_CHATLIST
             cl = get_chatlist_config(cfg)
             lines = []
-            lines.append("**📂 Group Select — Custom Chatlist**\n")
+            lines.append("**Group Select — Custom Chatlist**\n")
             if cl["active"] and cl["links"]:
                 for i, link in enumerate(cl["links"]):
                     lines.append(f"**Folder {i+1}:** `{link}`")
@@ -4818,7 +4835,8 @@ async def create_user_bot(bot_token: str) -> None:
                 buttons.append([Button.inline("📤 Upload Group File", CB_CHATLIST_UPLOAD)])
             buttons.append([Button.inline("‹ Back", b"back")])
             try:
-                await event.edit("\n".join(lines), buttons=buttons, parse_mode="md")
+                text, entities = build_panel_message("panel_groups", "\n".join(lines))
+                await event.edit(text, buttons=buttons, formatting_entities=entities)
             except MessageNotModifiedError:
                 pass
         elif raw == CB_CHATLIST_ADD:
@@ -4914,7 +4932,8 @@ async def create_user_bot(bot_token: str) -> None:
             msg, buttons = _stats_dashboard()
             buttons.append([Button.inline("‹ Back", b"back")])
             try:
-                await event.edit(msg, parse_mode="md", buttons=buttons)
+                text, entities = build_panel_message("panel_stats", msg)
+                await event.edit(text, formatting_entities=entities, buttons=buttons)
             except MessageNotModifiedError:
                 pass
         elif raw == CB_STATS_REFRESH:
@@ -4922,7 +4941,8 @@ async def create_user_bot(bot_token: str) -> None:
             msg, buttons = _stats_dashboard()
             buttons.append([Button.inline("‹ Back", b"back")])
             try:
-                await event.edit(msg, parse_mode="md", buttons=buttons)
+                text, entities = build_panel_message("panel_stats", msg)
+                await event.edit(text, formatting_entities=entities, buttons=buttons)
             except MessageNotModifiedError:
                 pass
         elif raw == CB_STATS_BACK:
@@ -4930,7 +4950,8 @@ async def create_user_bot(bot_token: str) -> None:
             msg, buttons = _stats_dashboard()
             buttons.append([Button.inline("‹ Back", b"back")])
             try:
-                await event.edit(msg, parse_mode="md", buttons=buttons)
+                text, entities = build_panel_message("panel_stats", msg)
+                await event.edit(text, formatting_entities=entities, buttons=buttons)
             except MessageNotModifiedError:
                 pass
         elif raw == CB_STATS_PER_SESSION:
@@ -5081,7 +5102,8 @@ async def create_user_bot(bot_token: str) -> None:
                 p["session_deltas"].clear()
             msg, buttons = _stats_dashboard()
             try:
-                await event.edit(msg, parse_mode="md", buttons=buttons)
+                text, entities = build_panel_message("panel_stats", msg)
+                await event.edit(text, formatting_entities=entities, buttons=buttons)
             except MessageNotModifiedError:
                 pass
         elif raw == CB_BACK_CONFIG:
@@ -6143,7 +6165,7 @@ async def create_user_bot(bot_token: str) -> None:
         alive = _workers_alive(bot_token)
         n_sessions = len(cfg.get("sessions", []))
         msg = (
-            "📊 **AdBot Stats**\n\n"
+            "**AdBot Stats**\n\n"
             f"State: {state} · Workers: {alive}/{n_sessions}\n\n"
             "**GLOBAL (Lifetime)**\n"
             f"Sent: {ls}\n"

@@ -71,6 +71,14 @@ CUSTOM_EMOJIS: dict[str, str] = {
     # ── Invoice / payment screen ──
     "invoice_wallet": "5424976816530014958",  # 👛 purse — invoice header
     "invoice_clock": "5852614259082530343",   # 🕖 clock — invoice validity line
+    # ── Customer AdBot panel (code/users.py) — message-text headers only, never buttons ──
+    "panel_stats": "6039459454016032137",     # 📊 Stats
+    "panel_groups": "5409118388523905369",    # 📂 Groups
+    "panel_logs": "5766994197705921104",      # 📋 Logs
+    "panel_validity": "5364233403300330811",  # ⏳ Validity
+    "panel_start": "5285347429737055549",     # ▶ Start
+    "panel_stop": "5834895792409677476",      # ⏹ Stop
+    "panel_message": "6039392555605430011",   # ✉ Message / Ad
 }
 
 # ── Coin / network custom emoji (message text only; buttons can't render custom emoji) ──
@@ -151,3 +159,11 @@ def with_emoji_header(emoji_key: str, message: str, prefix: str = " ") -> tuple[
     text = prefix + EMOJI_PLACEHOLDER + " " + message
     entities = [build_custom_emoji_entity(prefix, emoji_key)]
     return text, entities
+
+
+def emoji(key: str) -> str:
+    """Plain Unicode glyph for a key — for buttons, logs, or any plain-text use
+    where a custom-emoji entity can't be attached (e.g. inline keyboard labels)."""
+    from .emoji_entities import fallback_glyph
+
+    return fallback_glyph(key)
