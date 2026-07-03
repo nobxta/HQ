@@ -60,6 +60,7 @@ except Exception:
     InviteRequestSentError = type("InviteRequestSentError", (Exception,), {})
 
 from . import config
+from .session_guard import SessionBusyError, guarded_client
 from .user_config import get_plan_mode
 
 logger = logging.getLogger(__name__)
@@ -823,8 +824,9 @@ async def process_chatlist_setup(
         path = config.resolve_session_path(fn)
         if not path.is_file():
             continue
+        client = None
         try:
-            client = TelegramClient(str(path.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY)
+            client = guarded_client(path, "chatlist sync", wait_timeout=20, expected_sec=120)
             await client.connect()
             if await client.is_user_authorized():
                 # Critical: get_me() fully initializes the session + entity cache,
@@ -834,7 +836,15 @@ async def process_chatlist_setup(
                 first_client = client
                 break
             await client.disconnect()
+        except SessionBusyError as e:
+            logger.info("[Chatlist] Skipping %s: %s", fn, e)
+            continue
         except Exception:
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
             continue
     if not first_client:
         return False, "No authorized session available to validate chatlist.", 0
@@ -945,37 +955,44 @@ async def process_chatlist_setup(
                     join_failed += 1
                     continue
 
+                sc = None
                 try:
-                    sc = TelegramClient(str(path.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY)
+                    sc = guarded_client(path, "chatlist sync", wait_timeout=20, expected_sec=120)
                     await sc.connect()
-                    if not await sc.is_user_authorized():
-                        join_failed += 1
-                        await sc.disconnect()
-                        continue
-                    await sc.get_me()
-
                     try:
-                        await leave_chatlist_on_session(sc, "", fn)
-                    except Exception:
-                        pass
+                        if not await sc.is_user_authorized():
+                            join_failed += 1
+                            continue
+                        await sc.get_me()
 
-                    all_ok = True
-                    for slug in validated_slugs:
-                        ok, err = await join_chatlist_on_session(sc, slug, fn)
-                        if not ok:
-                            all_ok = False
-                            logger.warning("[Chatlist] Join failed on %s: %s", fn, err)
-                        await asyncio.sleep(0.3)
+                        try:
+                            await leave_chatlist_on_session(sc, "", fn)
+                        except Exception:
+                            pass
 
-                    await sc.disconnect()
-                    if all_ok:
-                        join_success += 1
-                    else:
-                        join_failed += 1
+                        all_ok = True
+                        for slug in validated_slugs:
+                            ok, err = await join_chatlist_on_session(sc, slug, fn)
+                            if not ok:
+                                all_ok = False
+                                logger.warning("[Chatlist] Join failed on %s: %s", fn, err)
+                            await asyncio.sleep(0.3)
+
+                        if all_ok:
+                            join_success += 1
+                        else:
+                            join_failed += 1
+                    finally:
+                        await sc.disconnect()
 
                     if progress_cb:
                         await progress_cb(f"__step:join_session:{join_success}:{total_sessions}")
 
+                except SessionBusyError as e:
+                    join_failed += 1
+                    logger.warning("[Chatlist] Session %s skipped: %s", fn, e)
+                    if progress_cb:
+                        await progress_cb(f"✗ {fn}: {e}")
                 except Exception as e:
                     join_failed += 1
                     logger.warning("[Chatlist] Session %s error: %s", fn, e)
@@ -1086,48 +1103,53 @@ async def join_default_chatlist_on_sessions(
             continue
 
         try:
-            client = TelegramClient(str(path.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY)
+            client = guarded_client(path, "chatlist sync", wait_timeout=20, expected_sec=120)
             await client.connect()
-            if not await client.is_user_authorized():
-                failed_total += 1
-                await client.disconnect()
-                if progress_cb:
-                    await progress_cb(f"✗ {fn}: Not authorized — skipping")
-                continue
-
-            # Leave existing chatlist folders first to free slots
             try:
-                await leave_chatlist_on_session(client, "", fn)
-                await asyncio.sleep(LEAVE_JOIN_DELAY)
-            except Exception:
-                pass
-
-            session_ok = True
-            for slug in slugs:
-                ok, err = await join_chatlist_on_session(client, slug, fn)
-                if not ok:
-                    session_ok = False
+                if not await client.is_user_authorized():
+                    failed_total += 1
                     if progress_cb:
-                        await progress_cb(f"✗ {fn}: {err}")
-                await asyncio.sleep(LEAVE_JOIN_DELAY)
+                        await progress_cb(f"✗ {fn}: Not authorized — skipping")
+                    continue
 
-            # Scrape group IDs once using the first successful session
-            if session_ok and not scrape_done:
+                # Leave existing chatlist folders first to free slots
                 try:
-                    for link in links:
-                        lines = await scrape_chatlist_groups(client, link, progress_cb=progress_cb)
-                        all_group_lines.extend(lines)
-                    scrape_done = True
-                except Exception as e:
-                    logger.warning("[DefaultChatlist] Group scrape failed: %s", e)
+                    await leave_chatlist_on_session(client, "", fn)
+                    await asyncio.sleep(LEAVE_JOIN_DELAY)
+                except Exception:
+                    pass
 
-            await client.disconnect()
+                session_ok = True
+                for slug in slugs:
+                    ok, err = await join_chatlist_on_session(client, slug, fn)
+                    if not ok:
+                        session_ok = False
+                        if progress_cb:
+                            await progress_cb(f"✗ {fn}: {err}")
+                    await asyncio.sleep(LEAVE_JOIN_DELAY)
+
+                # Scrape group IDs once using the first successful session
+                if session_ok and not scrape_done:
+                    try:
+                        for link in links:
+                            lines = await scrape_chatlist_groups(client, link, progress_cb=progress_cb)
+                            all_group_lines.extend(lines)
+                        scrape_done = True
+                    except Exception as e:
+                        logger.warning("[DefaultChatlist] Group scrape failed: %s", e)
+            finally:
+                await client.disconnect()
             if session_ok:
                 joined_total += 1
                 if progress_cb:
                     await progress_cb(f"✓ {fn}: Joined all chatlist folders")
             else:
                 failed_total += 1
+        except SessionBusyError as e:
+            failed_total += 1
+            logger.warning("[DefaultChatlist] Session %s skipped: %s", fn, e)
+            if progress_cb:
+                await progress_cb(f"✗ {fn}: {e}")
         except Exception as e:
             failed_total += 1
             logger.warning("[DefaultChatlist] Session %s error: %s", fn, e)

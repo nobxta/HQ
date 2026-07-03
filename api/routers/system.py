@@ -159,14 +159,20 @@ async def update_admin_settings(body: dict):
 async def get_replacement_queue():
     from code.replacement import load_replacement_queue
     queue = await asyncio.to_thread(load_replacement_queue)
-    pending = [e for e in queue if e.get("status") not in ("completed", "cancelled")]
+    active = [e for e in queue if e.get("status") not in ("completed", "cancelled")]
+    # Unpaid replacements are NOT actionable work — they wait for the buyer to pay.
+    # Keep them out of the actionable queue so admins don't swap sessions before payment.
+    awaiting_payment = [e for e in active if e.get("status") == "pending_payment"]
+    actionable = [e for e in active if e.get("status") != "pending_payment"]
     completed = [e for e in queue if e.get("status") == "completed"]
     awaiting = [e for e in queue if e.get("status") == "awaiting_session"]
     return {
-        "queue": pending,
+        "queue": actionable,
+        "awaiting_payment": awaiting_payment,
         "awaiting_sessions": awaiting,
         "completed_recent": completed[-20:],
-        "total_pending": len(pending),
+        "total_pending": len(actionable),
+        "total_awaiting_payment": len(awaiting_payment),
         "total_awaiting": len(awaiting),
     }
 

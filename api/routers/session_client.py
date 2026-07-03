@@ -84,8 +84,13 @@ async def _get_pc(filename: str) -> PooledClient:
         if pc:
             _pool.pop(filename, None)
 
+        from code.session_guard import SessionBusyError, register_soft_release
         client = _make_client(filename)
-        await client.connect()
+        try:
+            await client.connect()
+        except SessionBusyError as e:
+            # 423 Locked: tell the user who holds the session and how long to wait
+            raise HTTPException(423, str(e))
         if not await client.is_user_authorized():
             await client.disconnect()
             raise HTTPException(401, "Session is not authorized")
@@ -93,6 +98,16 @@ async def _get_pc(filename: str) -> PooledClient:
         pc = PooledClient(client, filename)
         _pool[filename] = pc
         pc.touch()
+
+        # Between requests this connection idles; let other tasks (posting start,
+        # health check, chatlist) force-release it instead of seeing "busy".
+        async def _release_for_other_task() -> None:
+            _pool.pop(filename, None)
+            _cache.pop(filename, None)
+            async with pc.lock:  # let any in-flight portal request finish first
+                await pc.force_disconnect()
+
+        register_soft_release(filename, _release_for_other_task)
         logger.info("Connected → pool: %s", filename)
         return pc
 
@@ -264,12 +279,16 @@ def _find_session_path(filename: str) -> Path:
 
 
 def _make_client(filename: str):
-    from code.config import API_ID, API_HASH, PROXY
-    from telethon import TelegramClient
+    from code.session_guard import guarded_client
     path = _find_session_path(filename)
     if not path:
         raise HTTPException(404, f"Session file not found: {filename}")
-    return TelegramClient(str(path.with_suffix("")), API_ID, API_HASH, proxy=PROXY)
+    # expected_sec = idle timeout: other tasks see "account manager (web portal)"
+    # with a realistic wait estimate; idle holds are also soft-releasable below.
+    return guarded_client(
+        path, "account manager (web portal)",
+        wait_timeout=5, expected_sec=IDLE_TIMEOUT,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════

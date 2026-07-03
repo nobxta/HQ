@@ -401,28 +401,23 @@ async def _join_chatlist_for_new_session(bot_token: str, new_session_file: str) 
     if not slugs:
         return
     try:
-        from telethon import TelegramClient
         from .chatlist import join_chatlist_on_session
+        from .session_guard import open_session
         path = config.SESSIONS_ACTIVE / new_session_file
         if not path.is_file():
             return
-        client = TelegramClient(
-            str(path.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY
-        )
-        await client.connect()
-        if not await client.is_user_authorized():
-            await client.disconnect()
-            return
-        for slug in slugs:
-            try:
-                ok, err = await join_chatlist_on_session(client, slug, new_session_file)
-                if ok:
-                    logger.info("[Replacement] Session %s joined chatlist slug=%s", new_session_file, slug)
-                else:
-                    logger.warning("[Replacement] Session %s chatlist join failed slug=%s: %s", new_session_file, slug, err)
-            except Exception as e:
-                logger.warning("[Replacement] Chatlist join error for %s: %s", new_session_file, e)
-        await client.disconnect()
+        async with open_session(path, "session replacement (chatlist join)", wait_timeout=20, expected_sec=90) as client:
+            if not await client.is_user_authorized():
+                return
+            for slug in slugs:
+                try:
+                    ok, err = await join_chatlist_on_session(client, slug, new_session_file)
+                    if ok:
+                        logger.info("[Replacement] Session %s joined chatlist slug=%s", new_session_file, slug)
+                    else:
+                        logger.warning("[Replacement] Session %s chatlist join failed slug=%s: %s", new_session_file, slug, err)
+                except Exception as e:
+                    logger.warning("[Replacement] Chatlist join error for %s: %s", new_session_file, e)
     except Exception as e:
         logger.warning("[Replacement] Chatlist join outer error: %s", e)
 
@@ -486,6 +481,90 @@ def check_replacement_payment(entry_ids: list[str]) -> bool:
             mark_replacement_paid(e["id"], payment_id)
         return True
     return False
+
+
+def find_replacement_by_payment_id(payment_id: str) -> dict[str, Any] | None:
+    """Return the (first) replacement queue entry holding this NOWPayments payment_id."""
+    pid = (payment_id or "").strip()
+    if not pid:
+        return None
+    for e in load_replacement_queue():
+        if (e.get("payment_id") or "").strip() == pid:
+            return e
+    return None
+
+
+async def confirm_replacement_payment_by_id(payment_id: str) -> bool:
+    """Mark the replacement entry(ies) for this payment_id as paid and process them.
+
+    Used by the IPN webhook and the payment safety sweep so a paid replacement is
+    fulfilled even if the buyer closed the portal before the poll caught it.
+    Idempotent: entries already ready/completed are skipped. Returns True if any
+    matching replacement entry was found.
+    """
+    pid = (payment_id or "").strip()
+    if not pid:
+        return False
+    matched = False
+    for e in load_replacement_queue():
+        if (e.get("payment_id") or "").strip() != pid:
+            continue
+        matched = True
+        if e.get("status") == "pending_payment":
+            mark_replacement_paid(e["id"], payment_id=pid)
+            try:
+                from api.routers.user_portal import add_portal_notification
+                real_name = (e.get("real_name") or e.get("session_file", "")).replace(".session", "")
+                add_portal_notification(
+                    e.get("bot_name", ""),
+                    title="Payment Confirmed ✓",
+                    message=f"Payment received for {real_name}. Replacement will be processed shortly.",
+                    type="success",
+                    icon="swap",
+                )
+            except Exception:
+                pass
+    if matched:
+        try:
+            await process_ready_replacements()
+        except Exception as exc:
+            logger.warning("confirm_replacement_payment_by_id: process failed for %s: %s", pid, exc)
+    return matched
+
+
+def expire_replacement_invoice_by_id(payment_id: str) -> bool:
+    """An unpaid replacement invoice expired/failed at the provider. Clear the dead
+    invoice from the entry but KEEP it queued (status stays pending_payment) so the
+    failing session isn't silently dropped and the buyer can start a fresh invoice.
+    Clearing payment_id also stops the safety sweep from polling a dead id forever.
+    Returns True if any matching entry was updated.
+    """
+    pid = (payment_id or "").strip()
+    if not pid:
+        return False
+    affected_bots: set[str] = set()
+    with _queue_lock:
+        queue = load_replacement_queue()
+        for e in queue:
+            if (e.get("payment_id") or "").strip() == pid and e.get("status") == "pending_payment":
+                e["payment_id"] = ""
+                e["invoice_data"] = {}
+                affected_bots.add(e.get("bot_name", ""))
+        if affected_bots:
+            save_replacement_queue(queue)
+    for bot_name in affected_bots:
+        try:
+            from api.routers.user_portal import add_portal_notification
+            add_portal_notification(
+                bot_name,
+                title="Payment Expired",
+                message="A session-replacement invoice expired before payment. Start the replacement payment again when ready.",
+                type="warning",
+                icon="clock",
+            )
+        except Exception:
+            pass
+    return bool(affected_bots)
 
 
 async def process_queue_by_admin() -> dict[str, Any]:

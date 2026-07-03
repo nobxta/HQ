@@ -322,7 +322,7 @@ async def _process_temppay_entry(entry: dict, now_utc: datetime) -> None:
         elif user_id:
             await notify.notify_send_to_chat(user_id, CONFIRMING_MESSAGE_DISPLAY, entities=CONFIRMING_ENTITIES, bot_token=config.SHOP_BOT_TOKEN)
         return
-    if provider_status == "confirmed" and amount_received >= pay_amount:
+    if provider_status in ("confirmed", "finished", "sent", "sending") and amount_received >= pay_amount:
         existing = get_order_by_payment_id(invoice_id)
         if existing and existing.get("status") in ("paid", "completed"):
             temppay_remove_by_invoice_id(invoice_id)
@@ -517,7 +517,12 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
     if o.get("order_type") == "renewal":
         parent_id = o.get("parent_order_id")
         parent = get_order(parent_id) if parent_id else None
-        if parent and extend_valid_till_for_bot(parent.get("bot_token", ""), o.get("duration_days", 0), o.get("order_id", "")):
+        # Prefer the bot_token stored on the renewal order itself. The parent lookup
+        # is only a fallback for older orders that predate storing the token — never a
+        # requirement, since admin-created / non-"completed" bots have no completed
+        # parent order and would otherwise fail to extend after a real payment.
+        renew_token = (o.get("bot_token") or "").strip() or (parent.get("bot_token", "") if parent else "")
+        if renew_token and extend_valid_till_for_bot(renew_token, o.get("duration_days", 0), o.get("order_id", "")):
             update_order_status(order_id, "completed", paid_at=now)
             if user_id:
                 try:
@@ -535,7 +540,8 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
                 )
             await _send_order_confirmed_admin_notice(
                 "Renewal confirmed", order_id,
-                parent.get("plan_name") or plan_name, parent.get("plan_mode") or "",
+                (parent.get("plan_name") if parent else "") or plan_name,
+                (parent.get("plan_mode") if parent else "") or o.get("plan_mode") or "",
                 duration_days, o.get("amount_usd"), user_id,
             )
             logger.info("Renewal order %s completed for bot", order_id)
@@ -670,6 +676,35 @@ async def payment_safety_sweep() -> None:
                     if exp and now > exp:
                         logger.info("[SWEEP] temppay %s expired (invoice window passed, unpaid)", pid)
                         await _expire_temppay_to_orders(entry)
+            # ── Session-replacement invoices (payment_id lives on the replacement queue,
+            #    not in orders/temppay) — confirm any the webhook/poll missed. ──
+            try:
+                from ..replacement import (
+                    load_replacement_queue,
+                    confirm_replacement_payment_by_id,
+                    expire_replacement_invoice_by_id,
+                )
+                for rep in load_replacement_queue():
+                    if rep.get("status") != "pending_payment":
+                        continue
+                    pid = (rep.get("payment_id") or "").strip()
+                    if not pid:
+                        continue
+                    created = _parse_iso((rep.get("created_at") or "").strip())
+                    if created and (now - created).total_seconds() < SAFETY_SWEEP_GRACE_SEC:
+                        continue
+                    d = await asyncio.to_thread(get_payment_details, pid)
+                    if not d:
+                        continue
+                    st = (d.get("payment_status") or "waiting").lower()
+                    if st in ("confirmed", "finished", "sent", "sending"):
+                        logger.info("[SWEEP] webhook missed — confirming replacement %s (payment %s)", rep.get("id"), pid)
+                        await confirm_replacement_payment_by_id(pid)
+                    elif st in ("expired", "failed", "refunded"):
+                        logger.info("[SWEEP] replacement invoice %s expired (provider %s) — clearing", pid, st)
+                        expire_replacement_invoice_by_id(pid)
+            except Exception as rep_exc:
+                logger.warning("Payment safety sweep replacement error: %s", rep_exc)
         except Exception as e:
             logger.warning("Payment safety sweep error: %s", e)
 
@@ -843,8 +878,9 @@ async def payment_polling_worker() -> None:
                         update_order(order_id, {"_notified_confirming": True})
                     continue
 
-                # Paid or overpaid: amount_received >= pay_amount AND payment_status == confirmed → proceed normally (no special overpayment handling)
-                if provider_status == "confirmed" and amount_received >= pay_amount:
+                # Paid or overpaid: amount_received >= pay_amount AND provider reports a
+                # terminal-success status (confirmed/finished/sent/sending) → proceed normally.
+                if provider_status in ("confirmed", "finished", "sent", "sending") and amount_received >= pay_amount:
                     await apply_confirmed_payment(o, details)
         except Exception as e:
             logger.warning("Payment polling error: %s", e)

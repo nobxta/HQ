@@ -25,14 +25,17 @@ from telethon.tl.functions.photos import UploadProfilePhotoRequest
 from telethon.tl.types import ChatAdminRights, InputChannel
 
 from . import config
+from .session_guard import SessionBusyError, guarded_client
 from .utils import (
     add_admin_alert,
+    claim_free_session,
     get_bot_log_path,
     get_name_by_token,
     get_session_user,
     join_chat_by_link,
     load_pool,
     load_user_data,
+    move_session_to_bucket,
     name_to_filename,
     save_pool,
     save_user_data,
@@ -93,24 +96,23 @@ async def _check_session_spambot(path: Path) -> tuple[str, str]:
     """Check a single session via SpamBot. Returns (session_name, status)."""
     name = path.stem
     try:
-        client = TelegramClient(
-            str(path.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY
-        )
+        client = guarded_client(path, "account health check (SpamBot)", wait_timeout=10, expected_sec=45)
         await client.connect()
-        if not await client.is_user_authorized():
-            await client.disconnect()
-            return name, "UNKNOWN"
         try:
-            await client.send_message("SpamBot", "/start")
-            await asyncio.sleep(1.5)
-            async for msg in client.iter_messages("SpamBot", limit=3):
-                if msg.text:
-                    status = classify_spambot_response(msg.text)
-                    await client.disconnect()
-                    return name, status
-        except Exception as e:
-            logger.debug("SpamBot check failed for %s: %s", name, e)
-        await client.disconnect()
+            if not await client.is_user_authorized():
+                return name, "UNKNOWN"
+            try:
+                await client.send_message("SpamBot", "/start")
+                await asyncio.sleep(1.5)
+                async for msg in client.iter_messages("SpamBot", limit=3):
+                    if msg.text:
+                        return name, classify_spambot_response(msg.text)
+            except Exception as e:
+                logger.debug("SpamBot check failed for %s: %s", name, e)
+        finally:
+            await client.disconnect()
+    except SessionBusyError as e:
+        logger.info("SpamBot check skipped for %s: %s", name, e)
     except Exception as e:
         logger.debug("Session connect failed for %s: %s", name, e)
     return name, SPAM_UNKNOWN
@@ -181,9 +183,7 @@ async def repair_fix_log_group(
                 path = config.SESSIONS_ACTIVE / fn
                 if not path.is_file():
                     continue
-                client = TelegramClient(
-                    str(path.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY
-                )
+                client = guarded_client(path, "log group check", wait_timeout=15, expected_sec=60)
                 await client.connect()
                 if not await client.is_user_authorized():
                     await client.disconnect()
@@ -223,9 +223,7 @@ async def repair_fix_log_group(
         path = config.SESSIONS_ACTIVE / fn
         if not path.is_file():
             continue
-        client = TelegramClient(
-            str(path.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY
-        )
+        client = guarded_client(path, "log group setup", wait_timeout=15, expected_sec=120)
         try:
             await client.connect()
             if not await client.is_user_authorized():
@@ -292,9 +290,7 @@ async def repair_fix_log_group(
                 continue
             if i > 0:
                 await asyncio.sleep(1.5)
-            c2 = TelegramClient(
-                str(path.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY
-            )
+            c2 = guarded_client(path, "joining log group", wait_timeout=15, expected_sec=60)
             try:
                 await c2.connect()
                 if not await c2.is_user_authorized():
@@ -364,23 +360,21 @@ async def repair_replace_session(
     if idx is None:
         return "Session not found."
 
-    pool = load_pool()
-    free = pool.get("free_sessions", [])
-    if not free:
+    # Atomically claim a free session (removed from the pool and persisted before we
+    # return) so a concurrent creation/replacement can never grab the same account.
+    new_fn = await asyncio.to_thread(claim_free_session)
+    if not new_fn:
         return "No free sessions available for replacement."
 
-    new_fn = free[0]
-    pool["free_sessions"] = [x for x in free if x != new_fn]
     new_path = config.SESSIONS_ACTIVE / new_fn
     if not new_path.is_file():
+        # Claimed session's file is gone → park it as dead, don't leak it back to free.
+        await asyncio.to_thread(move_session_to_bucket, new_fn, "dead_sessions")
         return "Replacement session file missing."
 
     ok = await validate_session(new_path)
     if not ok:
-        pool.setdefault("dead_sessions", [])
-        if new_fn not in pool["dead_sessions"]:
-            pool["dead_sessions"].append(new_fn)
-        save_pool(pool)
+        await asyncio.to_thread(move_session_to_bucket, new_fn, "dead_sessions")
         return "Replacement session failed validation."
 
     info = await get_session_user(new_path)
@@ -396,20 +390,14 @@ async def repair_replace_session(
         except Exception as e:
             logger.warning("Move session to %s failed: %s", dest_dir, e)
 
-    # Track moved session in the correct pool bucket
+    # Track moved session in the correct pool bucket (atomic, re-reads pool fresh).
     _pool_bucket_for_status = {
         SPAM_FROZEN: "frozen_sessions",
         SPAM_TEMP_LIMITED: "limited_sessions",
         SPAM_HARD_LIMITED: "limited_sessions",
     }
     dest_bucket = _pool_bucket_for_status.get(status, "unauth_sessions")
-    # Remove old session from all buckets first
-    for bucket_key in ("free_sessions", "dead_sessions", "frozen_sessions", "limited_sessions", "unauth_sessions"):
-        pool[bucket_key] = [x for x in pool.get(bucket_key, []) if x != old_session_file]
-    # Add to destination bucket
-    pool.setdefault(dest_bucket, [])
-    if old_session_file not in pool[dest_bucket]:
-        pool[dest_bucket].append(old_session_file)
+    await asyncio.to_thread(move_session_to_bucket, old_session_file, dest_bucket)
 
     sessions[idx] = {"file": new_fn, "real_name": real_name, "user_id": user_id, "index": idx + 1}
     cfg["sessions"] = sessions
@@ -423,13 +411,10 @@ async def repair_replace_session(
     })
     cfg["session_replacements"] = cfg["session_replacements"][-100:]
     save_user_data(name, cfg)
-    save_pool(pool)
 
     log_group = cfg.get("log_group")
     if log_group:
-        client = TelegramClient(
-            str(new_path.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY
-        )
+        client = guarded_client(new_path, "session replacement", wait_timeout=15, expected_sec=60)
         try:
             await client.connect()
             if await client.is_user_authorized():
@@ -626,9 +611,7 @@ async def repair_fix_bot_token(
             path = config.SESSIONS_ACTIVE / fn
             if not path.is_file():
                 continue
-            client = TelegramClient(
-                str(path.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY
-            )
+            client = guarded_client(path, "bot token fix (log group invite)", wait_timeout=15, expected_sec=60)
             try:
                 await client.connect()
                 if not await client.is_user_authorized():

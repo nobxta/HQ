@@ -382,6 +382,40 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "You already have an open invoice. Finish that payment, or use /cancel to start fresh.",
         )
         return
+
+    # Resume a PAID order whose setup wasn't finished, so a buyer who paid then closed
+    # the app can always pick up where they left off (these orders have no bot_token yet,
+    # so the reconciliation sweep can't recover them — only the buyer can).
+    resume = (
+        get_order_by_user_and_awaiting(user_id, "paid", "proceed")
+        or get_order_by_user_and_awaiting(user_id, "paid", "name")
+        or get_order_by_user_and_awaiting(user_id, "paid", "token")
+    )
+    if resume:
+        order_id = resume.get("order_id", "")
+        awaiting = resume.get("awaiting_field")
+        if awaiting == "proceed":
+            conf_text, conf_ent, conf_rm = build_payment_confirmation_screen(resume, None)
+            await update.message.reply_text(
+                conf_text, reply_markup=conf_rm, entities=conf_ent, disable_web_page_preview=True
+            )
+            _clear_shop_state(user_id)
+            return
+        if awaiting == "name":
+            _clear_shop_state(user_id)
+            _shop_state[user_id] = {"step": "enter_name", "order_id": order_id, "data": {}}
+            r_text, r_ent = build_emoji_message(STEP5_MESSAGE, "pointer")
+            await update.message.reply_text(r_text, entities=r_ent)
+            return
+        if awaiting == "token":
+            _clear_shop_state(user_id)
+            _shop_state[user_id] = {
+                "step": "enter_token", "order_id": order_id,
+                "bot_name": resume.get("bot_name", "AdBot"), "data": {},
+            }
+            await update.message.reply_text("Send your bot token to finish setup.")
+            return
+
     _clear_shop_state(user_id)
     text, entities = build_emoji_message("Welcome to HQAdz.\nWhat would you like to do?", "wave")
     await update.message.reply_text(
@@ -1352,6 +1386,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             "bot_name": text,
             "bot_token": bot_token,
             "bot_username": username,
+            # Clear the awaiting flag so a rapid second message can't re-derive this
+            # paid order and submit a duplicate create job (worker allows 2 concurrent).
+            "awaiting_field": "submitted",
         })
         mark_assigned(order_id)
         submit_create_job(
@@ -1440,6 +1477,14 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         text, entities = build_emoji_message(CREATION_PROGRESS_MESSAGE, "processing")
         progress_msg = await update.message.reply_text(text, entities=entities)
         # Do not set status to "creating" here — worker sets it when it actually starts (avoids "already_creating" skip).
+        # Persist the token and clear the awaiting flag so a rapid second message can't
+        # re-derive this paid order and submit a duplicate create job.
+        update_order(order_id, {
+            "bot_name": form.get("name"),
+            "bot_token": form.get("bot_token"),
+            "bot_username": username,
+            "awaiting_field": "submitted",
+        })
         submit_create_job(
             chat_id,
             progress_msg.message_id,

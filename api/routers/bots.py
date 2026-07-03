@@ -421,19 +421,21 @@ async def get_bot_logs(name: str, lines: int = Query(100, ge=1, le=1000)):
 
 async def _connect_session(session_file: str):
     """Connect a Telethon client for a session file. Returns (client, error_str)."""
-    from code.config import resolve_session_path, API_ID, API_HASH, PROXY
-    from telethon import TelegramClient
+    from code.config import resolve_session_path
+    from code.session_guard import SessionBusyError, guarded_client
 
     path = resolve_session_path(session_file)
     if not path.is_file():
         return None, "Session file not found"
     try:
-        client = TelegramClient(str(path.with_suffix("")), API_ID, API_HASH, proxy=PROXY)
+        client = guarded_client(path, "session details check", wait_timeout=5, expected_sec=30)
         await client.connect()
         if not await client.is_user_authorized():
             await client.disconnect()
             return None, "Session not authorized (logged out / banned)"
         return client, ""
+    except SessionBusyError as e:
+        return None, str(e)[:200]
     except Exception as e:
         return None, f"Connection failed: {str(e)[:150]}"
 
@@ -654,8 +656,10 @@ async def validate_all_sessions(name: str):
             results.append(info)
             continue
 
+        client = None
         try:
-            client = TelegramClient(str(path.with_suffix("")), API_ID, API_HASH, proxy=PROXY)
+            from code.session_guard import SessionBusyError, guarded_client
+            client = guarded_client(path, "session validation", wait_timeout=5, expected_sec=30)
             await client.connect()
             if not await client.is_user_authorized():
                 await client.disconnect()
@@ -701,9 +705,20 @@ async def validate_all_sessions(name: str):
                 s["user_id"] = info["user_id"]
             await client.disconnect()
         except Exception as e:
-            info["status"] = "dead"
-            info["reason"] = str(e)[:150]
-            dead_files.append(fn)
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+            from code.session_guard import SessionBusyError
+            if isinstance(e, SessionBusyError) or "database is locked" in str(e).lower():
+                # In use by another task — not dead, report who holds it
+                info["status"] = "busy"
+                info["reason"] = str(e)[:200]
+            else:
+                info["status"] = "dead"
+                info["reason"] = str(e)[:150]
+                dead_files.append(fn)
 
         results.append(info)
 
@@ -841,8 +856,10 @@ async def get_sessions_info(name: str):
             results.append(info)
             continue
 
+        client = None
         try:
-            client = TelegramClient(str(path.with_suffix("")), API_ID, API_HASH, proxy=PROXY)
+            from code.session_guard import SessionBusyError, guarded_client
+            client = guarded_client(path, "session details check", wait_timeout=5, expected_sec=30)
             await client.connect()
             if not await client.is_user_authorized():
                 await client.disconnect()
@@ -872,8 +889,18 @@ async def get_sessions_info(name: str):
                 info["error"] = "Could not get user info"
             await client.disconnect()
         except Exception as e:
-            info["status"] = "error"
-            info["error"] = str(e)[:150]
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+            from code.session_guard import SessionBusyError
+            if isinstance(e, SessionBusyError) or "database is locked" in str(e).lower():
+                info["status"] = "busy"
+                info["error"] = str(e)[:200]
+            else:
+                info["status"] = "error"
+                info["error"] = str(e)[:150]
 
         results.append(info)
 

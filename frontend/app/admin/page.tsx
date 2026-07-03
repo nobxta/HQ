@@ -1,7 +1,6 @@
 "use client";
 import { useState } from "react";
 import { useDashboard, useAlerts } from "@/lib/hooks/useDashboard";
-import StatCard from "@/components/StatCard";
 import Badge from "@/components/ui/Badge";
 import { PageSkeleton } from "@/components/ui/Skeleton";
 import {
@@ -45,9 +44,11 @@ type ReplEntry = {
 
 type ReplQueueData = {
   queue: ReplEntry[];
+  awaiting_payment?: ReplEntry[];
   awaiting_sessions: ReplEntry[];
   completed_recent: ReplEntry[];
   total_pending: number;
+  total_awaiting_payment?: number;
   total_awaiting: number;
 };
 
@@ -127,12 +128,125 @@ export default function DashboardPage() {
     };
   });
 
+  const clayStats = [
+    {
+      title: "Total Users", value: b.total, subtitle: `${b.running} running · ${b.stopped} stopped`,
+      icon: Users, tone: "accent" as const,
+    },
+    {
+      title: "Posts Today", value: posting.today_sent.toLocaleString(), subtitle: `${posting.today_failed} failed · ${successRate}% success`,
+      icon: Send, tone: "info" as const, live: true,
+    },
+    {
+      title: "Total Revenue",
+      value: `$${(o.revenue_usd || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      subtitle: `${o.completed} completed · ${o.pending} pending`, icon: DollarSign, tone: "success" as const,
+    },
+    {
+      title: "CPU / RAM", value: `${sys.cpu_percent?.toFixed(0) || 0}% / ${sys.memory_percent?.toFixed(0) || 0}%`,
+      subtitle: `${Math.round(sys.memory_used_mb)}MB used`, icon: Cpu, tone: "warning" as const,
+    },
+  ];
+  const toneMap: Record<string, string> = {
+    accent: "clay-tone-accent", info: "clay-tone-info", success: "clay-tone-success", warning: "clay-tone-warning",
+  };
+
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="clay-root space-y-6 animate-fade-in">
+      <style jsx>{`
+        .clay-root { position: relative; isolation: isolate; }
+        .clay-root::before {
+          content: ""; position: absolute; inset: -60px -30px; z-index: -2; pointer-events: none;
+          background:
+            radial-gradient(48% 40% at 12% -4%, rgba(108,92,231,0.20), transparent 70%),
+            radial-gradient(42% 38% at 100% 8%, rgba(0,206,201,0.12), transparent 72%),
+            radial-gradient(55% 55% at 88% 108%, rgba(219,39,119,0.10), transparent 70%);
+          filter: blur(14px);
+        }
+        /* Raised clay surface */
+        .clay-card {
+          position: relative; border-radius: 26px;
+          background: linear-gradient(152deg, #23232f 0%, #17171f 100%);
+          border: 1px solid rgba(255,255,255,0.05); overflow: hidden;
+          box-shadow:
+            12px 14px 30px rgba(0,0,0,0.55),
+            -8px -8px 22px rgba(255,255,255,0.022),
+            inset 1px 1px 1px rgba(255,255,255,0.06),
+            inset 0 -9px 18px rgba(0,0,0,0.30);
+        }
+        /* Depth-only (keeps a coloured tint for alert surfaces) */
+        .clay-raise {
+          border-radius: 22px;
+          box-shadow:
+            10px 12px 26px rgba(0,0,0,0.5),
+            -7px -7px 18px rgba(255,255,255,0.02),
+            inset 1px 1px 1px rgba(255,255,255,0.06);
+        }
+        /* Stat tile */
+        .clay-stat {
+          position: relative; border-radius: 24px; overflow: hidden;
+          background: linear-gradient(152deg, #25252f 0%, #171720 100%);
+          border: 1px solid rgba(255,255,255,0.055);
+          box-shadow:
+            10px 12px 26px rgba(0,0,0,0.52),
+            -7px -7px 18px rgba(255,255,255,0.025),
+            inset 1px 1px 1px rgba(255,255,255,0.07),
+            inset 0 -8px 16px rgba(0,0,0,0.28);
+          transition: transform .25s cubic-bezier(.16,1,.3,1), box-shadow .25s cubic-bezier(.16,1,.3,1);
+        }
+        .clay-stat:hover {
+          transform: translateY(-4px);
+          box-shadow:
+            16px 20px 38px rgba(0,0,0,0.58),
+            -7px -7px 20px rgba(255,255,255,0.03),
+            inset 1px 1px 1px rgba(255,255,255,0.08),
+            inset 0 -8px 16px rgba(0,0,0,0.26);
+        }
+        /* Squishy icon pill (embossed) */
+        .clay-pill {
+          border-radius: 18px;
+          box-shadow:
+            inset 2px 2px 5px rgba(0,0,0,0.45),
+            inset -2px -2px 6px rgba(255,255,255,0.07),
+            4px 5px 12px rgba(0,0,0,0.35);
+        }
+        .clay-tone-accent   { background: linear-gradient(150deg,#8b6cff,#5a45d6); color:#fff; }
+        .clay-tone-info     { background: linear-gradient(150deg,#74b9ff,#3d7bd6); color:#fff; }
+        .clay-tone-success  { background: linear-gradient(150deg,#2fe0c4,#00a89f); color:#04241f; }
+        .clay-tone-warning  { background: linear-gradient(150deg,#ffd479,#e5a900); color:#3a2600; }
+        /* Recessed inset (tracks, tiles) */
+        .clay-inset {
+          border-radius: 14px; background: #131319;
+          box-shadow: inset 3px 3px 7px rgba(0,0,0,0.55), inset -2px -2px 5px rgba(255,255,255,0.03);
+        }
+        /* Buttons */
+        .clay-btn-primary {
+          border-radius: 16px; color:#fff;
+          background: linear-gradient(150deg,#8b6cff,#5a45d6);
+          box-shadow:
+            5px 6px 14px rgba(0,0,0,0.45), -3px -3px 9px rgba(255,255,255,0.05),
+            inset 1px 1px 2px rgba(255,255,255,0.35), inset -2px -4px 8px rgba(40,28,100,0.55);
+          transition: transform .15s cubic-bezier(.16,1,.3,1), filter .15s;
+        }
+        .clay-btn-primary:hover { filter: brightness(1.09); }
+        .clay-btn-primary:active { transform: scale(0.95); }
+        .clay-btn-primary:disabled { opacity: .55; }
+        .clay-btn-soft {
+          border-radius: 14px;
+          background: linear-gradient(150deg,#26262f,#181820);
+          box-shadow: 4px 4px 10px rgba(0,0,0,0.42), -3px -3px 8px rgba(255,255,255,0.03), inset 1px 1px 1px rgba(255,255,255,0.05);
+          transition: transform .15s cubic-bezier(.16,1,.3,1), filter .15s;
+        }
+        .clay-btn-soft:hover { filter: brightness(1.2); }
+        .clay-btn-soft:active { transform: scale(0.93); }
+        @media (prefers-reduced-motion: reduce) {
+          .clay-stat, .clay-btn-primary, .clay-btn-soft { transition: none; }
+        }
+      `}</style>
 
       {/* ────── Paid-but-stuck orders — payment received, cannot ignore ────── */}
       {stuckOrders.length > 0 && (
-        <div className="rounded-2xl border border-warning/30 bg-warning/5 overflow-hidden">
+        <div className="clay-raise border border-warning/30 bg-warning/5 overflow-hidden">
           <div className="flex items-center justify-between px-5 py-3 border-b border-warning/20">
             <div className="flex items-center gap-2.5">
               <AlertTriangle className="h-4 w-4 text-warning shrink-0" />
@@ -162,49 +276,37 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* ────── Stat Cards ────── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-5">
-        <StatCard
-          title="Total Users"
-          value={b.total}
-          subtitle={`${b.running} running · ${b.stopped} stopped`}
-          icon={Users}
-          color="text-accent"
-          gradient="from-accent/15 via-accent/5 to-transparent"
-        />
-        <StatCard
-          title="Posts Today"
-          value={posting.today_sent.toLocaleString()}
-          subtitle={`${posting.today_failed} failed · ${successRate}% success`}
-          icon={Send}
-          color="text-info"
-          gradient="from-blue-500/15 via-blue-500/5 to-transparent"
-          live
-        />
-        <StatCard
-          title="Total Revenue"
-          value={`$${(o.revenue_usd || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-          subtitle={`${o.completed} completed · ${o.pending} pending`}
-          icon={DollarSign}
-          color="text-success"
-          gradient="from-emerald-500/15 via-emerald-500/5 to-transparent"
-        />
-        <StatCard
-          title="CPU / RAM"
-          value={`${sys.cpu_percent?.toFixed(0) || 0}% / ${sys.memory_percent?.toFixed(0) || 0}%`}
-          subtitle={`${Math.round(sys.memory_used_mb)}MB used`}
-          icon={Cpu}
-          color="text-warning"
-          gradient="from-amber-500/15 via-amber-500/5 to-transparent"
-        />
+      {/* ────── Stat Cards (claymorphism) ────── */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+        {clayStats.map((st) => {
+          const Icon = st.icon;
+          return (
+            <div key={st.title} className="clay-stat p-5">
+              <div className="flex items-center justify-between mb-4">
+                <div className={`flex h-12 w-12 items-center justify-center clay-pill ${toneMap[st.tone]}`}>
+                  <Icon className="h-5 w-5" />
+                </div>
+                {st.live && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-emerald-400 text-xs font-bold">Live</span>
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  </div>
+                )}
+              </div>
+              <p className="text-[10px] font-bold text-dark-500 uppercase tracking-widest mb-1.5">{st.title}</p>
+              <p className="text-2xl sm:text-[30px] font-bold text-white tracking-tight leading-none">{st.value}</p>
+              {st.subtitle && <p className="text-[11px] text-dark-500 mt-2.5">{st.subtitle}</p>}
+            </div>
+          );
+        })}
       </div>
 
       {/* ────── Alert Banners (side by side like Stitch) ────── */}
       {(lowSessions || openTickets.length > 0) && (
         <div className={`grid gap-4 ${lowSessions && openTickets.length > 0 ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1"}`}>
           {lowSessions && (
-            <div className="rounded-xl border border-red-500/30 bg-red-500/[0.07] px-4 py-3 flex items-center gap-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
-              <div className="h-10 w-10 rounded-full bg-red-500/20 flex items-center justify-center shrink-0">
+            <div className="clay-raise border border-red-500/30 bg-red-500/[0.07] px-4 py-3 flex items-center gap-3">
+              <div className="h-10 w-10 rounded-full clay-pill bg-red-500/20 flex items-center justify-center shrink-0">
                 <AlertTriangle className="h-5 w-5 text-red-400" />
               </div>
               <div className="flex-1">
@@ -221,8 +323,8 @@ export default function DashboardPage() {
             </div>
           )}
           {openTickets.length > 0 && (
-            <div className="rounded-xl border border-amber-500/30 bg-amber-900/20 px-4 py-3 flex items-center gap-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
-              <div className="h-10 w-10 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0">
+            <div className="clay-raise border border-amber-500/30 bg-amber-900/20 px-4 py-3 flex items-center gap-3">
+              <div className="h-10 w-10 rounded-full clay-pill bg-amber-500/20 flex items-center justify-center shrink-0">
                 <HelpCircle className="h-5 w-5 text-amber-500" />
               </div>
               <div className="flex-1">
@@ -243,9 +345,10 @@ export default function DashboardPage() {
       )}
 
       {/* ────── Replacement Queue ────── */}
-      {replQueue && (replQueue.total_pending > 0 || replQueue.completed_recent?.length > 0) && (() => {
+      {replQueue && (replQueue.total_pending > 0 || (replQueue.total_awaiting_payment || 0) > 0 || replQueue.completed_recent?.length > 0) && (() => {
         const pending = replQueue.queue || [];
         const awaiting = replQueue.awaiting_sessions || [];
+        const awaitingPayment = replQueue.awaiting_payment || [];
         const completed = replQueue.completed_recent || [];
 
         const handleProcess = async () => {
@@ -301,10 +404,10 @@ export default function DashboardPage() {
         };
 
         return (
-          <div className={`rounded-2xl overflow-hidden shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] ${
+          <div className={`overflow-hidden ${
             awaiting.length > 0
-              ? "border-2 border-amber-500/30 bg-amber-500/[0.03]"
-              : "border border-dark-700/30 bg-dark-850"
+              ? "clay-raise border-2 border-amber-500/30 bg-amber-500/[0.05]"
+              : "clay-card"
           }`}>
             <div className={`flex items-center justify-between px-5 py-4 border-b border-dark-800/50 ${
               awaiting.length > 0 ? "bg-amber-500/[0.04]" : ""
@@ -321,14 +424,14 @@ export default function DashboardPage() {
                 </span>
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={() => mutateRepl()} className="text-dark-500 hover:text-dark-300 p-1.5 rounded-lg hover:bg-dark-800/50 transition-colors">
+                <button onClick={() => mutateRepl()} className="clay-btn-soft text-dark-400 hover:text-white p-2">
                   <RefreshCw className="h-3.5 w-3.5" />
                 </button>
                 {(awaiting.length > 0 || pending.some(e => e.status === "ready")) && (
                   <button
                     onClick={handleProcess}
                     disabled={processing}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-bold text-white hover:brightness-110 active:scale-95 disabled:opacity-50 transition-all shadow-lg shadow-accent/20"
+                    className="clay-btn-primary inline-flex items-center gap-1.5 px-4 py-2 text-sm font-bold"
                   >
                     {processing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                     Process Queue
@@ -348,6 +451,23 @@ export default function DashboardPage() {
                     </p>
                     <p className="text-xs text-amber-400/70 mt-0.5">
                       Upload sessions to the free pool on the <Link href="/admin/sessions" className="underline hover:text-amber-300">Sessions page</Link>, then click &quot;Process Queue&quot;
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Awaiting payment — not actionable until the buyer pays */}
+            {awaitingPayment.length > 0 && (
+              <div className="mx-5 mt-4 rounded-xl bg-purple-500/10 border border-purple-500/20 px-4 py-3">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 text-purple-400 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="text-sm font-semibold text-purple-300">
+                      {awaitingPayment.length} replacement{awaitingPayment.length > 1 ? "s" : ""} awaiting payment
+                    </p>
+                    <p className="text-xs text-purple-400/70 mt-0.5">
+                      These are not ready to process — they&apos;re queued until the buyer&apos;s invoice clears. They&apos;ll appear above automatically once paid.
                     </p>
                   </div>
                 </div>
@@ -440,7 +560,7 @@ export default function DashboardPage() {
       })()}
 
       {/* ────── Posting Activity Chart ────── */}
-      <div className="rounded-2xl border border-dark-700/30 bg-dark-850 overflow-hidden shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
+      <div className="clay-card">
         <div className="flex items-center justify-between px-5 py-4 border-b border-dark-800/50">
           <h3 className="text-sm font-semibold text-white">Posting Activity (24h)</h3>
           <div className="flex gap-4">
@@ -499,7 +619,7 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
 
         {/* Top Failing Bots */}
-        <div className="rounded-2xl border border-dark-700/30 bg-dark-850 overflow-hidden flex flex-col max-h-[400px] shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
+        <div className="clay-card flex flex-col max-h-[400px]">
           <div className="px-5 py-4 border-b border-dark-800/50 flex items-center justify-between shrink-0">
             <h3 className="text-sm font-bold text-white">Top Failing Bots</h3>
             <TrendingDown className="h-4 w-4 text-dark-500" />
@@ -538,7 +658,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Upcoming Renewals */}
-        <div className="rounded-2xl border border-dark-700/30 bg-dark-850 overflow-hidden flex flex-col max-h-[400px] shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
+        <div className="clay-card flex flex-col max-h-[400px]">
           <div className="px-5 py-4 border-b border-dark-800/50 flex items-center justify-between shrink-0">
             <h3 className="text-sm font-bold text-white">Upcoming Renewals</h3>
             <CalendarClock className="h-4 w-4 text-dark-500" />
@@ -585,7 +705,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Support Tickets */}
-        <div className="rounded-2xl border border-dark-700/30 bg-dark-850 overflow-hidden flex flex-col max-h-[400px] shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
+        <div className="clay-card flex flex-col max-h-[400px]">
           <div className="px-5 py-4 border-b border-dark-800/50 flex items-center justify-between shrink-0">
             <h3 className="text-sm font-bold text-white">Support Tickets</h3>
             <MessageSquare className="h-4 w-4 text-dark-500" />
@@ -620,7 +740,7 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
 
         {/* Recent Orders */}
-        <div className="lg:col-span-2 rounded-2xl border border-dark-700/30 bg-dark-850 overflow-hidden flex flex-col max-h-[420px] shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
+        <div className="clay-card lg:col-span-2 flex flex-col max-h-[420px]">
           <div className="px-5 py-4 border-b border-dark-800/50 flex items-center justify-between shrink-0">
             <h3 className="text-sm font-semibold text-white">Recent Orders</h3>
             <Link href="/admin/payments" className="text-xs font-bold text-accent hover:underline uppercase">
@@ -636,9 +756,9 @@ export default function DashboardPage() {
             ) : (
               <div className="space-y-2">
                 {recentOrders.map((order) => (
-                  <div key={order.order_id} className="flex items-center justify-between p-3 rounded-xl bg-dark-900/40 hover:bg-dark-800/40 transition-colors">
+                  <div key={order.order_id} className="flex items-center justify-between p-3 clay-inset hover:brightness-125 transition-all">
                     <div className="flex items-center gap-3">
-                      <div className={`h-10 w-10 rounded-full flex items-center justify-center shrink-0 ${
+                      <div className={`h-10 w-10 rounded-full clay-pill flex items-center justify-center shrink-0 ${
                         order.status === "completed" ? "bg-emerald-500/10" :
                         order.status === "cancelled" ? "bg-red-500/10" : "bg-amber-500/10"
                       }`}>
@@ -671,7 +791,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Session Pool */}
-        <div className="rounded-2xl border border-dark-700/30 bg-dark-850 overflow-hidden shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] flex flex-col">
+        <div className="clay-card flex flex-col">
           <div className="px-5 py-4 border-b border-dark-800/50 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-white">Session Pool</h3>
             <div className="flex gap-1">
@@ -694,7 +814,7 @@ export default function DashboardPage() {
                     <span className="text-dark-500">{row.label}</span>
                     <span className={row.textColor}>{row.val}</span>
                   </div>
-                  <div className="h-2 w-full bg-dark-800 rounded-full overflow-hidden">
+                  <div className="h-2.5 w-full clay-inset overflow-hidden">
                     <div className={`h-full rounded-full ${row.color} transition-all duration-700`}
                       style={{ width: `${Math.max(pct, pct > 0 ? 2 : 0)}%` }} />
                   </div>
@@ -709,7 +829,7 @@ export default function DashboardPage() {
                 { label: "Unauth", val: s.unauth, color: "text-dark-400" },
                 { label: "Total", val: s.total, color: "text-white" },
               ].map((item) => (
-                <div key={item.label} className="bg-dark-800/40 rounded-lg p-2 text-center">
+                <div key={item.label} className="clay-inset p-2.5 text-center">
                   <p className={`text-sm font-bold ${item.color}`}>{item.val}</p>
                   <p className="text-[9px] text-dark-600 font-bold uppercase tracking-wider">{item.label}</p>
                 </div>
@@ -732,7 +852,7 @@ export default function DashboardPage() {
 
       {/* ────── System Log / Alerts ────── */}
       {alerts.length > 0 && (
-        <div className="rounded-2xl border border-dark-700/30 bg-dark-850 overflow-hidden flex flex-col shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
+        <div className="clay-card flex flex-col">
           <div className="flex items-center justify-between px-5 py-4 border-b border-dark-800/50 shrink-0">
             <h3 className="text-sm font-semibold text-white">System Security Log</h3>
             <span className="text-[11px] text-dark-500">Real-time update active</span>

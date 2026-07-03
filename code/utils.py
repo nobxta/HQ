@@ -233,6 +233,53 @@ def save_pool(data: dict[str, Any]) -> None:
             raise
 
 
+# ── Session-pool transaction lock ──────────────────────────────────────────────
+# Serializes every consumer that claims/returns sessions in data/pool.json so the
+# SAME account is never bound to two bots. The bot-creation worker holds this for
+# the whole build (its in-memory pool snapshot must stay consistent); replacement
+# and runtime session-death swaps take it only for their brief claim/return steps.
+#
+# IMPORTANT: this lock can be held for the full duration of a bot build. Never
+# acquire it directly on the asyncio event loop — call the helpers below via
+# asyncio.to_thread() from async code so the loop is not frozen while waiting.
+SESSION_POOL_LOCK = threading.RLock()
+
+_POOL_BUCKETS = ("free_sessions", "dead_sessions", "frozen_sessions", "limited_sessions", "unauth_sessions")
+
+
+def claim_free_session() -> str | None:
+    """Atomically pop and persist the next free session, returning its filename (or
+    None if the pool is empty). The claim is committed to disk before returning, so
+    no concurrent consumer can grab the same session. Blocking — call via
+    asyncio.to_thread() from async code."""
+    with SESSION_POOL_LOCK:
+        pool = load_pool()
+        free = pool.get("free_sessions", [])
+        if not free:
+            return None
+        fn = free[0]
+        pool["free_sessions"] = [x for x in free if x != fn]
+        save_pool(pool)
+        return fn
+
+
+def move_session_to_bucket(fn: str, dest_bucket: str) -> None:
+    """Atomically move a session filename to dest_bucket (e.g. 'dead_sessions',
+    'frozen_sessions'), removing it from every other pool bucket first. Re-reads the
+    pool fresh under the lock so it never clobbers a concurrent change. Blocking —
+    call via asyncio.to_thread() from async code."""
+    if not fn:
+        return
+    with SESSION_POOL_LOCK:
+        pool = load_pool()
+        for b in _POOL_BUCKETS:
+            pool[b] = [x for x in pool.get(b, []) if x != fn]
+        pool.setdefault(dest_bucket, [])
+        if fn not in pool[dest_bucket]:
+            pool[dest_bucket].append(fn)
+        save_pool(pool)
+
+
 async def delete_bot_from_storage(bot_token: str, move_to: str) -> bool:
     """Full bot deletion: return admin-pool sessions to free/dead, delete user-uploaded sessions,
     remove custom group file, clean pool references, delete user data/log/stats.
@@ -402,26 +449,25 @@ async def with_floodwait_retry(
 
 async def get_session_user(session_path: Path) -> tuple[int, str] | None:
     """Connect with session, return (user_id, first_name) or None on failure."""
+    from .session_guard import open_session, busy_message
     session_path = session_path.resolve()
     if not session_path.is_file():
         return None
     if _session_active_callback and _session_active_callback(session_path):
         return None
-    name = str(session_path.with_suffix(""))
-    tc = TelegramClient(
-        name, config.API_ID, config.API_HASH, proxy=config.PROXY
-    )
+    busy = busy_message(session_path)
+    if busy:
+        logger.info("get_session_user skipped: %s", busy)
+        return None
     try:
-        await tc.connect()
-        if not await tc.is_user_authorized():
-            return None
-        me = await tc.get_me()
-        return (me.id, (me.first_name or "").strip() or str(me.id))
+        async with open_session(session_path, "reading account info", wait_timeout=5, expected_sec=20) as tc:
+            if not await tc.is_user_authorized():
+                return None
+            me = await tc.get_me()
+            return (me.id, (me.first_name or "").strip() or str(me.id))
     except Exception as e:
         logger.warning("get_session_user failed for %s: %s", session_path.name, e)
         return None
-    finally:
-        await tc.disconnect()
 
 
 async def join_chat_by_link(client: TelegramClient, link: str | int) -> None:
@@ -653,11 +699,17 @@ def _session_failure_reason(exc: Exception) -> str:
 async def validate_session_with_reason(session_path: Path) -> tuple[bool, str]:
     """Validate session; return (ok, reason). If invalid, move to dead/ and return (False, reason).
     Reason is one of: '' (ok), 'UNAUTHORIZED', 'FROZEN', 'revoked', or a short message for other failures."""
+    from .session_guard import SessionBusyError, busy_message, guarded_client
     session_path = session_path.resolve()
     if not session_path.is_file():
         return False, "file missing"
     if _session_active_callback and _session_active_callback(session_path):
         return False, "in use by posting"
+    busy = busy_message(session_path)
+    if busy:
+        # In use by another task — NOT dead; report who holds it and do not move the file.
+        logger.info("Session %s validation skipped: %s", session_path.name, busy)
+        return False, busy
     if not _is_sqlite_session_file(session_path):
         logger.warning(
             "Session file is not a valid Telethon session (SQLite format required): %s",
@@ -665,11 +717,9 @@ async def validate_session_with_reason(session_path: Path) -> tuple[bool, str]:
         )
         _move_session_to_dead(session_path)
         return False, "invalid format (not SQLite)"
-    name = str(session_path.with_suffix(""))
-    client = TelegramClient(
-        name, config.API_ID, config.API_HASH, proxy=config.PROXY
-    )
+    client = guarded_client(session_path, "session validation", wait_timeout=5, expected_sec=30)
     ok = False
+    busy_skip = False
     reason = ""
     try:
         await client.connect()
@@ -679,6 +729,10 @@ async def validate_session_with_reason(session_path: Path) -> tuple[bool, str]:
         await with_floodwait_retry(lambda: client.send_message("me", "."))
         ok = True
         return True, ""
+    except SessionBusyError as e:
+        busy_skip = True
+        logger.info("Session %s validation skipped: %s", session_path.name, e)
+        return False, str(e)
     except Exception as e:
         reason = _session_failure_reason(e)
         if type(e) in _SESSION_DEAD_ERRORS:
@@ -688,7 +742,7 @@ async def validate_session_with_reason(session_path: Path) -> tuple[bool, str]:
         return False, reason
     finally:
         await client.disconnect()
-        if not ok and session_path.is_file():
+        if not ok and not busy_skip and session_path.is_file():
             _move_session_to_dead(session_path)
 
 
@@ -742,6 +796,12 @@ async def run_startup_validation(data: dict[str, Any]) -> tuple[int, int, list[t
         if not path.is_file():
             continue
         ok, reason = await validate_session_with_reason(path)
+        if not ok and ("is busy:" in reason or reason == "in use by posting"):
+            # Session held by a live task (posting/chatlist/portal) — cannot check now,
+            # but that also means it works. Do not mark dead.
+            valid_count += 1
+            logger.info("Startup validation: %s counted valid (%s)", fn, reason)
+            continue
         if ok:
             valid_count += 1
         else:
@@ -1178,9 +1238,8 @@ async def recreate_log_group_for_bot(bot_token: str) -> bool:
     bot_username = (cfg.get("bot_username") or "").strip().lstrip("@")
     if not bot_username:
         return False
-    client = TelegramClient(
-        str(path.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY
-    )
+    from .session_guard import guarded_client
+    client = guarded_client(path, "log group setup", wait_timeout=20, expected_sec=120)
     try:
         await client.connect()
         if not await client.is_user_authorized():

@@ -105,6 +105,21 @@ async def get_order(order_id: str):
 
 @router.post("/{order_id}/mark-paid", response_model=OrderActionResponse)
 async def mark_paid(order_id: str):
+    from code.shop.storage import get_order
+    order = get_order(order_id)
+    if not order:
+        raise HTTPException(404, f"Order '{order_id}' not found")
+    # Web orders must run the SAME provisioning the IPN webhook does — issue the web
+    # access code, reserve a pooled bot token, and submit the build — not just a status
+    # flip, or the order strands in "creating" with no bot. apply_confirmed_payment is
+    # idempotent and self-guards on status.
+    if (order.get("source") or "") == "web" and order.get("status") in ("payment_waiting", "confirming"):
+        from code.shop.workers import apply_confirmed_payment
+        ok = await apply_confirmed_payment(order, {})
+        if not ok:
+            raise HTTPException(400, "Order is no longer awaiting payment")
+        await wrappers.log_admin_action("web_admin", "order_mark_paid", target=order_id)
+        return OrderActionResponse(success=True, message="Marked paid — provisioning started")
     success, msg = await wrappers.order_mark_paid(order_id)
     if not success:
         raise HTTPException(400, msg)

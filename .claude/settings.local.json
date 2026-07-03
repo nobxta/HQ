@@ -238,7 +238,14 @@
       "Bash(python -c \"from api.routers import user_portal; print\\('router import OK'\\); print\\('purchase routes:', [r.path for r in user_portal.router.routes if 'purchase' in r.path or 'bot-tokens' in r.path or 'coupon' in r.path]\\)\")",
       "Bash(python -c \"from api.app import app; print\\('api.app OK'\\); print\\('portal routes mounted:', any\\('/api/portal/purchase/create'==getattr\\(r,'path',''\\) for r in app.routes\\)\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('tunnel.py',encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('main.py',encoding='utf-8'\\).read\\(\\)\\); print\\('SYNTAX OK'\\)\")",
-      "Bash(python -c \"import tunnel; print\\('import OK; start callable:', callable\\(tunnel.start\\)\\)\")"
+      "Bash(python -c \"import tunnel; print\\('import OK; start callable:', callable\\(tunnel.start\\)\\)\")",
+      "Bash(python -c \"import ast; [ast.parse\\(open\\(f,encoding='utf-8'\\).read\\(\\)\\) for f in ['code/config.py','main.py','code/shop/workers.py','api/routers/user_portal.py']]; print\\('SYNTAX OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('code/shop/handlers.py',encoding='utf-8'\\).read\\(\\)\\); print\\('handlers SYNTAX OK'\\)\")",
+      "Bash(python -c \"import hmac,hashlib; s=b'f7SutE3DpdvyteM9JW+zK2H0hjVrehiJ'; print\\('len=',len\\(s\\)\\); print\\('fingerprint=', hmac.new\\(s, b'hqadz-ipn-check', hashlib.sha512\\).hexdigest\\(\\)[:16]\\)\")",
+      "Bash(gh pr create --base main --head checkout-preparing-screen-copy --title 'Checkout: rewrite \"preparing\" screen copy + center access code' --body ' *)",
+      "Bash(git checkout *)",
+      "Bash(git pull *)",
+      "Bash(xargs grep -l \"preparing\\\\|Preparing\")"
     ]
   }
 }

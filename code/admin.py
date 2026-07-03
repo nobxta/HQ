@@ -36,7 +36,9 @@ _create_job_queue: queue_module.Queue = queue_module.Queue()
 _result_queue: queue_module.Queue = queue_module.Queue()
 _create_worker_started = threading.Lock()
 # Serialize load_adbot + session assignment + save_pool so the same session cannot be assigned to two bots.
-creation_pool_lock = threading.Lock()
+# This is the SHARED session-pool lock: the replacement and runtime session-death paths take the same
+# lock (via code.utils helpers) for their brief claim/return steps, so no session binds to two bots.
+from .utils import SESSION_POOL_LOCK as creation_pool_lock
 _create_worker_threads: list = []  # list of threads; multiple for queue saturation limit
 _create_worker_restart_requested = threading.Event()
 MAX_CONCURRENT_CREATE_JOBS = 2  # limit concurrent creations to avoid API/session exhaustion
@@ -71,6 +73,7 @@ _CREATE_GROUP_RETRYABLE = (
     FloodError,
     PeerFloodError,
 )
+from .session_guard import SessionBusyError, guarded_client
 from .users import _stop_posting, create_user_bot, _workers_alive, disconnect_and_remove_controller_bot
 from .utils import add_admin_alert, delete_bot_from_storage, get_name_by_token, get_session_user, join_chat_by_link, load_adbot, load_pool, name_to_filename, register_for_shutdown, save_adbot, save_pool, save_user_data, validate_bot_token, validate_session
 from .user_config import get_plan_mode
@@ -463,9 +466,7 @@ async def _admin_recreate_log_group(
     first = config.SESSIONS_ACTIVE / sessions[0]["file"]
     if not first.is_file():
         return "First session file missing."
-    creator = TelegramClient(
-        str(first.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY
-    )
+    creator = guarded_client(first, "log group setup", wait_timeout=20, expected_sec=120)
     try:
         if log:
             await log("⏳ Connecting first session…")
@@ -512,9 +513,7 @@ async def _admin_recreate_log_group(
                 continue
             if i > 0:
                 await asyncio.sleep(1.5)
-            c2 = TelegramClient(
-                str(path.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY
-            )
+            c2 = guarded_client(path, "joining log group", wait_timeout=15, expected_sec=60)
             try:
                 await c2.connect()
                 if not await c2.is_user_authorized():
@@ -847,8 +846,7 @@ async def _core_create_adbot_async(
             path = config.SESSIONS_ACTIVE / fn
             if not path.is_file():
                 continue
-            session_path = str(path.with_suffix(""))
-            client = TelegramClient(session_path, config.API_ID, config.API_HASH, proxy=config.PROXY)
+            client = guarded_client(path, "log group setup", wait_timeout=20, expected_sec=120)
             try:
                 await client.connect()
                 if not await client.is_user_authorized():
@@ -919,9 +917,7 @@ async def _core_create_adbot_async(
                     continue
                 if i > 0:
                     await asyncio.sleep(1.5)
-                c2 = TelegramClient(
-                    str(path.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY
-                )
+                c2 = guarded_client(path, "joining log group", wait_timeout=15, expected_sec=60)
                 try:
                     await c2.connect()
                     if not await c2.is_user_authorized():

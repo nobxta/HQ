@@ -9,10 +9,12 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+from fastapi import Depends
 from api.auth import (
     create_portal_access_token, create_portal_refresh_token,
     PORTAL_ACCESS_TOKEN_EXPIRE_SEC,
 )
+from api.deps import enforce_portal_auth
 from api.services import wrappers
 from api.services.serializers import serialize_bot_detail, serialize_stats, serialize_order
 
@@ -21,7 +23,10 @@ def _generate_web_token(length: int = 8) -> str:
     chars = string.ascii_letters + string.digits
     return "".join(random.choices(chars, k=length))
 
-router = APIRouter(prefix="/api/portal", tags=["portal"])
+# Deny-by-default auth gate: public routes (login/purchase/ipn) are exempted inside
+# enforce_portal_auth; all bot/user routes require a matching portal token; /admin/*
+# routes require an admin token.
+router = APIRouter(prefix="/api/portal", tags=["portal"], dependencies=[Depends(enforce_portal_auth)])
 
 
 class PortalSupportTicketRequest(BaseModel):
@@ -153,26 +158,14 @@ async def _get_user_bots(telegram_id: int) -> list:
 
 @router.post("/login", response_model=PortalTokenResponse)
 async def portal_login(body: PortalLoginRequest):
-    bots = await _get_user_bots(body.telegram_id)
-    if not bots:
-        raise HTTPException(401, "No bots found for this Telegram ID")
-
-    found = False
-    for token, cfg in bots:
-        if (cfg.get("name") or "").lower() == body.bot_name.lower():
-            found = True
-            break
-
-    if not found:
-        raise HTTPException(403, "You are not authorized on this bot")
-
-    subject = f"user:{body.telegram_id}:{body.bot_name}"
-    return PortalTokenResponse(
-        access_token=create_portal_access_token(subject),
-        refresh_token=create_portal_refresh_token(subject),
-        expires_in=PORTAL_ACCESS_TOKEN_EXPIRE_SEC,
-        bot_name=body.bot_name,
-        telegram_id=body.telegram_id,
+    # DISABLED (security): this minted a portal token from only a telegram_id + bot
+    # name — both non-secret — so anyone could obtain another user's token and bypass
+    # every access check. Login now requires the web access code via /unified-login
+    # (or /login-token), which is a real per-bot secret. This endpoint is unused by
+    # the frontend; kept as a hard 410 so any stale client fails closed.
+    raise HTTPException(
+        410,
+        "This login method has been retired. Use your web access code to sign in.",
     )
 
 
@@ -717,8 +710,11 @@ async def portal_create_renewal(bot_name: str, telegram_id: int = Query(...), bo
         msg = "Selected payment method is temporarily unavailable." if reason == "unavailable" else "Invoice creation failed. Try another currency."
         raise HTTPException(400, msg)
 
-    # Update order with payment details
+    # Update order with payment details. Store bot_token directly on the renewal
+    # order so the IPN webhook can extend validity without depending on a completed
+    # parent order (admin-created bots have none).
     update_order(rev_order["order_id"], {
+        "bot_token": token,
         "payment_id": invoice.get("payment_id", ""),
         "invoice_url": invoice.get("invoice_url") or "",
         "pay_address": invoice.get("pay_address") or "",
@@ -852,16 +848,17 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
         if not path.is_file():
             return fn, False, "file missing"
         try:
-            from telethon import TelegramClient
-            client = TelegramClient(
-                str(path.with_suffix("")), app_config.API_ID, app_config.API_HASH, proxy=app_config.PROXY
-            )
+            from code.session_guard import SessionBusyError, guarded_client
+            client = guarded_client(path, "session validation", wait_timeout=5, expected_sec=30)
             try:
                 await client.connect()
                 if not await client.is_user_authorized():
                     return fn, False, "UNAUTHORIZED"
                 # Session is alive and authorized
                 return fn, True, ""
+            except SessionBusyError as e:
+                # In use by another task → working, just can't be checked right now
+                return fn, True, str(e)[:200]
             except Exception as e:
                 err_str = str(e).lower()
                 if "deactivated" in err_str or "banned" in err_str or "frozen" in err_str:
@@ -1143,10 +1140,8 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
                 dead_reason = "file_missing"
             else:
                 try:
-                    from telethon import TelegramClient
-                    client = TelegramClient(
-                        str(path.with_suffix("")), app_config.API_ID, app_config.API_HASH, proxy=app_config.PROXY
-                    )
+                    from code.session_guard import guarded_client
+                    client = guarded_client(path, "session validation", wait_timeout=3, expected_sec=30)
                     try:
                         await asyncio.wait_for(client.connect(), timeout=8.0)
                         authorized = await asyncio.wait_for(client.is_user_authorized(), timeout=5.0)
@@ -1298,13 +1293,14 @@ async def _update_session_profile(
     if not path.is_file():
         raise HTTPException(404, f"Session file not found: {session_file}")
 
-    from telethon import TelegramClient
-    client = TelegramClient(
-        str(path.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY
-    )
+    from code.session_guard import SessionBusyError, guarded_client
+    client = guarded_client(path, "account profile update", wait_timeout=15, expected_sec=60)
     results: dict = {}
     try:
-        await client.connect()
+        try:
+            await client.connect()
+        except SessionBusyError as e:
+            raise HTTPException(423, str(e))
         if not await client.is_user_authorized():
             raise HTTPException(400, "Session is not authorized")
 
@@ -1422,12 +1418,13 @@ async def portal_get_account_info(
     if not path.is_file():
         raise HTTPException(404, "Session file not on disk")
 
-    from telethon import TelegramClient
-    client = TelegramClient(
-        str(path.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY
-    )
+    from code.session_guard import SessionBusyError, guarded_client
+    client = guarded_client(path, "reading account info", wait_timeout=8, expected_sec=20)
     try:
-        await client.connect()
+        try:
+            await client.connect()
+        except SessionBusyError as e:
+            raise HTTPException(423, str(e))
         if not await client.is_user_authorized():
             raise HTTPException(400, "Session not authorized")
         me = await client.get_me()
@@ -1677,7 +1674,7 @@ async def portal_replacement_payment_status(
         net_key = normalize_network_for_explorer(pay_currency, network)
         explorer_link = build_explorer_link(net_key, tx_hash)
 
-    if pay_status == "confirmed":
+    if pay_status in ("confirmed", "finished", "sent", "sending"):
         # Mark as paid and transition to ready
         mark_replacement_paid(entry_id, payment_id=payment_id)
         add_portal_notification(
@@ -1821,6 +1818,22 @@ async def portal_get_crypto_currencies():
 
 
 # ─────────────── Pre-start session health check ───────────────
+@router.get("/bot/{bot_name}/session-locks")
+async def portal_session_locks(bot_name: str, telegram_id: int = Query(...)):
+    """Which of this bot's sessions are currently held by a task, by whom, and the
+    estimated wait. Lets the UI explain 'why is this locked' instead of raw errors."""
+    from pathlib import Path as _Path
+    bot_token, cfg = await _get_user_bot(telegram_id, bot_name)
+    from code.session_guard import describe_locks
+    names = set()
+    for s in cfg.get("sessions") or []:
+        fn = s.get("file") if isinstance(s, dict) else s
+        if fn:
+            names.add(_Path(fn).name)
+    locks = [l for l in describe_locks() if l["session_file"] in names]
+    return {"locks": locks, "total": len(locks)}
+
+
 @router.get("/bot/{bot_name}/pre-start-check")
 async def portal_pre_start_check(bot_name: str, telegram_id: int = Query(...)):
     """Live pre-start health check: connects to Telegram to validate each session.
@@ -1850,17 +1863,20 @@ async def portal_pre_start_check(bot_name: str, telegram_id: int = Query(...)):
         if not path.is_file():
             return fn, False, "file_missing"
         try:
-            from telethon import TelegramClient
-            client = TelegramClient(
-                str(path.with_suffix("")), app_config.API_ID, app_config.API_HASH, proxy=app_config.PROXY
-            )
+            from code.session_guard import SessionBusyError, guarded_client
+            client = guarded_client(path, "pre-start health check", wait_timeout=4, expected_sec=30)
             try:
                 await client.connect()
                 if not await client.is_user_authorized():
                     return fn, False, "UNAUTHORIZED"
                 return fn, True, ""
+            except SessionBusyError as e:
+                # Held by another task (chatlist sync, portal, …) — not dead, just busy.
+                return fn, None, str(e)[:200]
             except Exception as e:
                 err = str(e).lower()
+                if "database is locked" in err:
+                    return fn, None, "Session file is briefly locked (another task just used it) — try again in ~30s"
                 if "deactivated" in err or "banned" in err or "frozen" in err:
                     return fn, False, "FROZEN"
                 if "revoked" in err or "unregistered" in err or "authkey" in type(e).__name__.lower():
@@ -1900,7 +1916,13 @@ async def portal_pre_start_check(bot_name: str, telegram_id: int = Query(...)):
             healthy_count += 1
         elif isinstance(r, tuple):
             _, alive, reason_str = r
-            if alive:
+            if alive is None:
+                # Busy: another task holds the session right now. It works — show
+                # who has it and when to retry instead of marking it dead.
+                alive = True
+                status, severity, reason = "busy", "warning", reason_str
+                healthy_count += 1
+            elif alive:
                 status, severity, reason = "healthy", "ok", "Session is alive and authorized"
                 healthy_count += 1
             else:
@@ -2149,34 +2171,6 @@ def _creation_progress(order: dict) -> dict:
     return {"state": "awaiting_payment", "percent": 0}
 
 
-def _confirm_purchase(order: dict) -> None:
-    """Mark a web order paid and hand it to the creation pipeline."""
-    from datetime import datetime
-    from code.shop.storage import update_order_status
-    from code.shop import token_pool
-    oid = order["order_id"]
-    now = datetime.utcnow().isoformat() + "Z"
-    if order.get("status") not in ("paid", "pending_creation", "creating", "completed"):
-        update_order_status(oid, "paid", paid_at=now)
-    tok = (order.get("bot_token") or "").strip()
-    try:
-        from code.utils import add_admin_alert
-    except Exception:
-        add_admin_alert = None
-    if tok:
-        token_pool.mark_assigned(oid)
-        try:
-            update_order_status(oid, "pending_creation")
-        except Exception:
-            pass
-        if add_admin_alert:
-            add_admin_alert("web_purchase", f"Web order {oid} paid — create AdBot ({order.get('plan_name')}) for {order.get('bot_name')}.")
-    else:
-        # No pooled token available → queue. Admin adds a token then recreates.
-        if add_admin_alert:
-            add_admin_alert("web_purchase_queued", f"Web order {oid} paid but NO bot token in pool — add a token, then recreate.")
-
-
 @router.post("/coupon/validate")
 async def portal_coupon_validate(body: CouponValidateRequest):
     pct = _coupon_percent(body.code)
@@ -2418,9 +2412,18 @@ async def nowpayments_ipn(request: Request):
             # Bot purchase still in temppay → remove it and tell the buyer.
             try:
                 from code.shop.workers import webhook_temppay_expired
-                await webhook_temppay_expired(payment_id)
+                handled = await webhook_temppay_expired(payment_id)
             except Exception as exc:
                 logger.warning("[IPN] temppay expiry notify failed: %s", exc)
+                handled = False
+            # Not a temppay entry either → could be a session-replacement invoice.
+            if not handled:
+                try:
+                    from code.replacement import expire_replacement_invoice_by_id
+                    if expire_replacement_invoice_by_id(payment_id):
+                        logger.info("[IPN] replacement invoice %s expired/cleared", payment_id)
+                except Exception as exc:
+                    logger.warning("[IPN] replacement expiry failed: %s", exc)
         return {"ok": True}
 
     # Terminal success → confirm + provision.
@@ -2440,7 +2443,18 @@ async def nowpayments_ipn(request: Request):
             logger.exception("[IPN] confirmation failed for %s: %s", payment_id, exc)
             raise HTTPException(500, "Processing error")
         if not ok:
-            logger.warning("[IPN] no matching order/temppay for payment_id=%s", payment_id)
+            # Not an order/temppay — could be a session-replacement payment, whose
+            # payment_id lives on the replacement queue (not in orders.json).
+            try:
+                from code.replacement import confirm_replacement_payment_by_id
+                ok = await confirm_replacement_payment_by_id(payment_id)
+                if ok:
+                    logger.info("[IPN] replacement payment confirmed for %s", payment_id)
+            except Exception as exc:
+                logger.exception("[IPN] replacement confirmation failed for %s: %s", payment_id, exc)
+                raise HTTPException(500, "Processing error")
+        if not ok:
+            logger.warning("[IPN] no matching order/temppay/replacement for payment_id=%s", payment_id)
 
     return {"ok": True}  # always ack so NOWPayments stops retrying
 

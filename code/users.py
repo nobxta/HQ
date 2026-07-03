@@ -37,7 +37,9 @@ from .maintenance import (
     is_maintenance_enabled,
 )
 from .rpc_errors import AdBotErrorHandler, AdBotAction, with_retry, SESSION_DEAD_ERRORS, FloodWaitPause, FloodWaitGroupSkip, FLOODWAIT_THRESHOLD_SEC, GROUP_FLOOD_THRESHOLD_SEC, is_permanent_error
-from .utils import save_pool, load_pool, load_adbot, save_adbot, get_name_by_token, load_user_data, save_user_data, load_stats, save_stats, with_floodwait_retry, add_admin_alert, format_session_death_admin_message, get_bot_log_path, get_session_user, join_chat_by_link, recreate_log_group_for_bot, log_bot_event, append_to_user_log, register_for_shutdown, register_session_active_check, unregister_for_shutdown, validate_session
+from . import session_guard
+from .session_guard import SessionBusyError
+from .utils import save_pool, load_pool, load_adbot, save_adbot, get_name_by_token, load_user_data, save_user_data, load_stats, save_stats, with_floodwait_retry, add_admin_alert, format_session_death_admin_message, get_bot_log_path, get_session_user, join_chat_by_link, recreate_log_group_for_bot, log_bot_event, append_to_user_log, register_for_shutdown, register_session_active_check, unregister_for_shutdown, validate_session, SESSION_POOL_LOCK
 from .repair import (
     repair_fix_log_group,
     repair_fix_config,
@@ -1653,50 +1655,55 @@ def _mark_bot_dead(bot_token: str, reason: str) -> None:
 
 def _auto_replace_dead_session(bot_token: str, user_name: str, dead_session_file: str) -> None:
     """Auto-pull a free session from pool to replace a dead one. Best-effort; if no free sessions, skip."""
-    pool = load_pool()
-    free = list(pool.get("free_sessions", []))
-    if not free:
-        logger.info("[AutoReplace] No free sessions available to replace %s", dead_session_file)
-        return
-    # Try each free session until one validates
-    for candidate in list(free):
-        candidate_path = config.resolve_session_path(candidate)
-        if not candidate_path.is_file():
-            continue
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # Cannot await in sync context; schedule validation and skip auto-replace
-                logger.info("[AutoReplace] Event loop running; skipping sync validate for %s", candidate)
-                return
-        except RuntimeError:
-            pass
-        # Remove from free pool and add to bot
+    # This runs in a sync context only; on a live event loop we can't safely do the
+    # blocking pool work here, so bail early (same as before).
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            logger.info("[AutoReplace] Event loop running; skipping sync replace for %s", dead_session_file)
+            return
+    except RuntimeError:
+        pass
+    # Atomically pick + claim a free session whose file exists, under the shared
+    # pool lock so creation/replacement can't hand out the same account.
+    candidate = None
+    with SESSION_POOL_LOCK:
+        pool = load_pool()
+        free = list(pool.get("free_sessions", []))
+        if not free:
+            logger.info("[AutoReplace] No free sessions available to replace %s", dead_session_file)
+            return
+        for c in free:
+            if config.resolve_session_path(c).is_file():
+                candidate = c
+                break
+        if not candidate:
+            logger.info("[AutoReplace] No valid free sessions found to replace %s", dead_session_file)
+            return
         pool["free_sessions"] = [f for f in pool.get("free_sessions", []) if f != candidate]
         save_pool(pool)
-        cfg = load_user_data(user_name)
-        if not cfg:
-            return
-        sessions = list(cfg.get("sessions", []))
-        sessions.append({"file": candidate, "real_name": candidate, "user_id": 0, "index": len(sessions) + 1})
-        cfg["sessions"] = sessions
-        cfg.setdefault("session_replacements", [])
-        cfg["session_replacements"].append({
-            "at": datetime.utcnow().isoformat() + "Z",
-            "old_session": dead_session_file,
-            "new_session": candidate,
-            "reason": "auto_replace",
-            "source": "auto_replace_dead",
-        })
-        cfg["session_replacements"] = cfg["session_replacements"][-100:]
-        save_user_data(user_name, cfg)
-        add_admin_alert(
-            "session_auto_replaced",
-            f"Session {dead_session_file} died → auto-replaced with {candidate} from free pool.",
-        )
-        logger.info("[AutoReplace] Replaced dead %s with free %s", dead_session_file, candidate)
+
+    cfg = load_user_data(user_name)
+    if not cfg:
         return
-    logger.info("[AutoReplace] No valid free sessions found to replace %s", dead_session_file)
+    sessions = list(cfg.get("sessions", []))
+    sessions.append({"file": candidate, "real_name": candidate, "user_id": 0, "index": len(sessions) + 1})
+    cfg["sessions"] = sessions
+    cfg.setdefault("session_replacements", [])
+    cfg["session_replacements"].append({
+        "at": datetime.utcnow().isoformat() + "Z",
+        "old_session": dead_session_file,
+        "new_session": candidate,
+        "reason": "auto_replace",
+        "source": "auto_replace_dead",
+    })
+    cfg["session_replacements"] = cfg["session_replacements"][-100:]
+    save_user_data(user_name, cfg)
+    add_admin_alert(
+        "session_auto_replaced",
+        f"Session {dead_session_file} died → auto-replaced with {candidate} from free pool.",
+    )
+    logger.info("[AutoReplace] Replaced dead %s with free %s", dead_session_file, candidate)
 
 
 def _mark_session_dead_and_replace(bot_token: str, session_file: str, log_msg: str) -> None:
@@ -1735,7 +1742,12 @@ def _mark_session_dead_and_replace(bot_token: str, session_file: str, log_msg: s
                 pass
         logger.warning("User session dead (kept in user dir): %s — %s", session_file, log_msg)
     else:
-        # Admin-assigned session: move to dead pool and dead/ directory
+        # Admin-assigned session: move to dead pool and dead/ directory.
+        # NOTE: this runs on the posting event loop, so it must NOT take the shared
+        # SESSION_POOL_LOCK (a build can hold it for minutes → would freeze posting).
+        # This only moves a session INTO dead (never claims a free one), so it can't
+        # cause the two-bots-one-session double-spend; a rare lost bucket update here
+        # is cosmetic (the file is already moved out of active/).
         pool = load_pool()
         pool.setdefault("dead_sessions", [])
         if dead_name not in pool["dead_sessions"] and session_file not in pool["dead_sessions"]:
@@ -1823,6 +1835,15 @@ async def _connect_session_for_cycle(
             if report_user_log:
                 report_user_log(f"[Connect] session={session_file} connect_end duration_sec={duration:.2f}")
             return True
+        except SessionBusyError as e:
+            # Session file is held by another task (chatlist sync, health check, portal, …).
+            # Report WHO holds it and how long to wait, then retry with backoff.
+            logger.warning("Session %s connect blocked (attempt %s): %s", session_file, attempt + 1, e)
+            if report_user_log:
+                report_user_log(f"[Connect] session={session_file} waiting: {e}")
+            if attempt < SESSION_RECONNECT_MAX_ATTEMPTS - 1:
+                await asyncio.sleep(min(SESSION_RECONNECT_DELAY_SEC * (2 ** attempt), 60))
+            continue
         except Exception as e:
             connect_end = time.time()
             duration = connect_end - connect_start
@@ -1875,12 +1896,11 @@ async def _async_session_loop(
     session_key = path.resolve().as_posix()
     _active_posting_sessions.add(session_key)
     try:
-        name = str(Path(path).with_suffix(""))
-        client = TelegramClient(
-            name,
-            config.API_ID,
-            config.API_HASH,
-            proxy=config.PROXY,
+        client = session_guard.guarded_client(
+            path,
+            task="posting (AdBot is running)",
+            wait_timeout=20.0,  # must stay below SESSION_CONNECT_TIMEOUT_SEC; reconnect attempts add more patience
+            expected_sec=None,  # posting runs until the bot is stopped
             receive_updates=True,  # required for DM auto-reply handler to receive NewMessage events
             catch_up=False,
         )
@@ -3603,6 +3623,14 @@ async def _start_posting(
         c["ban_error_count_by_session"] = {}
     _save_bot_config(bot_token, _clear_session_pause_and_fresh_start)
     cfg = _get_cfg(bot_token) or cfg
+    # Release idle web-portal holds (account manager keeps sessions connected up to
+    # 5 min after last use) so posting workers don't hit "session busy" at start.
+    try:
+        await session_guard.release_soft_holders(
+            [s.get("file") or "" for s in cfg.get("sessions", []) if s.get("file")]
+        )
+    except Exception as e:
+        logger.warning("release_soft_holders before start failed: %s", e)
     for k in list(_worker_heartbeat_log_ts.keys()):
         if k[0] == bot_token:
             del _worker_heartbeat_log_ts[k]
@@ -5763,11 +5791,9 @@ async def create_user_bot(bot_token: str) -> None:
                             log_group = _log_group_entity(c.get("log_group"))
                             if log_group:
                                 try:
-                                    tc = TelegramClient(str(Path(p).with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY)
-                                    await tc.connect()
-                                    if await tc.is_user_authorized():
-                                        await join_chat_by_link(tc, log_group)
-                                    await tc.disconnect()
+                                    async with session_guard.open_session(p, "joining log group", wait_timeout=15) as tc:
+                                        if await tc.is_user_authorized():
+                                            await join_chat_by_link(tc, log_group)
                                 except Exception:
                                     pass
                     else:
@@ -5798,11 +5824,9 @@ async def create_user_bot(bot_token: str) -> None:
                                 log_group = _log_group_entity(c.get("log_group"))
                                 if log_group:
                                     try:
-                                        tc = TelegramClient(str(dest.with_suffix("")), config.API_ID, config.API_HASH, proxy=config.PROXY)
-                                        await tc.connect()
-                                        if await tc.is_user_authorized():
-                                            await join_chat_by_link(tc, log_group)
-                                        await tc.disconnect()
+                                        async with session_guard.open_session(dest, "joining log group", wait_timeout=15) as tc:
+                                            if await tc.is_user_authorized():
+                                                await join_chat_by_link(tc, log_group)
                                     except Exception:
                                         pass
                         else:

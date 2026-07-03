@@ -245,8 +245,10 @@ async def validate_sessions(body: dict = None):
             results.append(info)
             continue
 
+        client = None
         try:
-            client = TelegramClient(str(path.with_suffix("")), API_ID, API_HASH, proxy=PROXY)
+            from code.session_guard import guarded_client
+            client = guarded_client(path, "session validation", wait_timeout=5, expected_sec=30)
             await client.connect()
             if not await client.is_user_authorized():
                 await client.disconnect()
@@ -285,9 +287,20 @@ async def validate_sessions(body: dict = None):
                     pass
             await client.disconnect()
         except Exception as e:
-            info["status"] = "dead"
-            info["reason"] = str(e)[:150]
-            dead_files.append(fn)
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+            from code.session_guard import SessionBusyError
+            if isinstance(e, SessionBusyError) or "database is locked" in str(e).lower():
+                # In use by another task — do NOT mark dead or move the file
+                info["status"] = "busy"
+                info["reason"] = str(e)[:200]
+            else:
+                info["status"] = "dead"
+                info["reason"] = str(e)[:150]
+                dead_files.append(fn)
 
         results.append(info)
 
@@ -433,8 +446,10 @@ async def get_sessions_info(filenames: str = Query(None, description="Comma-sepa
             info["error"] = "Session file missing"
             results.append(info)
             continue
+        client = None
         try:
-            client = TelegramClient(str(path.with_suffix("")), API_ID, API_HASH, proxy=PROXY)
+            from code.session_guard import guarded_client
+            client = guarded_client(path, "session details check", wait_timeout=5, expected_sec=30)
             await client.connect()
             if not await client.is_user_authorized():
                 await client.disconnect()
@@ -461,8 +476,18 @@ async def get_sessions_info(filenames: str = Query(None, description="Comma-sepa
                 info["error"] = "Could not get user info"
             await client.disconnect()
         except Exception as e:
-            info["status"] = "error"
-            info["error"] = str(e)[:150]
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+            from code.session_guard import SessionBusyError
+            if isinstance(e, SessionBusyError) or "database is locked" in str(e).lower():
+                info["status"] = "busy"
+                info["error"] = str(e)[:200]
+            else:
+                info["status"] = "error"
+                info["error"] = str(e)[:150]
         results.append(info)
 
     return {"sessions": results}

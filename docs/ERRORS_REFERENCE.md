@@ -44,10 +44,14 @@ This document explains the main errors you may see in logs and what to do about 
 - Two writers run at once (e.g. “save state” on disconnect and “process entities” from an update), or
 - Reconnect and disconnect happen close together so that one write is still in progress when another starts.
 
-**What to do:**
-- Ensure **each `.session` file is used by only one process**. TAdbot already gives each worker its own session file; do not point two processes at the same file.
-- If the lock appears **during reconnect or right after STOP**, it’s often transient. A short delay after `client.disconnect()` before the process exits (or before opening the same session again) can help.
-- If it’s frequent, consider running fewer concurrent sessions per bot or spacing out restarts so that disconnects don’t pile up.
+**What to do:** Since the session guard (`code/session_guard.py`) was added, every task that opens a `.session` file (posting, chatlist sync, health checks, log group setup, the portal account manager, validation, …) registers a lock in `sessions/locks/`. A second task now gets a clear message instead of this error, e.g.:
+
+> `Session 917894761420 is busy: chatlist sync (running for 34s, usually takes ~2m — try again in ~1m 26s)`
+
+- **“Session … is busy: <task>”** — expected. Another task holds the session; the message tells you who and how long to wait. Posting retries automatically; health checks show status BUSY (not DEAD).
+- **Raw “database is locked” with no busy message** — a transient overlap (e.g. Telethon’s final save on disconnect). The guard retries connect/disconnect up to 3× with delays and raises the SQLite busy timeout to 15s, so this should self-heal. If a lock file goes stale (crashed task), the guard clears it automatically (dead pid, or task running far past its expected duration).
+- The portal lists live locks at `GET /api/portal/bot/{name}/session-locks`.
+- Still ensure **each `.session` file is used by only one process at a time** — the guard enforces this across the API process and worker processes via lock files.
 
 ---
 

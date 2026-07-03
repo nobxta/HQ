@@ -390,7 +390,7 @@ export default function UserDashboard() {
           <div className="space-y-1.5 max-h-[240px] overflow-y-auto">
             {preStartCheck?.sessions?.map((s) => {
               const isBad = s.status === "dead" || s.status === "failing";
-              const isWarn = s.status === "warning";
+              const isWarn = s.status === "warning" || s.status === "busy";
               const isUnknown = s.status === "unknown";
               return (
                 <div key={s.session_file} className={`flex items-center gap-3 rounded-xl px-3 py-2.5 border ${
@@ -419,7 +419,7 @@ export default function UserDashboard() {
                     isUnknown ? "bg-dark-700/30 text-dark-400" :
                     "bg-success/10 text-success"
                   }`}>
-                    {s.status === "dead" ? "DEAD" : s.status === "failing" ? "FAILING" : s.status === "warning" ? "LIMITED" : s.status === "unknown" ? "UNCHECKED" : "OK"}
+                    {s.status === "dead" ? "DEAD" : s.status === "failing" ? "FAILING" : s.status === "busy" ? "BUSY" : s.status === "warning" ? "LIMITED" : s.status === "unknown" ? "UNCHECKED" : "OK"}
                   </span>
                 </div>
               );
