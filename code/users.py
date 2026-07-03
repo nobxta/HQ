@@ -66,6 +66,7 @@ class _LogItem:
     parse_mode: str | None = None
     buttons: list[tuple[str, str]] | None = None
     entities: list["MessageEntity"] | None = None
+    batchable: bool = True
 
 
 _log_queue: "queue.Queue[_LogItem]" = queue.Queue(maxsize=_LOG_QUEUE_MAXSIZE)
@@ -88,13 +89,17 @@ def enqueue_log(
     parse_mode: str | None = None,
     buttons: list[tuple[str, str]] | None = None,
     entities: list["MessageEntity"] | None = None,
+    batchable: bool = True,
 ) -> None:
     """Enqueue a log-group message to be sent by the controller bot. parse_mode 'md' for [text](url).
     buttons: optional list of (text, url) for inline buttons. entities: premium custom-emoji/bold
-    entities (do not pass parse_mode at the same time — Telegram drops entities otherwise).
+    entities (do not pass parse_mode at the same time — Telegram drops entities otherwise); when
+    multiple entity-bearing items land in the same batch window, their entities are combined with
+    recomputed offsets. batchable=False forces the message to send on its own (e.g. standalone
+    alerts that shouldn't be visually merged with unrelated lines).
     Non-blocking: never blocks posting loop."""
     try:
-        _log_queue.put_nowait(_LogItem(bot_token, msg, parse_mode, buttons, entities))
+        _log_queue.put_nowait(_LogItem(bot_token, msg, parse_mode, buttons, entities, batchable))
     except queue.Full:
         pass
 
@@ -133,11 +138,38 @@ def _get_adbot_cached() -> dict:
     return _LOG_ADBOT_CACHE
 
 
+def _join_items_with_entities(chunk: list["_LogItem"]) -> tuple[str, list["MessageEntity"]]:
+    """Join a batch's message texts with '\\n', recomputing each item's entity offsets
+    (UTF-16 code units) by the cumulative length of everything already emitted. PTB entities
+    are immutable, so each is rebuilt at its shifted offset rather than mutated in place."""
+    from telegram import MessageEntity
+    from .ui.emoji_entities import u16len
+
+    parts: list[str] = []
+    combined: list[MessageEntity] = []
+    u16 = 0
+    for i, item in enumerate(chunk):
+        if i > 0:
+            parts.append("\n")
+            u16 += 1
+        for ent in (item.entities or []):
+            kwargs: dict[str, Any] = {"type": ent.type, "offset": u16 + ent.offset, "length": ent.length}
+            if ent.type == MessageEntity.CUSTOM_EMOJI:
+                kwargs["custom_emoji_id"] = ent.custom_emoji_id
+            elif ent.type == MessageEntity.TEXT_LINK:
+                kwargs["url"] = ent.url
+            combined.append(MessageEntity(**kwargs))
+        parts.append(item.msg)
+        u16 += u16len(item.msg)
+    return "".join(parts), combined
+
+
 async def _log_queue_consumer() -> None:
     """Run on main asyncio loop: drain _log_queue and send via PTB to log group.
-    Cycle-start lines are batched per bot (one message per bot). Post results batched 5 per message
-    (plain text/parse_mode only — batching multiple items' entity offsets isn't supported, so any
-    item carrying entities or buttons is sent individually). Link preview off."""
+    Cycle-start lines are batched per bot. Post results (and other batchable items, including
+    ones carrying premium-emoji entities) are batched 5 per message, with entity offsets
+    recombined via _join_items_with_entities(). Items with buttons, or explicitly marked
+    non-batchable, are sent individually. Link preview off."""
     while True:
         await asyncio.sleep(0.15)
         drained: list[_LogItem] = []
@@ -154,10 +186,17 @@ async def _log_queue_consumer() -> None:
                 break
         # Load config once per drain batch (cached 30s)
         data = _get_adbot_cached()
-        # Split: cycle-start (batch by bot), individual (buttons and/or entities), post results (batch 5)
-        cycle_start_items = [item for item in drained if _is_cycle_start_log(item.msg) and not item.buttons and not item.entities]
-        individual = [item for item in drained if item.buttons or item.entities]
-        batchable = [item for item in drained if not _is_cycle_start_log(item.msg) and not item.buttons and not item.entities]
+        # Split: cycle-start (batch by bot), individual (buttons / non-batchable), everything else (batch 5)
+        cycle_start_items: list[_LogItem] = []
+        individual: list[_LogItem] = []
+        batchable: list[_LogItem] = []
+        for item in drained:
+            if item.buttons or not item.batchable:
+                individual.append(item)
+            elif _is_cycle_start_log(item.msg) and not item.entities:
+                cycle_start_items.append(item)
+            else:
+                batchable.append(item)
         # One message per bot: all cycle-start lines combined (e.g. "session1 14 groups\nsession2 13 groups")
         if cycle_start_items:
             by_bot_cs: dict[str, list[str]] = {}
@@ -198,25 +237,30 @@ async def _log_queue_consumer() -> None:
                 await asyncio.sleep(_LOG_SEND_DELAY_SEC)
             except Exception:
                 pass
-        # Batch post-result lines: 5 per message
+        # Batch remaining items: 5 per message
         if not batchable:
             continue
-        by_bot: dict[str, list[tuple[str, str | None]]] = {}
+        by_bot: dict[str, list[_LogItem]] = {}
         for item in batchable:
-            by_bot.setdefault(item.bot_token, []).append((item.msg, item.parse_mode))
+            by_bot.setdefault(item.bot_token, []).append(item)
         for bot_token, items in by_bot.items():
             cfg = data.get("bots", {}).get(bot_token)
             log_ent = _log_group_entity(cfg.get("log_group")) if cfg else None
             if not log_ent:
                 continue
-            use_md = any(p == "md" for _, p in items)
-            use_html = any(p == "html" for _, p in items) or any("<a href=" in (m or "") for m, _ in items)
-            ptb_mode = "HTML" if use_html else ("Markdown" if use_md else None)
             for i in range(0, len(items), _LOG_BATCH_SIZE):
                 chunk = items[i : i + _LOG_BATCH_SIZE]
-                combined = "\n".join(m for m, _ in chunk)
+                has_entities = any(it.entities for it in chunk)
                 try:
-                    await notify.notify_log_group(bot_token, log_ent, combined, parse_mode=ptb_mode)
+                    if has_entities:
+                        combined_text, combined_entities = _join_items_with_entities(chunk)
+                        await notify.notify_log_group(bot_token, log_ent, combined_text, parse_mode=None, entities=combined_entities)
+                    else:
+                        use_md = any(it.parse_mode == "md" for it in chunk)
+                        use_html = any(it.parse_mode == "html" for it in chunk) or any("<a href=" in (it.msg or "") for it in chunk)
+                        ptb_mode = "HTML" if use_html else ("Markdown" if use_md else None)
+                        combined_text = "\n".join(it.msg for it in chunk)
+                        await notify.notify_log_group(bot_token, log_ent, combined_text, parse_mode=ptb_mode)
                     await asyncio.sleep(_LOG_SEND_DELAY_SEC)
                 except Exception:
                     pass
@@ -1233,22 +1277,27 @@ def _escape_md_link_text(s: str) -> str:
     return (s or "").replace("\\", "\\\\").replace("]", "\\]").replace("[", "\\[")
 
 
-def _escape_html(s: str) -> str:
-    """Escape < & > for use inside HTML so link text is safe. [ ] are fine in HTML."""
-    s = s or ""
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+# Tolerates an optional leading premium-emoji fallback glyph (log_success/log_failed both use 🔘)
+# so the file-log dedup check in the "log" IPC handler still recognizes post-result lines.
+_POST_RESULT_RE = re.compile(r"^(?:\U0001F518\s+)?Account\s+\d+\s*-\s*(?:Posted in|Sent to|Success in|Failed in|FloodWait\s)")
 
 
-_POST_RESULT_RE = re.compile(r"^Account\s+\d+\s*-\s*(?:Posted in|Sent to|Success in|Failed in|FloodWait\s)")
+def _format_post_success(account_index: int, session_file: str, group_title: str, link: str) -> tuple[str, str, list[tuple]]:
+    """(plain, text, entity_spec): plain has no emoji (for the file log); text is the Telegram-
+    bound line — premium emoji + group name as a clickable TEXT_LINK entity (no HTML markup, so
+    it composes safely with the leading custom-emoji entity — Telegram drops entities if
+    parse_mode is also set on the same request)."""
+    from .ui.emoji_entities import fallback_glyph, u16len
 
-
-def _format_post_success(account_index: int, session_file: str, group_title: str, link: str) -> tuple[str, str]:
-    """Single-line success, no emoji. html_line: <a href="url">Account N - Posted in GroupName</a> so [ ] in names display correctly; plain for bot log."""
     plain = f"Account {account_index} - Posted in {group_title} {link}"
     label = f"Account {account_index} - Posted in {group_title}"
-    label_safe = _escape_html(label)
-    html_line = f'<a href="{link}">{label_safe}</a>'
-    return plain, html_line
+    glyph = fallback_glyph("log_success")
+    text = f"{glyph} {label}"
+    spec = [
+        ("emoji", 0, u16len(glyph), "log_success"),
+        ("link", u16len(glyph) + 1, u16len(label), link),
+    ]
+    return plain, text, spec
 
 
 def _format_post_failure(
@@ -1258,15 +1307,23 @@ def _format_post_failure(
     topic_id: int | None,
     reason: str,
     group_title: str | None = None,
-) -> str:
-    """Single-line failure: include group (title or chat_id) and real error so log shows where and why."""
+) -> tuple[str, str, list[tuple]]:
+    """(plain, text, entity_spec): plain has no emoji (for the file log); text is the Telegram-
+    bound line with a leading premium emoji. Includes group (title or chat_id) and real error
+    so the log shows where and why."""
+    from .ui.emoji_entities import fallback_glyph, u16len
+
     where = (group_title or f"chat_id={chat_id}" + (f" topic_id={topic_id}" if topic_id else "")) if chat_id else "unknown"
-    return f"Account {account_index} - Failed in {where}: {reason[:280]}"
+    plain = f"Account {account_index} - Failed in {where}: {reason[:280]}"
+    glyph = fallback_glyph("log_failed")
+    text = f"{glyph} {plain}"
+    spec = [("emoji", 0, u16len(glyph), "log_failed")]
+    return plain, text, spec
 
 
 def _log_post_result(
     bot_token: str, success: bool, account_index: int, session_file: str,
-    report_log: Optional[Callable[[str, str], None]] = None,
+    report_log: Optional[Callable[..., None]] = None,
     report_post_attempt: Optional[Callable[[str, int, int | None, bool, str], None]] = None,
     **kwargs: Any,
 ) -> None:
@@ -1285,19 +1342,20 @@ def _log_post_result(
             wait_seconds=wait_seconds,
         )
     if success:
-        plain, html_line = _format_post_success(
+        plain, text, spec = _format_post_success(
             account_index=account_index,
             session_file=session_file,
             group_title=kwargs["group_title"],
             link=kwargs["link"],
         )
         if report_log:
-            report_log(bot_token, html_line, "html")
+            report_log(bot_token, text, entity_spec=spec)
         else:
-            enqueue_log(bot_token, html_line, parse_mode="html")
+            from .ui.emoji_entities import entities_from_spec
+            enqueue_log(bot_token, text, entities=entities_from_spec(spec))
             log_bot_event(bot_token, plain)
     else:
-        text = _format_post_failure(
+        plain, text, spec = _format_post_failure(
             account_index=account_index,
             session_file=session_file,
             chat_id=chat_id,
@@ -1306,10 +1364,11 @@ def _log_post_result(
             group_title=kwargs.get("group_title"),
         )
         if report_log:
-            report_log(bot_token, text)
+            report_log(bot_token, text, entity_spec=spec)
         else:
-            enqueue_log(bot_token, text)
-            log_bot_event(bot_token, text)
+            from .ui.emoji_entities import entities_from_spec
+            enqueue_log(bot_token, text, entities=entities_from_spec(spec))
+            log_bot_event(bot_token, plain)
 
 
 def _is_numeric_group_id(line: str) -> bool:
@@ -1795,7 +1854,7 @@ async def _async_session_loop(
     get_ban_skip: Optional[Callable[[str, dict], bool]] = None,
     report_ban_error: Optional[Callable[[str, int, int | None], None]] = None,
     report_alert: Optional[Callable[[str, str], None]] = None,
-    report_log: Optional[Callable[[str, str], None]] = None,
+    report_log: Optional[Callable[..., None]] = None,
     report_dm_alert: Optional[Callable[[str, str, int, str], None]] = None,
     report_audit_log: Optional[Callable[..., None]] = None,
     report_heartbeat: Optional[Callable[[], None]] = None,
@@ -2820,7 +2879,7 @@ async def _run_session_health_check(bot_token: str) -> None:
             buttons.append([panel_button(f"Pay ${total:.2f} & Replace", CB_REP_PAY, "log_paid")])
         buttons.append([Button.inline("Skip / Continue Without", CB_REP_SKIP)])
         # Send to log group (PTB, no buttons — read-only record; only the owner DM below is actionable)
-        enqueue_log(bot_token, text, entities=_health_alert_ptb_entities(spec))
+        enqueue_log(bot_token, text, entities=_health_alert_ptb_entities(spec), batchable=False)
         # Send directly to owner via controller bot (Telethon)
         bot_client = BOT_CLIENTS.get(bot_token)
         if bot_client and owner_id:
@@ -3012,11 +3071,17 @@ def _apply_worker_result(msg: dict) -> None:
                 logger.warning("dm_alert send failed: %s", e)
     elif msg_type == "log":
         message = msg.get("message", "")
+        entity_spec = msg.get("entity_spec")
+        entities = None
+        if entity_spec:
+            from .ui.emoji_entities import entities_from_spec
+            entities = entities_from_spec(entity_spec)
         enqueue_log(
             bot_token,
             message,
             msg.get("parse_mode"),
             buttons=msg.get("buttons"),
+            entities=entities,
         )
         # Post results are already written by the "post_attempt" handler in structured format.
         # Skip post-result lines (HTML success / plain failure) to avoid duplicates.

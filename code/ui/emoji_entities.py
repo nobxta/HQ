@@ -11,6 +11,8 @@ Each custom emoji is overlaid on a real Unicode fallback glyph, so if the client
 cannot resolve the custom_emoji_id (e.g. the bot isn't permitted to use that set),
 the user still sees a fitting emoji instead of a blank placeholder.
 """
+from typing import Any
+
 from telegram import MessageEntity
 
 from .emojis import CUSTOM_EMOJIS
@@ -153,6 +155,26 @@ def build_custom_emoji_text(
             )
         )
     return text_with_placeholders, entities
+
+
+def entities_from_spec(spec: list[tuple[str, int, int, Any]]) -> list[MessageEntity]:
+    """Adapt a generic (kind, offset, length, key) spec to PTB MessageEntity.
+    kind: "emoji" (key = CUSTOM_EMOJIS key), "bold" (key ignored), "link" (key = url).
+    Pickle/IPC-safe spec format — plain tuples, no library objects — so worker processes can
+    build these without importing telegram, and the entities are only constructed on the
+    receiving (main-process) side."""
+    out: list[MessageEntity] = []
+    for kind, offset, length, key in spec:
+        if kind == "bold":
+            out.append(MessageEntity(type=MessageEntity.BOLD, offset=offset, length=length))
+        elif kind == "link":
+            out.append(MessageEntity(type=MessageEntity.TEXT_LINK, offset=offset, length=length, url=key))
+        elif kind == "emoji" and key in CUSTOM_EMOJIS:
+            out.append(MessageEntity(
+                type=MessageEntity.CUSTOM_EMOJI, offset=offset, length=length,
+                custom_emoji_id=CUSTOM_EMOJIS[key],
+            ))
+    return out
 
 
 def build_payment_message_with_emojis(body_markdown: str) -> tuple[str, list[MessageEntity]]:

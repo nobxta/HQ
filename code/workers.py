@@ -190,7 +190,11 @@ async def worker_main_async(
         msg: str,
         parse_mode: str | None = None,
         buttons: list[tuple[str, str]] | None = None,
+        entity_spec: list[tuple] | None = None,
     ) -> None:
+        """entity_spec: plain (kind, offset, length, key) tuples only (pickle-safe across the
+        worker process boundary) — converted to real telegram.MessageEntity objects on the
+        controller (main) process side; never construct PTB objects here."""
         payload = {
             "type": "log",
             "bot_token": bt,
@@ -200,6 +204,8 @@ async def worker_main_async(
         }
         if buttons is not None:
             payload["buttons"] = buttons
+        if entity_spec is not None:
+            payload["entity_spec"] = entity_spec
         result_queue.put(payload)
 
     def report_user_log(message: str) -> None:
