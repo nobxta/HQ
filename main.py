@@ -504,6 +504,11 @@ if __name__ == "__main__":
         async def _run_combined():
             bot_task = asyncio.create_task(main(), name="bot_system")
             api_task = asyncio.create_task(_uvicorn_server.serve(), name="api_server")
+            try:
+                import tunnel as _tunnel_mod
+                asyncio.create_task(_tunnel_mod.watchdog_loop(), name="tunnel_watchdog")
+            except Exception as _tw_exc:
+                logger.warning("tunnel watchdog not started: %s", _tw_exc)
             logger.info("Web API started on http://%s:%d/api/docs", _api_host, _api_port)
             try:
                 await asyncio.gather(bot_task, api_task)
