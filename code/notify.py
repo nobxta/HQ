@@ -28,10 +28,13 @@ async def notify_log_group(
     text: str,
     parse_mode: str | None = None,
     reply_markup: Any = None,
+    entities: Any = None,
 ) -> bool:
-    """Send a message to a log group (or any chat) via PTB."""
+    """Send a message to a log group (or any chat) via PTB. entities: list[telegram.MessageEntity]
+    for premium custom emoji / bold — do not combine with parse_mode (Telegram drops entities
+    when parse_mode is also set on the same request)."""
     return await bot_ptb.send_log_message(
-        bot_token, chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup
+        bot_token, chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup, entities=entities
     )
 
 

@@ -79,6 +79,15 @@ CUSTOM_EMOJIS: dict[str, str] = {
     "panel_start": "5285347429737055549",     # ▶ Start
     "panel_stop": "5834895792409677476",      # ⏹ Stop
     "panel_message": "6039392555605430011",   # ✉ Message / Ad
+    # ── Customer log group (code/users.py log-group posts) ──
+    "log_success": "5850350819907473068",     # 🔘 post success
+    "log_failed": "5848285473214045167",      # 🔘 post failed (distinct id, same fallback glyph)
+    "log_warning": "5215557810359639942",     # ⚠️ high failure rate warning
+    "log_health_alert": "5408943604829794451",  # ⚠️ Session Health Alert header
+    "log_frozen": "5972265777296838427",      # 🔹 session frozen/hard-limited status
+    "log_limited": "5852855309827051115",     # 🟡 session limited status
+    "log_free_available": "6325645228166353066",  # ✅ free replacement available
+    "log_paid": "5431615341321012110",        # 💰 paid replacement
 }
 
 # ── Coin / network custom emoji (message text only; buttons can't render custom emoji) ──

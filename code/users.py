@@ -12,6 +12,7 @@ import threading
 import time
 import zipfile
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
@@ -54,10 +55,20 @@ from .replacement import (
 )
 
 # Log-group messages are sent via python-telegram-bot (PTB) using the AdBot's bot token, not Telethon.
-# Queue items: (bot_token, msg, parse_mode) or (bot_token, msg, parse_mode, buttons).
 # Bounded so enqueue never blocks the posting path; drop new items if full (posting must not wait on log)
 _LOG_QUEUE_MAXSIZE = 500
-_log_queue: queue.Queue[tuple] = queue.Queue(maxsize=_LOG_QUEUE_MAXSIZE)
+
+
+@dataclass
+class _LogItem:
+    bot_token: str
+    msg: str
+    parse_mode: str | None = None
+    buttons: list[tuple[str, str]] | None = None
+    entities: list["MessageEntity"] | None = None
+
+
+_log_queue: "queue.Queue[_LogItem]" = queue.Queue(maxsize=_LOG_QUEUE_MAXSIZE)
 BOT_CLIENTS: dict[str, Any] = {}
 # When user clicks Run we show activation message; store (chat_id, message_id) to edit when started/stopped.
 _activation_message: dict[str, tuple[int, int]] = {}
@@ -76,12 +87,14 @@ def enqueue_log(
     msg: str,
     parse_mode: str | None = None,
     buttons: list[tuple[str, str]] | None = None,
+    entities: list["MessageEntity"] | None = None,
 ) -> None:
     """Enqueue a log-group message to be sent by the controller bot. parse_mode 'md' for [text](url).
-    buttons: optional list of (text, url) for inline buttons. Non-blocking: never blocks posting loop."""
+    buttons: optional list of (text, url) for inline buttons. entities: premium custom-emoji/bold
+    entities (do not pass parse_mode at the same time — Telegram drops entities otherwise).
+    Non-blocking: never blocks posting loop."""
     try:
-        item = (bot_token, msg, parse_mode, buttons) if buttons else (bot_token, msg, parse_mode)
-        _log_queue.put_nowait(item)
+        _log_queue.put_nowait(_LogItem(bot_token, msg, parse_mode, buttons, entities))
     except queue.Full:
         pass
 
@@ -122,10 +135,12 @@ def _get_adbot_cached() -> dict:
 
 async def _log_queue_consumer() -> None:
     """Run on main asyncio loop: drain _log_queue and send via PTB to log group.
-    Cycle-start lines are batched per bot (one message per bot). Post results batched 5 per message. Link preview off."""
+    Cycle-start lines are batched per bot (one message per bot). Post results batched 5 per message
+    (plain text/parse_mode only — batching multiple items' entity offsets isn't supported, so any
+    item carrying entities or buttons is sent individually). Link preview off."""
     while True:
         await asyncio.sleep(0.15)
-        drained: list[tuple] = []
+        drained: list[_LogItem] = []
         try:
             drained.append(_log_queue.get_nowait())
         except queue.Empty:
@@ -139,15 +154,15 @@ async def _log_queue_consumer() -> None:
                 break
         # Load config once per drain batch (cached 30s)
         data = _get_adbot_cached()
-        # Split: cycle-start (batch by bot), messages with buttons (one each), post results (batch 5)
-        cycle_start_items = [item for item in drained if _is_cycle_start_log(item[1]) and len(item) < 4]
-        with_buttons = [item for item in drained if len(item) >= 4]
-        batchable = [item for item in drained if not _is_cycle_start_log(item[1]) and len(item) < 4]
+        # Split: cycle-start (batch by bot), individual (buttons and/or entities), post results (batch 5)
+        cycle_start_items = [item for item in drained if _is_cycle_start_log(item.msg) and not item.buttons and not item.entities]
+        individual = [item for item in drained if item.buttons or item.entities]
+        batchable = [item for item in drained if not _is_cycle_start_log(item.msg) and not item.buttons and not item.entities]
         # One message per bot: all cycle-start lines combined (e.g. "session1 14 groups\nsession2 13 groups")
         if cycle_start_items:
             by_bot_cs: dict[str, list[str]] = {}
             for item in cycle_start_items:
-                by_bot_cs.setdefault(item[0], []).append(item[1])
+                by_bot_cs.setdefault(item.bot_token, []).append(item.msg)
             for bot_token, lines in by_bot_cs.items():
                 cfg = data.get("bots", {}).get(bot_token)
                 log_ent = _log_group_entity(cfg.get("log_group")) if cfg else None
@@ -159,24 +174,27 @@ async def _log_queue_consumer() -> None:
                     await asyncio.sleep(_LOG_SEND_DELAY_SEC)
                 except Exception:
                     pass
-        for item in with_buttons:
-            bot_token, msg = item[0], item[1]
-            parse_mode = item[2] if len(item) > 2 else None
-            buttons_list = item[3] if len(item) >= 4 else None
-            cfg = data.get("bots", {}).get(bot_token)
+        for item in individual:
+            cfg = data.get("bots", {}).get(item.bot_token)
             log_ent = _log_group_entity(cfg.get("log_group")) if cfg else None
             if not log_ent:
                 continue
-            ptb_mode = "Markdown" if parse_mode == "md" else ("HTML" if parse_mode == "html" else None)
+            # entities and parse_mode are mutually exclusive (Telegram drops entities otherwise)
+            ptb_mode = None if item.entities else (
+                "Markdown" if item.parse_mode == "md" else ("HTML" if item.parse_mode == "html" else None)
+            )
             reply_markup = None
-            if buttons_list:
+            if item.buttons:
                 try:
                     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-                    reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(t, url=u) for t, u in buttons_list]])
+                    reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(t, url=u) for t, u in item.buttons]])
                 except Exception:
                     pass
             try:
-                await notify.notify_log_group(bot_token, log_ent, msg, parse_mode=ptb_mode, reply_markup=reply_markup)
+                await notify.notify_log_group(
+                    item.bot_token, log_ent, item.msg,
+                    parse_mode=ptb_mode, reply_markup=reply_markup, entities=item.entities,
+                )
                 await asyncio.sleep(_LOG_SEND_DELAY_SEC)
             except Exception:
                 pass
@@ -185,8 +203,7 @@ async def _log_queue_consumer() -> None:
             continue
         by_bot: dict[str, list[tuple[str, str | None]]] = {}
         for item in batchable:
-            bot_token, msg, parse_mode = item[0], item[1], item[2] if len(item) > 2 else None
-            by_bot.setdefault(bot_token, []).append((msg, parse_mode))
+            by_bot.setdefault(item.bot_token, []).append((item.msg, item.parse_mode))
         for bot_token, items in by_bot.items():
             cfg = data.get("bots", {}).get(bot_token)
             log_ent = _log_group_entity(cfg.get("log_group")) if cfg else None
@@ -2674,6 +2691,89 @@ def _build_worker_config_snapshot(
     }
 
 
+def _build_health_alert_content(
+    entries: list[dict], free_entries: list[dict], paid_entries: list[dict], price_per: float,
+) -> tuple[str, list[tuple[str, int, int, str | None]]]:
+    """(text, entity_spec) for the Session Health Alert, sent over two different transports
+    (PTB to the log group, Telethon to the owner's DM) — built once, adapted per transport by
+    _health_alert_ptb_entities / _health_alert_telethon_entities so both stay in sync.
+    entity_spec items: (kind, offset, length, emoji_key) where kind is "bold" or "emoji"
+    (offsets/lengths in UTF-16 code units). Mirrors the original "\n".join(lines) layout exactly."""
+    from .ui.emoji_entities import fallback_glyph, u16len
+
+    header_glyph = fallback_glyph("log_health_alert")
+    header_bold = "Session Health Alert"
+    lines: list[tuple[str, list[tuple[int, int, str, str | None]]]] = [
+        (
+            f"{header_glyph} {header_bold}\n",
+            [
+                (0, u16len(header_glyph), "emoji", "log_health_alert"),
+                (u16len(header_glyph) + 1, u16len(header_bold), "bold", None),
+            ],
+        )
+    ]
+    for e in entries:
+        key = "log_frozen" if e["spam_status"] in ("FROZEN", "HARD_LIMITED") else "log_limited"
+        glyph = fallback_glyph(key)
+        free_tag = " (FREE replacement)" if e["free_replacement"] else f" (${price_per:.2f})"
+        line_text = f"{glyph} {e['real_name']} — {e['spam_status']}{free_tag}"
+        lines.append((line_text, [(0, u16len(glyph), "emoji", key)]))
+    if free_entries:
+        glyph = fallback_glyph("log_free_available")
+        line_text = f"\n{glyph} {len(free_entries)} free replacement(s) available"
+        lines.append((line_text, [(1, u16len(glyph), "emoji", "log_free_available")]))
+    if paid_entries:
+        total = sum(float(x.get("price_usd", 0)) for x in paid_entries)
+        glyph = fallback_glyph("log_paid")
+        line_text = f"\n{glyph} {len(paid_entries)} paid replacement(s): ${total:.2f}"
+        lines.append((line_text, [(1, u16len(glyph), "emoji", "log_paid")]))
+    lines.append(("\nChoose an action below:", []))
+
+    text_parts: list[str] = []
+    spec: list[tuple[str, int, int, str | None]] = []
+    u16 = 0
+    for i, (line_text, markers) in enumerate(lines):
+        if i > 0:
+            text_parts.append("\n")
+            u16 += 1
+        for local_off, length, kind, key in markers:
+            spec.append((kind, u16 + local_off, length, key))
+        text_parts.append(line_text)
+        u16 += u16len(line_text)
+    return "".join(text_parts), spec
+
+
+def _health_alert_ptb_entities(spec: list[tuple[str, int, int, str | None]]) -> list["MessageEntity"]:
+    """Adapt _build_health_alert_content's entity_spec to PTB MessageEntity (for the log group)."""
+    from telegram import MessageEntity
+    from .ui.emojis import CUSTOM_EMOJIS
+
+    out: list[MessageEntity] = []
+    for kind, offset, length, key in spec:
+        if kind == "bold":
+            out.append(MessageEntity(type=MessageEntity.BOLD, offset=offset, length=length))
+        elif kind == "emoji" and key in CUSTOM_EMOJIS:
+            out.append(MessageEntity(
+                type=MessageEntity.CUSTOM_EMOJI, offset=offset, length=length,
+                custom_emoji_id=CUSTOM_EMOJIS[key],
+            ))
+    return out
+
+
+def _health_alert_telethon_entities(spec: list[tuple[str, int, int, str | None]]) -> list:
+    """Adapt _build_health_alert_content's entity_spec to Telethon MTProto entities (for the owner DM)."""
+    from telethon.tl.types import MessageEntityBold, MessageEntityCustomEmoji
+    from .ui.emojis import CUSTOM_EMOJIS
+
+    out = []
+    for kind, offset, length, key in spec:
+        if kind == "bold":
+            out.append(MessageEntityBold(offset=offset, length=length))
+        elif kind == "emoji" and key in CUSTOM_EMOJIS:
+            out.append(MessageEntityCustomEmoji(offset=offset, length=length, document_id=int(CUSTOM_EMOJIS[key])))
+    return out
+
+
 def _schedule_session_health_check(bot_token: str) -> None:
     """Schedule an async SpamBot health check for a bot's failing sessions.
     Non-blocking: just adds to set, processed by background loop."""
@@ -2711,33 +2811,23 @@ async def _run_session_health_check(bot_token: str) -> None:
         free_entries = [e for e in entries if e.get("free_replacement")]
         paid_entries = [e for e in entries if not e.get("free_replacement")]
         price_per = get_session_replacement_price()
-        lines = ["⚠️ <b>Session Health Alert</b>\n"]
-        for e in entries:
-            status_emoji = "🔴" if e["spam_status"] in ("FROZEN", "HARD_LIMITED") else "🟡"
-            free_tag = " (FREE replacement)" if e["free_replacement"] else f" (${price_per:.2f})"
-            lines.append(f"{status_emoji} {e['real_name']} — {e['spam_status']}{free_tag}")
-        if free_entries:
-            lines.append(f"\n✅ {len(free_entries)} free replacement(s) available")
-        if paid_entries:
-            total = sum(float(e.get("price_usd", 0)) for e in paid_entries)
-            lines.append(f"\n💰 {len(paid_entries)} paid replacement(s): ${total:.2f}")
-        lines.append("\nChoose an action below:")
-        text = "\n".join(lines)
+        text, spec = _build_health_alert_content(entries, free_entries, paid_entries, price_per)
         buttons = []
         if free_entries:
-            buttons.append([Button.inline(f"✅ Replace Free ({len(free_entries)})", CB_REP_FREE)])
+            buttons.append([panel_button(f"Replace Free ({len(free_entries)})", CB_REP_FREE, "log_free_available")])
         if paid_entries:
             total = sum(float(e.get("price_usd", 0)) for e in paid_entries)
-            buttons.append([Button.inline(f"💳 Pay ${total:.2f} & Replace", CB_REP_PAY)])
-        buttons.append([Button.inline("⏭ Skip / Continue Without", CB_REP_SKIP)])
-        # Send to log group with buttons
-        enqueue_log(bot_token, text, parse_mode="html", buttons=[])
-        # Send directly to owner via controller bot
+            buttons.append([panel_button(f"Pay ${total:.2f} & Replace", CB_REP_PAY, "log_paid")])
+        buttons.append([Button.inline("Skip / Continue Without", CB_REP_SKIP)])
+        # Send to log group (PTB, no buttons — read-only record; only the owner DM below is actionable)
+        enqueue_log(bot_token, text, entities=_health_alert_ptb_entities(spec))
+        # Send directly to owner via controller bot (Telethon)
         bot_client = BOT_CLIENTS.get(bot_token)
         if bot_client and owner_id:
             try:
                 await bot_client.send_message(
-                    owner_id, text, parse_mode="html",
+                    owner_id, text,
+                    formatting_entities=_health_alert_telethon_entities(spec),
                     buttons=buttons,
                 )
             except Exception as e:
@@ -2791,10 +2881,12 @@ def _apply_worker_result(msg: dict) -> None:
                 cfg = _get_cfg(bot_token)
                 name = (cfg.get("name") or bot_token[:20]) if cfg else bot_token[:20]
                 failure_pct = 100.0 * _fail / _attempted
-                enqueue_log(
-                    bot_token,
+                from .ui.emoji_entities import build_emoji_message
+                warn_text, warn_entities = build_emoji_message(
                     f"Session {session_file} ({name}): failure rate {failure_pct:.0f}% this cycle. Session continues next cycle; consider removing banned/invalid groups from list.",
+                    "log_warning",
                 )
+                enqueue_log(bot_token, warn_text, entities=warn_entities)
         if session_file is not None and timestamp is not None:
             _worker_first_cycle_or_post.add((bot_token, session_file))
             _cd_success = int(msg.get("posts_success") or 0)

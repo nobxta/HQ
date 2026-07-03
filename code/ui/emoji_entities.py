@@ -1,7 +1,11 @@
 """
-Safe premium emoji message builder for Shop Bot and Admin Bot only.
+Safe premium emoji message builder for any message sent via python-telegram-bot (PTB).
 Use this helper for all custom-emoji messages to avoid Entity_text_invalid (offset/length).
-Controller bots (customer AdBots) must NOT use this; they use Unicode emojis only.
+
+Scope note: this covers PTB sends only. The controller AdBot's interactive menu (code/users.py
+event.edit/respond/reply) is Telethon (MTProto), not PTB — use code/ui/emoji_entities_telethon.py
+there instead. However, that same file's LOG-GROUP posts (enqueue_log -> notify_log_group ->
+bot_ptb) go via PTB regardless of which module calls them, so this builder is correct for those.
 
 Each custom emoji is overlaid on a real Unicode fallback glyph, so if the client
 cannot resolve the custom_emoji_id (e.g. the bot isn't permitted to use that set),
@@ -62,6 +66,15 @@ EMOJI_FALLBACKS: dict[str, str] = {
     "panel_start": "▶",
     "panel_stop": "⏹",
     "panel_message": "✉",
+    # Customer log group
+    "log_success": "🔘",
+    "log_failed": "🔘",
+    "log_warning": "⚠️",
+    "log_health_alert": "⚠️",
+    "log_frozen": "🔹",
+    "log_limited": "🟡",
+    "log_free_available": "✅",
+    "log_paid": "💰",
 }
 
 
