@@ -17,7 +17,8 @@ import {
   Loader2, Phone, AtSign, Crown, Ban, ShieldCheck, ArrowRightLeft,
   Minus, FileText, Search, Key, EyeOff, ChevronDown, ChevronRight,
   ExternalLink, CheckCircle2, Download, Sparkles, List,
-  CheckSquare, MinusSquare,
+  CheckSquare, MinusSquare, Bold, Italic, Underline, Strikethrough,
+  Code, Link2, Activity, Zap as ZapIcon,
 } from "lucide-react";
 import { ResponsiveContainer, BarChart, Bar, XAxis, Tooltip, PieChart, Pie, Cell } from "recharts";
 import api from "@/lib/api";
@@ -167,6 +168,12 @@ function HqCard({ children, className = "", hover = false }: { children: ReactNo
   );
 }
 
+/* Deterministic avatar gradients (Figma-style session avatars) */
+const AVATAR_GRADIENTS = [
+  "#7C5CFF,#9B7FFF", "#00D4FF,#0891B2", "#22C55E,#15803D",
+  "#F59E0B,#D97706", "#EF4444,#B91C1C", "#8B5CF6,#6D28D9",
+];
+
 /* Single source of truth for a bot's headline status → label + colour */
 function botStatus(bot: any): { label: string; color: string } {
   if (bot?.suspended) return { label: "Suspended", color: "#F59E0B" };
@@ -225,6 +232,32 @@ const HqInput = forwardRef<HTMLInputElement, { label?: string } & InputHTMLAttri
   )
 );
 HqInput.displayName = "HqInput";
+
+/* Quick-action row: fires a real endpoint, shows spinner + result toast */
+function QuickActionRow({ label, icon: Icon, run, ok, onDone }: { label: string; icon: any; run: () => Promise<any>; ok: string; onDone?: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const go = async () => {
+    setBusy(true);
+    try {
+      const r = await run();
+      toast.success(r?.data?.message || ok);
+      onDone?.();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || `${label} failed`);
+    }
+    setBusy(false);
+  };
+  return (
+    <button onClick={go} disabled={busy}
+      className="w-full flex items-center gap-3 rounded-[12px] border border-hq-border bg-hq-elev px-3.5 py-2.5 text-left hover:border-hq-accent/30 hover:bg-white/[0.04] transition-all disabled:opacity-50">
+      <span className="w-8 h-8 rounded-[10px] bg-hq-accent/10 flex items-center justify-center shrink-0">
+        {busy ? <Loader2 className="h-4 w-4 text-hq-accent animate-spin" /> : <Icon className="h-4 w-4 text-hq-accent" strokeWidth={1.75} />}
+      </span>
+      <span className="text-[13px] font-medium text-hq-text">{label}</span>
+      <ChevronRight className="h-4 w-4 text-hq-muted ml-auto" />
+    </button>
+  );
+}
 
 /* Key/value row used inside hq detail cards */
 function KV({ k, v }: { k: string; v: ReactNode }) {
@@ -483,6 +516,51 @@ function OverviewTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
         </HqCard>
       </div>
 
+      {/* Session Health + Quick Actions */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <HqCard className="p-5 lg:col-span-2">
+          <HqTitle sub="Delivery success per account">Session Health</HqTitle>
+          {Object.keys(sessionStats).length === 0 ? (
+            <div className="py-8 text-center text-[13px] text-hq-muted">No session activity yet</div>
+          ) : (
+            <div className="space-y-3">
+              {Object.entries(sessionStats).slice(0, 8).map(([sess, v]: [string, any]) => {
+                const s = v.lifetime_sent || v.sent || 0;
+                const f = v.lifetime_failed || v.failed || 0;
+                const rate = s + f > 0 ? Math.round((s / (s + f)) * 100) : 0;
+                const col = rate >= 80 ? "#22C55E" : rate >= 50 ? "#F59E0B" : "#EF4444";
+                return (
+                  <div key={sess} className="flex items-center gap-3">
+                    <span className="w-8 h-8 rounded-full bg-hq-elev border border-hq-border flex items-center justify-center text-[11px] font-semibold text-hq-sub shrink-0">
+                      {sess.replace(".session", "").slice(0, 2).toUpperCase()}
+                    </span>
+                    <span className="text-[12px] font-mono text-hq-sub w-24 truncate shrink-0">{sess.replace(".session", "")}</span>
+                    <div className="flex-1 h-1.5 rounded-full bg-hq-bg overflow-hidden">
+                      <div className="h-full rounded-full transition-all duration-700" style={{ width: `${rate}%`, background: col }} />
+                    </div>
+                    <span className="text-[12px] font-semibold tabular-nums w-10 text-right" style={{ color: col }}>{s + f > 0 ? `${rate}%` : "—"}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </HqCard>
+
+        <HqCard className="p-5">
+          <HqTitle sub="One-click operations">Quick Actions</HqTitle>
+          <div className="space-y-2">
+            {[
+              { label: "Restart Bot", icon: RotateCw, run: () => api.post(`/api/bots/${encodeURIComponent(name)}/restart`), ok: "Restart queued" },
+              { label: "Validate Sessions", icon: ShieldCheck, run: () => api.post(`/api/bots/${encodeURIComponent(name)}/sessions/validate-all`), ok: "Sessions validated" },
+              { label: "Fix Config", icon: FileText, run: () => api.post(`/api/bots/${encodeURIComponent(name)}/repair/config`), ok: "Config repaired" },
+              { label: "Fix Log Group", icon: MessageSquare, run: () => api.post(`/api/bots/${encodeURIComponent(name)}/repair/log-group`, {}, { timeout: 180000 }), ok: "Log group checked" },
+            ].map((a) => (
+              <QuickActionRow key={a.label} label={a.label} icon={a.icon} run={a.run} ok={a.ok} onDone={onUpdate} />
+            ))}
+          </div>
+        </HqCard>
+      </div>
+
       {/* Details + Status */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <HqCard className="p-5 lg:col-span-2">
@@ -634,9 +712,30 @@ function OverviewTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
 }
 
 /* ─── POSTING / MESSAGE ─── */
+/* Render Telegram-supported HTML into a safe preview (escape everything, then
+   re-enable only the allowed tags). Prevents arbitrary HTML injection. */
+function telegramPreviewHtml(raw: string): string {
+  let h = raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  h = h.replace(/&lt;(\/?(b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote))&gt;/gi, "<$1>");
+  h = h.replace(/&lt;a href="([^"<>]*)"&gt;/gi, '<a href="$1" class="text-hq-accent2 underline">').replace(/&lt;\/a&gt;/gi, "</a>");
+  return h.replace(/\n/g, "<br/>");
+}
+
+const TG_TAGS: { tag: string; label: string; icon: any; wrap: [string, string] }[] = [
+  { tag: "b", label: "Bold", icon: Bold, wrap: ["<b>", "</b>"] },
+  { tag: "i", label: "Italic", icon: Italic, wrap: ["<i>", "</i>"] },
+  { tag: "u", label: "Underline", icon: Underline, wrap: ["<u>", "</u>"] },
+  { tag: "s", label: "Strike", icon: Strikethrough, wrap: ["<s>", "</s>"] },
+  { tag: "code", label: "Code", icon: Code, wrap: ["<code>", "</code>"] },
+  { tag: "a", label: "Link", icon: Link2, wrap: ['<a href="https://">', "</a>"] },
+];
+
 function PostingTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: () => void }) {
   const [message, setMessage] = useState(bot.message || "");
   const [saving, setSaving] = useState(false);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+
+  const dirty = message !== (bot.message || "");
 
   const handleSave = async () => {
     setSaving(true);
@@ -650,28 +749,79 @@ function PostingTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate:
     setSaving(false);
   };
 
+  const applyWrap = (open: string, close: string) => {
+    const ta = taRef.current;
+    if (!ta) return;
+    const start = ta.selectionStart, end = ta.selectionEnd;
+    const sel = message.slice(start, end) || "text";
+    const next = message.slice(0, start) + open + sel + close + message.slice(end);
+    setMessage(next);
+    requestAnimationFrame(() => {
+      ta.focus();
+      ta.selectionStart = start + open.length;
+      ta.selectionEnd = start + open.length + sel.length;
+    });
+  };
+
   return (
     <div className="space-y-5">
-      <HqCard className="p-5">
-        <HqTitle sub="Posted to every group each cycle · supports Telegram HTML formatting">Post Message / Link</HqTitle>
-        <div className="space-y-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Editor */}
+        <HqCard className="p-5">
+          <HqTitle sub="Posted to every group each cycle">Post Message / Link</HqTitle>
+          {/* Formatting toolbar */}
+          <div className="flex items-center gap-1 mb-3 p-1 rounded-[12px] border border-hq-border bg-hq-bg w-fit">
+            {TG_TAGS.map((t) => (
+              <button key={t.tag} type="button" title={t.label} onClick={() => applyWrap(t.wrap[0], t.wrap[1])}
+                className="w-8 h-8 rounded-[8px] flex items-center justify-center text-hq-sub hover:text-hq-text hover:bg-hq-hover transition-colors">
+                <t.icon className="h-4 w-4" strokeWidth={1.75} />
+              </button>
+            ))}
+          </div>
           <textarea
-            className="w-full h-48 rounded-[14px] border border-hq-border bg-hq-bg px-4 py-3 text-[13px] text-hq-text font-mono placeholder:text-hq-muted focus:outline-none focus:border-hq-accent/60 resize-none transition-colors"
+            ref={taRef}
+            className="w-full h-56 rounded-[14px] border border-hq-border bg-hq-bg px-4 py-3 text-[13px] text-hq-text font-mono placeholder:text-hq-muted focus:outline-none focus:border-hq-accent/60 resize-none transition-colors"
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            placeholder="Enter post message or link…"
+            placeholder="Enter post message or link… e.g. <b>Bold</b> and <a href=&quot;https://t.me&quot;>link</a>"
           />
-          <div className="flex items-center gap-2">
-            <HqBtn onClick={handleSave} loading={saving} icon={Save}>Save Message</HqBtn>
-            <HqBtn tone="ghost" onClick={() => { navigator.clipboard.writeText(message); toast.success("Copied"); }} icon={Copy}>Copy</HqBtn>
+          <div className="flex items-center justify-between mt-2">
+            <span className="text-[11px] text-hq-muted tabular-nums">{message.length} chars{message.length > 4096 && <span className="text-hq-danger"> · over Telegram's 4096 limit</span>}</span>
+            <div className="flex items-center gap-2">
+              <HqBtn tone="ghost" onClick={() => { navigator.clipboard.writeText(message); toast.success("Copied"); }} icon={Copy}>Copy</HqBtn>
+              <HqBtn onClick={handleSave} loading={saving} icon={Save} disabled={!dirty}>Save</HqBtn>
+            </div>
           </div>
-        </div>
-      </HqCard>
+        </HqCard>
 
+        {/* Live preview */}
+        <HqCard className="p-5">
+          <HqTitle sub="How it renders in Telegram">Live Preview</HqTitle>
+          <div className="rounded-[14px] bg-hq-bg border border-hq-border p-4 min-h-[224px]">
+            {message.trim() ? (
+              <div className="max-w-[85%] rounded-[14px] rounded-tl-sm px-3.5 py-2.5 text-[13px] text-hq-text leading-relaxed break-words"
+                style={{ background: "linear-gradient(135deg,#7C5CFF22,#00D4FF14)", border: "1px solid rgba(255,255,255,0.06)" }}
+                dangerouslySetInnerHTML={{ __html: telegramPreviewHtml(message) }} />
+            ) : (
+              <div className="h-full flex items-center justify-center text-[13px] text-hq-muted italic py-16">No message set</div>
+            )}
+          </div>
+        </HqCard>
+      </div>
+
+      {/* Telegram formatting helper */}
       <HqCard className="p-5">
-        <HqTitle>Preview</HqTitle>
-        <div className="rounded-[14px] bg-hq-bg border border-hq-border p-4 text-[13px] text-hq-text whitespace-pre-wrap break-words min-h-[80px]">
-          {message || <span className="text-hq-muted italic">No message set</span>}
+        <HqTitle sub="Supported Telegram HTML tags">Formatting Helper</HqTitle>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+          {[
+            ["<b>bold</b>", "Bold"], ["<i>italic</i>", "Italic"], ["<u>underline</u>", "Underline"],
+            ["<s>strike</s>", "Strikethrough"], ["<code>mono</code>", "Monospace"], ['<a href="url">link</a>', "Hyperlink"],
+          ].map(([code, label]) => (
+            <div key={label} className="rounded-[12px] border border-hq-border bg-hq-bg px-3 py-2">
+              <p className="text-[12px] font-medium text-hq-text">{label}</p>
+              <code className="text-[11px] text-hq-accent2 font-mono break-all">{code}</code>
+            </div>
+          ))}
         </div>
       </HqCard>
     </div>
@@ -1054,7 +1204,10 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
                 s.status === "dead" ? "border-hq-danger/30 bg-hq-danger/[0.04]" : "border-hq-border bg-hq-elev"
               }`}>
                 <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-2">
-                  <span className="text-hq-muted text-[13px] font-medium w-5">#{s.index ?? i + 1}</span>
+                  <span className="w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-semibold text-white shrink-0"
+                    style={{ background: `linear-gradient(135deg, ${AVATAR_GRADIENTS[i % AVATAR_GRADIENTS.length]})` }}>
+                    {(s.real_name || s.username || String(s.index ?? i + 1)).trim().slice(0, 2).toUpperCase()}
+                  </span>
                   {statusBadge(s.status)}
                   <span className="text-[13px] font-medium text-hq-text truncate">{s.real_name || "Unknown"}</span>
                   {s.premium && <span title="Premium"><Crown className="h-3.5 w-3.5 text-hq-warning" /></span>}
