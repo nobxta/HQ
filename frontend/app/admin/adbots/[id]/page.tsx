@@ -18,7 +18,9 @@ import {
   Minus, FileText, Search, Key, EyeOff, ChevronDown, ChevronRight,
   ExternalLink, CheckCircle2, Download, Sparkles, List,
   CheckSquare, MinusSquare, Bold, Italic, Underline, Strikethrough,
-  Code, Link2, Activity, Zap as ZapIcon,
+  Code, Link2, Activity, Zap as ZapIcon, Layout, Smartphone, Server,
+  Power, Send, Upload, Filter, MoreVertical, Wifi, Check, AlertOctagon,
+  AlertTriangle, Folder,
 } from "lucide-react";
 import { ResponsiveContainer, BarChart, Bar, XAxis, Tooltip, PieChart, Pie, Cell } from "recharts";
 import api from "@/lib/api";
@@ -27,10 +29,11 @@ import { formatDate, formatDateTime, timeAgo, formatUSD, ddmmyyyyToIso, isoToDdm
 import type { BotUpdatePayload } from "@/lib/types";
 
 const tabs = [
-  { id: "overview", label: "Overview", icon: BarChart3 },
-  { id: "content", label: "Content", icon: MessageSquare },
-  { id: "sessions", label: "Sessions", icon: HardDrive },
-  { id: "groups", label: "Groups", icon: FolderOpen },
+  { id: "overview", label: "Overview", icon: Layout },
+  { id: "sessions", label: "Sessions", icon: Smartphone },
+  { id: "groups", label: "Groups", icon: Users },
+  { id: "content", label: "Content", icon: FileText },
+  { id: "logs", label: "Logs", icon: Terminal },
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
@@ -39,6 +42,7 @@ export default function BotDetailPage() {
   const router = useRouter();
   const name = decodeURIComponent(id);
   const { data: bot, isLoading, mutate, is404 } = useAdbot(name);
+  const { data: headerStats } = useAdbotStats(name);
   const [activeTab, setActiveTab] = useState("overview");
   const [actionLoading, setActionLoading] = useState("");
   const [deleteConfirm, setDeleteConfirm] = useState(false);
@@ -70,65 +74,87 @@ export default function BotDetailPage() {
   };
 
   const sp = botStatus(bot);
+  const sSent = headerStats?.lifetime_sent || 0;
+  const sFailed = headerStats?.lifetime_failed || 0;
+  const health = sSent + sFailed > 0 ? Math.round((sSent / (sSent + sFailed)) * 100) : null;
+  const dLeft = daysUntil(bot.valid_till);
 
   return (
-    <div className="space-y-5 animate-fade-in text-hq-text">
-      {/* Header */}
-      <div className="space-y-3 sm:space-y-0 sm:flex sm:items-center sm:justify-between sm:flex-wrap sm:gap-4">
-        <div className="flex items-center gap-3 min-w-0">
-          <button onClick={() => router.push("/admin/adbots")} className="w-9 h-9 rounded-[12px] border border-hq-border bg-hq-card text-hq-sub hover:text-hq-text hover:bg-hq-elev transition-colors flex items-center justify-center shrink-0">
+    <div className="animate-fade-in text-hq-text -mx-4 -my-4 sm:-mx-6 sm:-my-6 relative">
+      {/* Ambient background */}
+      <div className="fixed inset-0 pointer-events-none -z-10" style={{
+        background: "radial-gradient(ellipse 80% 50% at 70% -10%, rgba(124,92,255,0.10) 0%, transparent 60%), radial-gradient(ellipse 40% 30% at 10% 80%, rgba(0,212,255,0.05) 0%, transparent 50%)",
+      }} />
+
+      {/* Sticky bot header */}
+      <header className="sticky top-0 z-20 px-4 sm:px-6 py-4" style={{ background: "rgba(9,9,11,0.85)", backdropFilter: "blur(20px)", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+        <div className="flex items-center gap-4 flex-wrap">
+          <button onClick={() => router.push("/admin/adbots")} className="w-9 h-9 rounded-[12px] border border-hq-border bg-hq-card text-hq-sub hover:text-hq-text hover:bg-hq-elev transition-colors flex items-center justify-center shrink-0" title="Back to bots">
             <ArrowLeft className="h-4.5 w-4.5" strokeWidth={1.75} />
           </button>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h2 className="text-[20px] sm:text-[22px] font-semibold text-hq-text truncate">{bot.name}</h2>
+          {/* Avatar with status dot */}
+          <div className="relative shrink-0">
+            <div className="w-12 h-12 rounded-[16px] flex items-center justify-center text-xl" style={{ background: "linear-gradient(135deg,#7C5CFF22,#9B7FFF22)", border: "1px solid rgba(124,92,255,0.25)", boxShadow: "0 0 16px rgba(124,92,255,0.15)" }}>🤖</div>
+            <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2" style={{ borderColor: "#09090B", background: sp.color, animation: bot.running ? "pulse 2s cubic-bezier(.4,0,.6,1) infinite" : "none" }} />
+          </div>
+          {/* Info */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <h1 className="text-[18px] font-bold text-hq-text leading-none truncate">{bot.name}</h1>
+              {bot.bot_username && <span className="text-[13px] text-hq-muted font-mono">@{bot.bot_username}</span>}
               <HqStatusPill label={sp.label} color={sp.color} />
+              <span className="text-[11px] px-2.5 py-1 rounded-full font-semibold capitalize" style={{ background: "rgba(124,92,255,0.12)", color: "#C4B5FD", border: "1px solid rgba(124,92,255,0.2)" }}>⚡ {bot.plan_name || bot.mode}</span>
             </div>
-            <p className="text-[12px] sm:text-[13px] text-hq-sub truncate mt-0.5">
-              {bot.bot_username ? `@${bot.bot_username}` : ""} · <span className="capitalize">{bot.mode}</span> · Owner: {String(bot.owner_id || "admin")}
-            </p>
+            <div className="flex items-center gap-4 mt-1.5 flex-wrap">
+              <span className="text-[12px] text-hq-muted flex items-center gap-1.5"><Users size={11} />Owner: {String(bot.owner_id || "admin")}</span>
+              <span className="text-[12px] text-hq-muted flex items-center gap-1.5"><Clock size={11} />{dLeft !== null ? (dLeft >= 0 ? `${dLeft}d left · ` : `expired · `) : ""}{formatDate(bot.valid_till)}</span>
+              {health !== null && (
+                <span className="text-[12px] flex items-center gap-1.5" style={{ color: health >= 80 ? "#22C55E" : health >= 50 ? "#F59E0B" : "#EF4444" }}>
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: "currentColor", animation: "pulse 2s infinite" }} />Health {health}%
+                </span>
+              )}
+            </div>
+          </div>
+          {/* Actions */}
+          <div className="flex items-center gap-2 shrink-0 flex-wrap">
+            {bot.running ? (
+              <HqBtn tone="danger" onClick={() => doAction("stop")} loading={actionLoading === "stop"} icon={Square}>Stop</HqBtn>
+            ) : (
+              <HqBtn tone="primary" onClick={() => doAction("start")} loading={actionLoading === "start"} icon={Play}>Start</HqBtn>
+            )}
+            <HqBtn tone="ghost" onClick={() => doAction("restart")} loading={actionLoading === "restart"} icon={RotateCw}><span className="hidden sm:inline">Restart</span></HqBtn>
+            {bot.suspended ? (
+              <HqBtn tone="ghost" onClick={() => doAction("resume")} loading={actionLoading === "resume"} icon={PlayCircle}><span className="hidden sm:inline">Resume</span></HqBtn>
+            ) : (
+              <HqBtn tone="ghost" onClick={() => doAction("suspend")} loading={actionLoading === "suspend"} icon={Pause}><span className="hidden sm:inline">Suspend</span></HqBtn>
+            )}
+            <HqBtn tone="danger" onClick={() => setDeleteConfirm(true)} icon={Trash2} iconOnly />
           </div>
         </div>
-        <div className="flex gap-2 flex-wrap pl-12 sm:pl-0">
-          {bot.running ? (
-            <HqBtn tone="danger" onClick={() => doAction("stop")} loading={actionLoading === "stop"} icon={Square}>Stop</HqBtn>
-          ) : (
-            <HqBtn tone="success" onClick={() => doAction("start")} loading={actionLoading === "start"} icon={Play}>Start</HqBtn>
-          )}
-          <HqBtn tone="ghost" onClick={() => doAction("restart")} loading={actionLoading === "restart"} icon={RotateCw}><span className="hidden sm:inline">Restart</span></HqBtn>
-          {bot.suspended ? (
-            <HqBtn tone="ghost" onClick={() => doAction("resume")} loading={actionLoading === "resume"} icon={PlayCircle}><span className="hidden sm:inline">Resume</span></HqBtn>
-          ) : (
-            <HqBtn tone="ghost" onClick={() => doAction("suspend")} loading={actionLoading === "suspend"} icon={Pause}><span className="hidden sm:inline">Suspend</span></HqBtn>
-          )}
-          <HqBtn tone="danger" onClick={() => setDeleteConfirm(true)} icon={Trash2} iconOnly />
-        </div>
-      </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 p-1 rounded-[14px] border border-hq-border bg-hq-card overflow-x-auto no-scrollbar">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setActiveTab(t.id)}
-            className={`flex items-center gap-2 px-3.5 py-2 text-[13px] font-medium rounded-[10px] transition-all whitespace-nowrap ${
-              activeTab === t.id
-                ? "bg-hq-accent text-white shadow-[0_2px_10px_rgba(124,92,255,0.35)]"
-                : "text-hq-sub hover:text-hq-text hover:bg-hq-hover"
-            }`}
-          >
-            <t.icon className="h-4 w-4" strokeWidth={1.75} />
-            {t.label}
-          </button>
-        ))}
-      </div>
+        {/* Underline tabs */}
+        <div className="flex items-center gap-1 mt-4 -mb-4 overflow-x-auto no-scrollbar">
+          {tabs.map((t) => (
+            <button key={t.id} onClick={() => setActiveTab(t.id)}
+              className={`flex items-center gap-2 px-4 py-2.5 text-[13px] font-medium transition-all border-b-2 whitespace-nowrap ${
+                activeTab === t.id ? "text-hq-text border-hq-accent" : "text-hq-muted border-transparent hover:text-hq-sub hover:border-white/10"
+              }`}>
+              <t.icon size={14} strokeWidth={1.75} />
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </header>
 
       {/* Tab content */}
-      {activeTab === "overview" && <OverviewTab name={name} bot={bot} onUpdate={() => mutate()} />}
-      {activeTab === "content" && <PostingTab name={name} bot={bot} onUpdate={() => mutate()} />}
-      {activeTab === "sessions" && <SessionsTab bot={bot} name={name} onUpdate={() => mutate()} />}
-      {activeTab === "groups" && <GroupsTab bot={bot} name={name} onUpdate={() => mutate()} />}
-      {activeTab === "settings" && <SettingsTab name={name} bot={bot} onUpdate={() => mutate()} />}
+      <main className="px-4 sm:px-6 py-6">
+        {activeTab === "overview" && <OverviewTab name={name} bot={bot} onUpdate={() => mutate()} />}
+        {activeTab === "sessions" && <SessionsTab bot={bot} name={name} onUpdate={() => mutate()} />}
+        {activeTab === "groups" && <GroupsTab bot={bot} name={name} onUpdate={() => mutate()} />}
+        {activeTab === "content" && <PostingTab name={name} bot={bot} onUpdate={() => mutate()} />}
+        {activeTab === "logs" && <LogsTab name={name} />}
+        {activeTab === "settings" && <SettingsTab name={name} bot={bot} onUpdate={() => mutate()} />}
+      </main>
 
       <ConfirmModal
         open={deleteConfirm}
@@ -180,6 +206,37 @@ function botStatus(bot: any): { label: string; color: string } {
   if (bot?.frozen) return { label: "Frozen", color: "#EF4444" };
   if (bot?.running) return { label: "Running", color: "#22C55E" };
   return { label: "Stopped", color: "#64748B" };
+}
+
+/* Days until a dd/mm/yyyy (or ISO) validity date; null if unparseable */
+function daysUntil(valid?: string): number | null {
+  try {
+    const raw = valid || "";
+    const iso = raw.includes("/") ? ddmmyyyyToIso(raw) : raw;
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return null;
+    return Math.ceil((d.getTime() - Date.now()) / 86400000);
+  } catch { return null; }
+}
+
+/* SVG progress ring (Figma HealthRing) */
+function HealthRing({ value, size = 52 }: { value: number; size?: number }) {
+  const r = (size - 8) / 2;
+  const circ = 2 * Math.PI * r;
+  const offset = circ - (value / 100) * circ;
+  const color = value >= 80 ? "#22C55E" : value >= 50 ? "#F59E0B" : "#EF4444";
+  return (
+    <div className="relative flex items-center justify-center" style={{ width: size, height: size }}>
+      <svg width={size} height={size} style={{ transform: "rotate(-90deg)", position: "absolute" }}>
+        <circle cx={size / 2} cy={size / 2} r={r} strokeWidth={4} stroke="rgba(255,255,255,0.08)" fill="none" />
+        <circle cx={size / 2} cy={size / 2} r={r} strokeWidth={4} stroke={color} fill="none"
+          strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round"
+          style={{ transition: "stroke-dashoffset 1.2s cubic-bezier(.4,0,.2,1)" }} />
+      </svg>
+      <span style={{ fontSize: size * 0.24, fontWeight: 700, color, lineHeight: 1 }}>{value}</span>
+    </div>
+  );
 }
 
 /* Pulsing-dot status pill (Figma StatusBadge) */
@@ -1192,53 +1249,79 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
         </div>
       )}
 
-      {/* Sessions list */}
-      <HqCard className="p-5">
-        <HqTitle sub={`${sessions.length} account(s) powering this bot`}>Assigned Sessions</HqTitle>
-        {displaySessions.length === 0 ? (
-          <p className="text-[13px] text-hq-muted py-6 text-center">No sessions assigned to this bot</p>
-        ) : (
-          <div className="space-y-2.5">
-            {displaySessions.map((s: any, i: number) => (
-              <div key={s.file || i} className={`rounded-[14px] border p-3 sm:p-4 transition-colors ${
-                s.status === "dead" ? "border-hq-danger/30 bg-hq-danger/[0.04]" : "border-hq-border bg-hq-elev"
-              }`}>
-                <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-2">
-                  <span className="w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-semibold text-white shrink-0"
-                    style={{ background: `linear-gradient(135deg, ${AVATAR_GRADIENTS[i % AVATAR_GRADIENTS.length]})` }}>
-                    {(s.real_name || s.username || String(s.index ?? i + 1)).trim().slice(0, 2).toUpperCase()}
-                  </span>
+      {/* Session card grid */}
+      {displaySessions.length === 0 ? (
+        <HqCard className="p-10 text-center"><p className="text-[13px] text-hq-muted">No sessions assigned to this bot</p></HqCard>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {displaySessions.map((s: any, i: number) => {
+            const health = s.status === "active" ? 100 : s.status === "busy" ? 60 : s.status === "error" ? 40 : s.status === "dead" ? 12 : 55;
+            return (
+              <HqCard key={s.file || i} className={`p-4 ${s.status === "dead" ? "!border-hq-danger/25" : ""}`}>
+                {/* Header */}
+                <div className="flex items-start justify-between mb-4">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="w-10 h-10 rounded-[12px] flex items-center justify-center text-[13px] font-bold text-white shrink-0"
+                      style={{ background: `linear-gradient(135deg, ${AVATAR_GRADIENTS[i % AVATAR_GRADIENTS.length]})`, border: "1px solid rgba(124,92,255,0.2)" }}>
+                      {(s.real_name || s.username || String(s.index ?? i + 1)).trim().slice(0, 2).toUpperCase()}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="text-[13px] font-semibold text-hq-text truncate">{s.real_name || "Unknown"}</div>
+                      <div className="text-[11px] text-hq-muted font-mono truncate">{s.username ? `@${s.username}` : s.phone || s.file}</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {s.premium && <span title="Premium"><Crown className="h-3.5 w-3.5 text-hq-warning" /></span>}
+                    {s.restricted && <span title="Restricted"><Ban className="h-3.5 w-3.5 text-hq-danger" /></span>}
+                  </div>
+                </div>
+
+                {/* Status row */}
+                <div className="flex items-center justify-between mb-4">
                   {statusBadge(s.status)}
-                  <span className="text-[13px] font-medium text-hq-text truncate">{s.real_name || "Unknown"}</span>
-                  {s.premium && <span title="Premium"><Crown className="h-3.5 w-3.5 text-hq-warning" /></span>}
-                  {s.restricted && <span title="Restricted"><Ban className="h-3.5 w-3.5 text-hq-danger" /></span>}
-                  {spambotResults[s.file] && spambotBadge(spambotResults[s.file])}
-                  <span className="flex-1" />
-                  <span className="text-[10px] font-mono text-hq-muted hidden sm:inline">{s.file}</span>
+                  {spambotResults[s.file] ? spambotBadge(spambotResults[s.file]) : <span className="text-[11px] text-hq-muted font-mono">ID {s.user_id || "—"}</span>}
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 ml-7 text-[12px]">
-                  <div className="flex items-center gap-1.5"><Hash className="h-3 w-3 text-hq-muted" /><span className="text-hq-muted">ID:</span><span className="font-mono text-hq-sub">{s.user_id || "—"}</span></div>
-                  {s.username && <div className="flex items-center gap-1.5"><AtSign className="h-3 w-3 text-hq-muted" /><span className="text-hq-accent">@{s.username}</span></div>}
-                  {s.phone && <div className="flex items-center gap-1.5"><Phone className="h-3 w-3 text-hq-muted" /><span className="font-mono text-hq-sub">{s.phone}</span></div>}
-                  {s.bio && <div className="flex items-center gap-1.5 col-span-2 sm:col-span-1"><FileText className="h-3 w-3 text-hq-muted shrink-0" /><span className="text-hq-sub truncate" title={s.bio}>{s.bio}</span></div>}
+                {/* Info tiles */}
+                <div className="grid grid-cols-3 gap-2 mb-4">
+                  {[
+                    { label: "Phone", value: s.phone ? s.phone.replace(/^(\+?\d{2}).*(\d{2})$/, "$1··$2") : "—" },
+                    { label: "Premium", value: s.premium ? "Yes" : "No" },
+                    { label: "Session", value: (s.file || "").replace(".session", "").slice(-4) || "—" },
+                  ].map((t) => (
+                    <div key={t.label} className="rounded-[12px] px-2 py-2 text-center" style={{ background: "rgba(255,255,255,0.03)" }}>
+                      <div className="text-[12px] font-bold text-hq-text truncate">{t.value}</div>
+                      <div className="text-[10px] text-hq-muted mt-0.5">{t.label}</div>
+                    </div>
+                  ))}
                 </div>
 
-                {(s.error || s.reason) && (
-                  <div className="ml-7 mt-2 rounded-[10px] bg-hq-danger/10 px-2.5 py-1.5 text-[12px] text-hq-danger">{s.error || s.reason}</div>
-                )}
+                {s.bio && <p className="text-[11px] text-hq-sub mb-3 line-clamp-2" title={s.bio}>{s.bio}</p>}
+                {(s.error || s.reason) && <div className="rounded-[10px] bg-hq-danger/10 px-2.5 py-1.5 text-[11px] text-hq-danger mb-3">{s.error || s.reason}</div>}
 
-                <div className="flex flex-wrap gap-1.5 ml-7 mt-3">
-                  <HqBtn tone="ghost" onClick={() => openEdit(s)} icon={Edit} className="!py-1.5 !text-[12px]">Edit Profile</HqBtn>
-                  <HqBtn tone="ghost" onClick={() => validateSession(s.file)} loading={validating === s.file} icon={ShieldCheck} className="!py-1.5 !text-[12px]">Validate</HqBtn>
-                  <HqBtn tone="ghost" onClick={() => { fetchFreeSessions(); setShowReplace(s.file); }} icon={ArrowRightLeft} className="!py-1.5 !text-[12px]">Replace</HqBtn>
-                  <HqBtn tone="danger" onClick={() => removeSession(s.file)} loading={actionLoading === s.file} icon={Minus} className="!py-1.5 !text-[12px]">Remove</HqBtn>
+                {/* Footer: validation + health */}
+                <div className="flex items-center justify-between pt-3 mb-3" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+                  <div>
+                    <div className="text-[10px] text-hq-muted mb-0.5">State</div>
+                    <span className={`text-[11px] font-semibold flex items-center gap-1 ${s.status === "active" ? "text-hq-success" : s.status === "dead" ? "text-hq-danger" : "text-hq-warning"}`}>
+                      {s.status === "active" ? <><Check size={11} />Healthy</> : s.status === "dead" ? <><AlertCircle size={11} />Dead</> : <><AlertCircle size={11} />{s.status || "Unknown"}</>}
+                    </span>
+                  </div>
+                  <HealthRing value={health} size={46} />
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </HqCard>
+
+                {/* Actions */}
+                <div className="grid grid-cols-2 gap-1.5">
+                  <HqBtn tone="ghost" onClick={() => openEdit(s)} icon={Edit} className="!py-1.5 !text-[12px] justify-center">Edit</HqBtn>
+                  <HqBtn tone="ghost" onClick={() => validateSession(s.file)} loading={validating === s.file} icon={ShieldCheck} className="!py-1.5 !text-[12px] justify-center">Validate</HqBtn>
+                  <HqBtn tone="ghost" onClick={() => { fetchFreeSessions(); setShowReplace(s.file); }} icon={ArrowRightLeft} className="!py-1.5 !text-[12px] justify-center">Replace</HqBtn>
+                  <HqBtn tone="danger" onClick={() => removeSession(s.file)} loading={actionLoading === s.file} icon={Minus} className="!py-1.5 !text-[12px] justify-center">Remove</HqBtn>
+                </div>
+              </HqCard>
+            );
+          })}
+        </div>
+      )}
 
       {/* Excluded sessions */}
       {bot.excluded_sessions?.length > 0 && (
@@ -2323,7 +2406,6 @@ const SETTINGS_SUBTABS = [
   { id: "general", label: "General", icon: Settings },
   { id: "plan", label: "Plan", icon: DollarSign },
   { id: "stats", label: "Stats", icon: TrendingUp },
-  { id: "logs", label: "Logs", icon: Terminal },
   { id: "repair", label: "Repair", icon: Wrench },
 ];
 
@@ -2354,7 +2436,6 @@ function SettingsTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
       {sub === "general" && <ConfigTab name={name} bot={bot} onUpdate={onUpdate} />}
       {sub === "plan" && <PlanTab name={name} bot={bot} onUpdate={onUpdate} />}
       {sub === "stats" && <StatsTab name={name} />}
-      {sub === "logs" && <LogsTab name={name} />}
       {sub === "repair" && <RepairTab name={name} bot={bot} onUpdate={onUpdate} />}
     </div>
   );
