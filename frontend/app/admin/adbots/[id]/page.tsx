@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { getSession } from "next-auth/react";
 import { useAdbot, useAdbotStats, useAdbotLogs } from "@/lib/hooks/useAdbots";
@@ -23,6 +23,7 @@ import {
   ExternalLink, CheckCircle2, Download, Sparkles, List,
   CheckSquare, MinusSquare,
 } from "lucide-react";
+import { ResponsiveContainer, BarChart, Bar, XAxis, Tooltip, PieChart, Pie, Cell } from "recharts";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
 import { formatDate, formatDateTime, timeAgo, formatUSD, ddmmyyyyToIso, isoToDdmmyyyy } from "@/lib/utils";
@@ -176,6 +177,50 @@ export default function BotDetailPage() {
 }
 
 /* ─── OVERVIEW ─── */
+/* ── Premium dashboard primitives (HQ design system) ── */
+function HqCard({ children, className = "" }: { children: ReactNode; className?: string }) {
+  return (
+    <div className={`rounded-[18px] border border-hq-border bg-hq-card shadow-[0_6px_24px_rgba(0,0,0,0.18)] ${className}`}>
+      {children}
+    </div>
+  );
+}
+
+function StatTile({ label, value, sub, icon: Icon, tone = "accent" }: {
+  label: string; value: string | number; sub?: string; icon: any; tone?: "accent" | "success" | "danger" | "warning";
+}) {
+  const toneMap: Record<string, string> = {
+    accent: "text-hq-accent bg-hq-accent/10",
+    success: "text-hq-success bg-hq-success/10",
+    danger: "text-hq-danger bg-hq-danger/10",
+    warning: "text-hq-warning bg-hq-warning/10",
+  };
+  return (
+    <HqCard className="p-5 transition-transform duration-150 hover:-translate-y-0.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[12px] text-hq-sub">{label}</span>
+        <span className={`w-8 h-8 rounded-[10px] flex items-center justify-center ${toneMap[tone]}`}>
+          <Icon className="w-4 h-4" strokeWidth={1.75} />
+        </span>
+      </div>
+      <p className="mt-3 text-[26px] leading-none font-semibold text-hq-text tabular-nums">{value}</p>
+      {sub && <p className="mt-2 text-[12px] text-hq-muted">{sub}</p>}
+    </HqCard>
+  );
+}
+
+function LegendRow({ color, label, value }: { color: string; label: string; value: string | number }) {
+  return (
+    <div className="flex items-center gap-2.5">
+      <span className="w-2.5 h-2.5 rounded-[4px]" style={{ background: color }} />
+      <div className="min-w-0">
+        <p className="text-[11px] text-hq-muted leading-tight">{label}</p>
+        <p className="text-[15px] font-semibold text-hq-text tabular-nums leading-tight">{value}</p>
+      </div>
+    </div>
+  );
+}
+
 function OverviewTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: () => void }) {
   const { data: stats } = useAdbotStats(name);
   const [showToken, setShowToken] = useState(false);
@@ -208,7 +253,6 @@ function OverviewTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
     if (typeof ts === "string") return ts;
     return new Date(ts * 1000).toLocaleString();
   };
-
   const timeSince = (ts: number) => {
     if (!ts) return "";
     const secs = Math.floor(Date.now() / 1000 - ts);
@@ -218,90 +262,219 @@ function OverviewTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
     return `${Math.floor(secs / 86400)}d ago`;
   };
 
+  // ── Derived metrics ──
+  const sent = stats?.lifetime_sent || 0;
+  const failed = stats?.lifetime_failed || 0;
+  const totalPosts = sent + failed;
+  const successRate = totalPosts ? Math.round((sent / totalPosts) * 100) : 0;
+  const cycles = stats?.cycles || 0;
+  const sessionsCount = bot.sessions_count || 0;
+  const sessionStats: Record<string, any> = stats?.session_stats || {};
+
+  const daysLeft: number | null = (() => {
+    try {
+      const raw = bot.valid_till || "";
+      const iso = raw.includes("/") ? ddmmyyyyToIso(raw) : raw;
+      if (!iso) return null;
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return null;
+      return Math.ceil((d.getTime() - Date.now()) / 86400000);
+    } catch { return null; }
+  })();
+
+  const perfData = Object.entries(sessionStats).map(([s, v]) => ({
+    name: s.replace(".session", "").slice(0, 8),
+    sent: v.lifetime_sent || v.sent || 0,
+    failed: v.lifetime_failed || v.failed || 0,
+  })).slice(0, 12);
+
+  const donutData = totalPosts > 0
+    ? [{ name: "Sent", value: sent }, { name: "Failed", value: failed }]
+    : [{ name: "None", value: 1 }];
+  const donutColors = totalPosts > 0 ? ["#2C5EFF", "#FF5B6E"] : ["#242830"];
+
+  const statusPill = bot.suspended
+    ? { label: "Suspended", cls: "text-hq-warning bg-hq-warning/10 border-hq-warning/20" }
+    : bot.frozen
+    ? { label: "Frozen", cls: "text-hq-danger bg-hq-danger/10 border-hq-danger/20" }
+    : bot.running
+    ? { label: "Running", cls: "text-hq-success bg-hq-success/10 border-hq-success/20" }
+    : { label: "Stopped", cls: "text-hq-muted bg-white/[0.04] border-hq-border" };
+
+  const details: [string, any][] = [
+    ["Mode", bot.mode],
+    ["Plan", bot.plan_name || "—"],
+    ["Owner", bot.owner_id || "Admin"],
+    ["Cycle", `${bot.cycle}s`],
+    ["Gap", `${bot.gap}s`],
+    ["Group File", bot.group_file || "—"],
+    ["Valid Until", formatDate(bot.valid_till)],
+    ["Created", formatDate(bot.created_at)],
+  ];
+
   return (
-    <div className="space-y-6">
-      {/* Quick stat cards */}
-      <div className="grid grid-cols-2 gap-3 sm:gap-4 sm:grid-cols-4">
-        <QuickStat icon={Zap} label="Sent" value={stats?.lifetime_sent || 0} color="text-success" />
-        <QuickStat icon={XCircle} label="Failed" value={stats?.lifetime_failed || 0} color="text-danger" />
-        <QuickStat icon={HardDrive} label="Sessions" value={bot.sessions_count || 0} color="text-info" />
-        <QuickStat icon={Hash} label="Cycles" value={stats?.cycles || 0} color="text-accent" />
+    <div className="space-y-5">
+      {/* Hero */}
+      <HqCard className="p-5">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-3.5 min-w-0">
+            <div className="w-12 h-12 rounded-[14px] bg-hq-accent/10 border border-hq-accent/20 flex items-center justify-center shrink-0">
+              <Zap className="w-5 h-5 text-hq-accent" strokeWidth={1.75} />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h2 className="text-[19px] font-semibold text-hq-text truncate">{bot.name}</h2>
+                <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${statusPill.cls}`}>{statusPill.label}</span>
+                <span className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-hq-border text-hq-sub capitalize">{bot.mode}</span>
+              </div>
+              <p className="text-[13px] text-hq-sub mt-1">
+                {bot.bot_username ? `@${bot.bot_username}` : "no username"}
+                {daysLeft !== null && (
+                  <span className={daysLeft <= 3 ? "text-hq-danger" : "text-hq-muted"}> · {daysLeft >= 0 ? `${daysLeft}d left` : `expired ${-daysLeft}d ago`}</span>
+                )}
+              </p>
+            </div>
+          </div>
+        </div>
+      </HqCard>
+
+      {/* Stat tiles */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <StatTile label="Total Sent" value={sent.toLocaleString()} icon={CheckCircle2} tone="success" sub={`${cycles.toLocaleString()} cycles`} />
+        <StatTile label="Success Rate" value={`${successRate}%`} icon={TrendingUp} tone="accent" sub={`${failed.toLocaleString()} failed`} />
+        <StatTile label="Sessions" value={sessionsCount} icon={HardDrive} tone="warning" sub={`${Object.keys(sessionStats).length} active`} />
+        <StatTile label="Days Left" value={daysLeft === null ? "—" : Math.max(daysLeft, 0)} icon={Calendar} tone={daysLeft !== null && daysLeft <= 3 ? "danger" : "accent"} sub={formatDate(bot.valid_till)} />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card>
-          <CardHeader><CardTitle>Bot Details</CardTitle></CardHeader>
-          <div className="space-y-2.5 text-sm">
-            {([
-              ["Name", bot.name],
-              ["Username", bot.bot_username ? `@${bot.bot_username}` : "—"],
-              ["Mode", bot.mode],
-              ["Plan", bot.plan_name || "—"],
-              ["Owner ID", bot.owner_id || "Admin"],
-              ["Group File", bot.group_file || "—"],
-              ["Cycle", `${bot.cycle}s`],
-              ["Gap", `${bot.gap}s`],
-              ["Valid Until", formatDate(bot.valid_till)],
-              ["Created", formatDate(bot.created_at)],
-              ["Log Group", bot.log_group || "—"],
-            ] as [string, any][]).map(([k, v]) => (
-              <div key={k} className="flex justify-between py-1 border-b border-dark-800 last:border-0">
-                <span className="text-dark-400">{k}</span>
-                <span className="text-dark-200 font-medium text-right max-w-[200px] truncate">{String(v)}</span>
+      {/* Performance + Delivery */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Performance bars */}
+        <HqCard className="p-5 lg:col-span-2">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-[15px] font-semibold text-hq-text">Session Performance</h3>
+              <p className="text-[12px] text-hq-muted mt-0.5">Messages sent per session</p>
+            </div>
+            <span className="text-[11px] text-hq-muted px-2.5 py-1 rounded-lg border border-hq-border">Lifetime</span>
+          </div>
+          {perfData.length === 0 ? (
+            <div className="h-[220px] flex items-center justify-center text-[13px] text-hq-muted">No posting activity yet</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={perfData} barCategoryGap="28%">
+                <XAxis dataKey="name" tick={{ fill: "#6C7380", fontSize: 11 }} axisLine={false} tickLine={false} />
+                <Tooltip
+                  cursor={{ fill: "rgba(255,255,255,0.03)" }}
+                  contentStyle={{ background: "#1A1D22", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, color: "#fff", fontSize: 12 }}
+                  labelStyle={{ color: "#A2A8B3" }}
+                />
+                <Bar dataKey="sent" name="Sent" radius={[6, 6, 0, 0]} fill="#2C5EFF" maxBarSize={40} />
+                <Bar dataKey="failed" name="Failed" radius={[6, 6, 0, 0]} fill="#FF5B6E" maxBarSize={40} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </HqCard>
+
+        {/* Delivery donut */}
+        <HqCard className="p-5">
+          <h3 className="text-[15px] font-semibold text-hq-text mb-1">Delivery</h3>
+          <p className="text-[12px] text-hq-muted">Sent vs failed</p>
+          <div className="relative h-[168px] mt-2">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={donutData} dataKey="value" innerRadius={58} outerRadius={80} paddingAngle={totalPosts > 0 ? 3 : 0} stroke="none">
+                  {donutData.map((_, i) => <Cell key={i} fill={donutColors[i]} />)}
+                </Pie>
+              </PieChart>
+            </ResponsiveContainer>
+            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+              <span className="text-[24px] font-semibold text-hq-text leading-none tabular-nums">{totalPosts > 0 ? `${successRate}%` : "—"}</span>
+              <span className="text-[11px] text-hq-muted mt-1">Success</span>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3 mt-3">
+            <LegendRow color="#2C5EFF" label="Sent" value={sent.toLocaleString()} />
+            <LegendRow color="#FF5B6E" label="Failed" value={failed.toLocaleString()} />
+            <LegendRow color="#8B7CF6" label="Sessions" value={sessionsCount} />
+            <LegendRow color="#42D392" label="Cycles" value={cycles.toLocaleString()} />
+          </div>
+        </HqCard>
+      </div>
+
+      {/* Details + Status */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <HqCard className="p-5 lg:col-span-2">
+          <h3 className="text-[15px] font-semibold text-hq-text mb-4">Details</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-4">
+            {details.map(([k, v]) => (
+              <div key={k} className="min-w-0">
+                <p className="text-[11px] text-hq-muted uppercase tracking-wide">{k}</p>
+                <p className="text-[13px] text-hq-text font-medium mt-1 truncate" title={String(v)}>{String(v)}</p>
               </div>
             ))}
           </div>
-        </Card>
+          {bot.log_group && (
+            <div className="mt-4 pt-4 border-t border-hq-border">
+              <p className="text-[11px] text-hq-muted uppercase tracking-wide mb-1">Log Group</p>
+              <a href={bot.log_group} target="_blank" rel="noreferrer" className="text-[13px] text-hq-accent hover:underline break-all inline-flex items-center gap-1">
+                {bot.log_group} <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+          )}
+        </HqCard>
 
-        <Card>
-          <CardHeader><CardTitle>Status</CardTitle></CardHeader>
-          <div className="space-y-2.5 text-sm">
-            <StatusRow label="Posting" ok={bot.running} />
-            <StatusRow label="Frozen" ok={!bot.frozen} okText="No" failText="Frozen" />
-            <StatusRow label="Suspended" ok={!bot.suspended} okText="No" failText="Suspended" />
+        <HqCard className="p-5">
+          <h3 className="text-[15px] font-semibold text-hq-text mb-4">Status</h3>
+          <div className="space-y-3">
+            {[
+              { label: "Posting", ok: bot.running, okText: "Running", failText: "Stopped" },
+              { label: "Frozen", ok: !bot.frozen, okText: "No", failText: "Frozen" },
+              { label: "Suspended", ok: !bot.suspended, okText: "No", failText: "Suspended" },
+            ].map((r) => (
+              <div key={r.label} className="flex items-center justify-between">
+                <span className="text-[13px] text-hq-sub">{r.label}</span>
+                <span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${r.ok ? "text-hq-success" : "text-hq-danger"}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${r.ok ? "bg-hq-success" : "bg-hq-danger"}`} />
+                  {r.ok ? r.okText : r.failText}
+                </span>
+              </div>
+            ))}
             {bot.plan && (
-              <>
-                <div className="border-t border-dark-800 pt-2 mt-2">
-                  <p className="text-xs text-dark-500 mb-2">Plan Details</p>
-                </div>
-                {([
-                  ["Plan Sessions", bot.plan.sessions],
-                  ["Plan Cycle", `${bot.plan.cycle}s`],
-                  ["Plan Gap", `${bot.plan.gap}s`],
-                ] as [string, any][]).map(([k, v]) => (
-                  <div key={k} className="flex justify-between py-1">
-                    <span className="text-dark-400">{k}</span>
-                    <span className="text-dark-200">{String(v)}</span>
+              <div className="pt-3 mt-1 border-t border-hq-border space-y-2.5">
+                {([["Plan Sessions", bot.plan.sessions], ["Plan Cycle", `${bot.plan.cycle}s`], ["Plan Gap", `${bot.plan.gap}s`]] as [string, any][]).map(([k, v]) => (
+                  <div key={k} className="flex items-center justify-between">
+                    <span className="text-[13px] text-hq-sub">{k}</span>
+                    <span className="text-[13px] text-hq-text font-medium tabular-nums">{String(v)}</span>
                   </div>
                 ))}
-              </>
+              </div>
             )}
           </div>
-        </Card>
+        </HqCard>
       </div>
 
-      {/* Web Access & Login Info */}
-      <Card>
-        <CardHeader><CardTitle><Key className="h-4 w-4 inline mr-2" />Web Access</CardTitle></CardHeader>
+      {/* Web Access */}
+      <HqCard className="p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <Key className="h-4 w-4 text-hq-sub" strokeWidth={1.75} />
+          <h3 className="text-[15px] font-semibold text-hq-text">Web Access</h3>
+        </div>
         <div className="space-y-4">
-          {/* Access Code */}
           <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-sm text-dark-400 w-24 shrink-0">Access Code</span>
+            <span className="text-[13px] text-hq-sub w-24 shrink-0">Access Code</span>
             <div className="flex items-center gap-2 flex-1 min-w-0">
-              <code className="rounded bg-dark-800 px-3 py-1.5 text-sm font-mono text-accent select-all">
+              <code className="rounded-[10px] bg-hq-elev border border-hq-border px-3 py-1.5 text-[13px] font-mono text-hq-accent select-all">
                 {showToken ? (bot.web_token || "not set") : "••••••••"}
               </code>
-              <button onClick={() => setShowToken(!showToken)} className="text-dark-500 hover:text-dark-300 p-1">
+              <button onClick={() => setShowToken(!showToken)} className="text-hq-muted hover:text-hq-sub p-1">
                 {showToken ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
               </button>
-              <button onClick={() => { navigator.clipboard.writeText(bot.web_token || ""); toast.success("Copied"); }}
-                className="text-dark-500 hover:text-dark-300 p-1">
+              <button onClick={() => { navigator.clipboard.writeText(bot.web_token || ""); toast.success("Copied"); }} className="text-hq-muted hover:text-hq-sub p-1">
                 <Copy className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>
 
-          {/* Token Actions */}
           <div className="flex flex-wrap gap-2 items-center">
             <Button variant="secondary" size="sm" onClick={() => resetToken()} loading={tokenLoading && !editToken}>
               <RefreshCw className="h-3 w-3" /> Regenerate
@@ -314,53 +487,42 @@ function OverviewTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
           {editToken && (
             <div className="flex items-center gap-2">
               <input
-                className="flex-1 rounded-lg border border-dark-600 bg-dark-950 px-3 py-2 text-sm text-dark-200 font-mono focus:outline-none focus:ring-2 focus:ring-accent/40"
+                className="flex-1 rounded-[14px] border border-hq-border bg-hq-bg px-3 py-2 text-[13px] text-hq-text font-mono focus:outline-none focus:border-hq-accent/60"
                 placeholder="Enter custom code (4-32 chars)"
                 value={customToken}
                 onChange={(e) => setCustomToken(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && customToken.trim() && resetToken(customToken.trim())}
               />
-              <Button size="sm" onClick={() => resetToken(customToken.trim())} loading={tokenLoading}
-                disabled={!customToken.trim()}>
+              <Button size="sm" onClick={() => resetToken(customToken.trim())} loading={tokenLoading} disabled={!customToken.trim()}>
                 <Save className="h-3 w-3" /> Set
               </Button>
             </div>
           )}
 
-          {/* Last Login */}
-          <div className="border-t border-dark-800 pt-3 space-y-2">
-            <p className="text-xs text-dark-500 font-medium uppercase tracking-wider">Last Web Login</p>
+          <div className="border-t border-hq-border pt-3 space-y-2">
+            <p className="text-[11px] text-hq-muted font-medium uppercase tracking-wider">Last Web Login</p>
             {lastLogin ? (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm">
-                <div className="flex items-center gap-2">
-                  <Clock className="h-3.5 w-3.5 text-dark-500" />
-                  <span className="text-dark-300">{formatTs(lastLogin.ts || lastLogin.time)}</span>
-                  <span className="text-[10px] text-dark-600">({timeSince(lastLogin.time)})</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Globe className="h-3.5 w-3.5 text-dark-500" />
-                  <span className="font-mono text-dark-300 text-xs">{lastLogin.ip}</span>
-                </div>
+              <div className="flex items-center gap-4 flex-wrap text-[13px]">
+                <span className="inline-flex items-center gap-2 text-hq-sub"><Clock className="h-3.5 w-3.5 text-hq-muted" />{formatTs(lastLogin.ts || lastLogin.time)} <span className="text-[10px] text-hq-muted">({timeSince(lastLogin.time)})</span></span>
+                <span className="inline-flex items-center gap-2 text-hq-sub"><Globe className="h-3.5 w-3.5 text-hq-muted" /><span className="font-mono text-xs">{lastLogin.ip}</span></span>
               </div>
             ) : (
-              <p className="text-sm text-dark-600">Never logged in</p>
+              <p className="text-[13px] text-hq-muted">Never logged in</p>
             )}
           </div>
 
-          {/* Login History */}
           {loginHistory.length > 0 && (
             <div>
-              <button onClick={() => setShowHistory(!showHistory)}
-                className="flex items-center gap-1.5 text-xs text-dark-500 hover:text-dark-300 transition-colors">
+              <button onClick={() => setShowHistory(!showHistory)} className="flex items-center gap-1.5 text-[12px] text-hq-muted hover:text-hq-sub transition-colors">
                 {showHistory ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
                 Login History ({loginHistory.length})
               </button>
               {showHistory && (
-                <div className="mt-2 rounded-lg bg-dark-950 border border-dark-800 p-3 max-h-48 overflow-y-auto space-y-1">
+                <div className="mt-2 rounded-[14px] bg-hq-bg border border-hq-border p-3 max-h-48 overflow-y-auto space-y-1">
                   {[...loginHistory].reverse().map((h: any, i: number) => (
-                    <div key={i} className="flex items-center gap-3 text-xs py-1 border-b border-dark-800/30 last:border-0">
-                      <span className="text-dark-500 w-36 shrink-0">{formatTs(h.ts || h.time)}</span>
-                      <span className="font-mono text-dark-400">{h.ip}</span>
+                    <div key={i} className="flex items-center gap-3 text-xs py-1 border-b border-hq-border/60 last:border-0">
+                      <span className="text-hq-muted w-36 shrink-0">{formatTs(h.ts || h.time)}</span>
+                      <span className="font-mono text-hq-sub">{h.ip}</span>
                     </div>
                   ))}
                 </div>
@@ -368,22 +530,22 @@ function OverviewTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
             </div>
           )}
         </div>
-      </Card>
+      </HqCard>
 
-      {/* History */}
+      {/* Activity */}
       {bot.history?.length > 0 && (
-        <Card>
-          <CardHeader><CardTitle>History ({bot.history.length} events)</CardTitle></CardHeader>
-          <div className="max-h-60 overflow-y-auto space-y-1">
+        <HqCard className="p-5">
+          <h3 className="text-[15px] font-semibold text-hq-text mb-4">Recent Activity</h3>
+          <div className="max-h-64 overflow-y-auto space-y-1">
             {bot.history.slice(-20).reverse().map((h: any, i: number) => (
-              <div key={i} className="flex items-center gap-3 text-xs py-1.5 border-b border-dark-800/50">
-                <span className="text-dark-500 w-28 shrink-0">{formatDateTime(h.ts)}</span>
+              <div key={i} className="flex items-center gap-3 text-[12px] py-2 border-b border-hq-border/60 last:border-0">
+                <span className="text-hq-muted w-28 shrink-0">{formatDateTime(h.ts)}</span>
                 <Badge status={h.action} />
-                <span className="text-dark-400 truncate">{h.detail || ""}</span>
+                <span className="text-hq-sub truncate">{h.detail || ""}</span>
               </div>
             ))}
           </div>
-        </Card>
+        </HqCard>
       )}
     </div>
   );

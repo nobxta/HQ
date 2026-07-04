@@ -45,6 +45,23 @@ const config: Config = {
         warning: { DEFAULT: "#fdcb6e", dark: "#e5a900" },
         danger: { DEFAULT: "#ff6b6b", dark: "#d63031" },
         info: { DEFAULT: "#74b9ff", dark: "#0984e3" },
+        // Premium "HQ" dashboard palette (Soft Minimalism / Linear-Vercel style).
+        hq: {
+          bg: "#0B0B0C",
+          bg2: "#111214",
+          card: "#16181C",
+          elev: "#1A1D22",
+          border: "rgba(255,255,255,0.06)",
+          hover: "rgba(255,255,255,0.04)",
+          accent: "#2C5EFF",
+          accent2: "#8B7CF6",
+          danger: "#FF5B6E",
+          success: "#42D392",
+          warning: "#F5C451",
+          text: "#FFFFFF",
+          sub: "#A2A8B3",
+          muted: "#6C7380",
+        },
       },
       animation: {
         "pulse-slow": "pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite",
