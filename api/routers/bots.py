@@ -39,11 +39,15 @@ async def create_context():
     data = await wrappers.load_adbot()
     existing_tokens = list(data.get("bots", {}).keys())
 
+    from code.shop import token_pool
+    pool_available = await asyncio.to_thread(token_pool.count_available)
+
     return {
         "free_sessions": free_count,
         "group_files": group_files,
         "existing_tokens": existing_tokens,
         "max_sessions": min(free_count, 50),
+        "pool_available": pool_available,
     }
 
 
@@ -102,10 +106,38 @@ async def get_bot(name: str):
 async def create_bot(body: BotCreateRequest):
     from code.admin_ptb import submit_create_job
     from code.config import ADMIN_USER_ID
+    from code.shop import token_pool
+
+    bot_token = (body.bot_token or "").strip()
+    pool_order_id = ""
+
+    if body.use_pool or not bot_token:
+        # Reserve an available token from the pool. The synthetic order id keeps
+        # the reservation attributable so it can be released on failure and
+        # reconciled on restart; it is namespaced so it never collides with a
+        # real shop order id.
+        pool_order_id = f"webadmin:{body.name}"
+        reserved = await asyncio.to_thread(token_pool.reserve_token, pool_order_id)
+        if not reserved:
+            raise HTTPException(409, "No bot tokens available in the pool. Add tokens or enter a custom one.")
+        bot_token = (reserved.get("token") or "").strip()
+        username = (reserved.get("username") or "").strip()
+        if not username:
+            from code.utils import validate_bot_token
+            ok, result = await validate_bot_token(bot_token)
+            if not ok:
+                await asyncio.to_thread(token_pool.release_order, pool_order_id)
+                raise HTTPException(400, f"Pooled token is invalid: {result}")
+
+    data = await wrappers.load_adbot()
+    if bot_token in data.get("bots", {}):
+        if pool_order_id:
+            await asyncio.to_thread(token_pool.release_order, pool_order_id)
+        raise HTTPException(409, "This bot token is already registered")
 
     form = {
         "name": body.name,
-        "bot_token": body.bot_token,
+        "bot_token": bot_token,
         "sessions_count": body.sessions_count,
         "cycle": body.cycle,
         "gap": body.gap,
@@ -117,9 +149,16 @@ async def create_bot(body: BotCreateRequest):
         "skip_health_check": body.skip_health_check,
         "skip_chatlist_join": body.skip_chatlist_join,
     }
+    # Track the pool reservation so the result consumer can mark it assigned on
+    # success or release it on failure. Kept out of "order_id" so admin-web
+    # notifications aren't misrouted to the Shop Bot.
+    if pool_order_id:
+        form["_pool_order_id"] = pool_order_id
     try:
         submit_create_job(chat_id=ADMIN_USER_ID, msg_id=0, form=form, web=True)
     except Exception as e:
+        if pool_order_id:
+            await asyncio.to_thread(token_pool.release_order, pool_order_id)
         raise HTTPException(500, f"Failed to enqueue creation: {e}")
 
     await wrappers.log_admin_action("web_admin", "create_bot", target=body.name)

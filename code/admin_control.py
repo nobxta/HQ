@@ -46,10 +46,14 @@ def order_cancel(order_id: str) -> tuple[bool, str]:
     s = (o.get("status") or "").strip()
     if s not in ("payment_waiting", "confirming", "paid", "pending_creation"):
         return False, f"Cannot cancel order with status {s}"
-    if s == "paid" or s == "pending_creation":
-        update_order_status(order_id, "cancelled")
-        return True, "Order cancelled"
     update_order_status(order_id, "cancelled")
+    # Free any bot token this order was holding — a cancelled order must not
+    # keep a token stuck as "reserved"/"assigned".
+    try:
+        from .shop.token_pool import release_order
+        release_order(order_id)
+    except Exception:
+        pass
     return True, "Order cancelled"
 
 

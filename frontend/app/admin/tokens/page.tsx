@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
-import { KeyRound, Plus, Trash2, RefreshCw, Loader2, Check, X } from "lucide-react";
+import { KeyRound, Plus, Trash2, RefreshCw, RotateCw, Loader2, Check, X } from "lucide-react";
 
 interface TokenEntry {
   id: string;
@@ -27,6 +27,7 @@ export default function BotTokensPage() {
   const [counts, setCounts] = useState<Counts>({ available: 0, reserved: 0, assigned: 0, total: 0 });
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
+  const [reconciling, setReconciling] = useState(false);
   const [raw, setRaw] = useState("");
   const [confirmId, setConfirmId] = useState<string | null>(null);
 
@@ -63,6 +64,24 @@ export default function BotTokensPage() {
     setAdding(false);
   }, [raw, load]);
 
+  const reconcile = useCallback(async () => {
+    setReconciling(true);
+    try {
+      const r = await api.post("/api/portal/admin/bot-tokens/reconcile");
+      const released = r.data?.released ?? 0;
+      const promoted = r.data?.promoted ?? 0;
+      if (released || promoted) {
+        toast.success(`Synced pool — freed ${released}, fixed ${promoted}`);
+      } else {
+        toast.success("Pool already in sync");
+      }
+      await load();
+    } catch {
+      toast.error("Could not sync the pool");
+    }
+    setReconciling(false);
+  }, [load]);
+
   const remove = useCallback(async (id: string) => {
     try {
       await api.delete("/api/portal/admin/bot-tokens", { params: { id } });
@@ -94,9 +113,14 @@ export default function BotTokensPage() {
             <p className="text-[12px] text-dark-500">Pre-created @BotFather tokens. One is assigned per purchase, released on failure or deletion.</p>
           </div>
         </div>
-        <button onClick={load} className="flex items-center gap-1.5 text-[12px] text-dark-400 hover:text-dark-100 border border-white/[0.06] rounded-lg px-3 py-2 transition-colors">
-          <RefreshCw className="w-3.5 h-3.5" /> Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={reconcile} disabled={reconciling} className="flex items-center gap-1.5 text-[12px] text-dark-400 hover:text-dark-100 border border-white/[0.06] rounded-lg px-3 py-2 transition-colors disabled:opacity-50" title="Release tokens whose bot was deleted or order was cleared, and fix stale statuses">
+            {reconciling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCw className="w-3.5 h-3.5" />} Sync pool
+          </button>
+          <button onClick={load} className="flex items-center gap-1.5 text-[12px] text-dark-400 hover:text-dark-100 border border-white/[0.06] rounded-lg px-3 py-2 transition-colors">
+            <RefreshCw className="w-3.5 h-3.5" /> Refresh
+          </button>
+        </div>
       </div>
 
       {/* counts */}

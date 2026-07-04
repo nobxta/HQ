@@ -285,6 +285,32 @@ async def main() -> None:
     discover_local_sessions(data)
     data = load_adbot()
 
+    # Reconcile the bot-token pool with reality: free any token whose backing bot
+    # was deleted (still "assigned") or whose order was cleared (still "reserved"),
+    # and promote reservations whose bot actually exists. Keeps the pool's
+    # available count honest across restarts.
+    try:
+        from code.shop.token_pool import reconcile as _reconcile_token_pool
+        _live_tokens = set((data.get("bots") or {}).keys())
+        _active_order_ids = None
+        try:
+            from code.shop.storage import load_orders
+            _terminal = {"completed", "failed", "cancelled", "expired"}
+            _active_order_ids = {
+                o.get("order_id") for o in load_orders()
+                if o.get("status") not in _terminal
+            }
+        except Exception:
+            _active_order_ids = None
+        _rep = _reconcile_token_pool(_live_tokens, _active_order_ids)
+        if _rep.get("released") or _rep.get("promoted"):
+            logger.info(
+                "[TOKEN_POOL] Startup reconcile: released=%d promoted=%d",
+                len(_rep["released"]), len(_rep["promoted"]),
+            )
+    except Exception as e:
+        logger.warning("[TOKEN_POOL] Startup reconcile failed: %s", e)
+
     # Control-plane: start all notification/create-job consumers from main (no Telethon admin dependency)
     # No startup validation here — validation runs only when creating AdBot, replacing a session, or when user starts their AdBot
     # Keep strong reference to admin task so it is not GC'd while pending

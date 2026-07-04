@@ -39,7 +39,9 @@ class BotSummary(BaseModel):
 
 class BotCreateRequest(BaseModel):
     name: str
-    bot_token: str
+    # Empty/omitted when use_pool is true — the backend reserves a token from the pool.
+    bot_token: str = ""
+    use_pool: bool = False
     sessions_count: int = Field(ge=1, le=50)
     cycle: int = Field(ge=60)
     gap: int = Field(ge=1, le=60)

@@ -588,6 +588,19 @@ async def _result_consumer_ptb() -> None:
         is_shop = form.get("source") == "shop" or order_id
         edit_bot_token = shop_token if is_shop and shop_token else None
         bot_name = form.get("name", "")
+        # Pool reservation from admin-web "use from pool" creation: settle it here.
+        # On success the token is now a live bot (mark assigned); on failure it
+        # returns to the pool so the stock count stays accurate.
+        pool_order_id = form.get("_pool_order_id")
+        if pool_order_id:
+            try:
+                from .shop.token_pool import mark_assigned as _pool_mark, release_order as _pool_release
+                if username:
+                    _pool_mark(pool_order_id)
+                else:
+                    _pool_release(pool_order_id)
+            except Exception:
+                pass
         if bot_name:
             try:
                 from api.services.events import emit_create_progress

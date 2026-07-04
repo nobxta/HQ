@@ -150,6 +150,7 @@ export interface BotStats {
 export interface BotCreatePayload {
   name: string;
   bot_token: string;
+  use_pool?: boolean;
   sessions_count: number;
   cycle: number;
   gap: number;

@@ -175,10 +175,12 @@ interface CreateContext {
   free_sessions: number;
   group_files: { filename: string; lines: number }[];
   max_sessions: number;
+  pool_available: number;
 }
 
 interface WizardData {
   name: string;
+  token_mode: "pool" | "custom";
   bot_token: string;
   bot_username: string;
   sessions_count: number;
@@ -220,7 +222,7 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
   const [step, setStep] = useState<WizardStep>("loading");
   const [ctx, setCtx] = useState<CreateContext | null>(null);
   const [data, setData] = useState<WizardData>({
-    name: "", bot_token: "", bot_username: "", sessions_count: 1,
+    name: "", token_mode: "pool", bot_token: "", bot_username: "", sessions_count: 1,
     cycle: 300, gap: 5, mode: "starter", group_file: "",
     valid_till: "", renewal_price: 0,
     skip_health_check: false, skip_chatlist_join: false,
@@ -273,7 +275,7 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
       cleanup();
       setStep("loading");
       setCtx(null);
-      setData({ name: "", bot_token: "", bot_username: "", sessions_count: 1, cycle: 300, gap: 5, mode: "starter", group_file: "", valid_till: "", renewal_price: 0, skip_health_check: false, skip_chatlist_join: false });
+      setData({ name: "", token_mode: "pool", bot_token: "", bot_username: "", sessions_count: 1, cycle: 300, gap: 5, mode: "starter", group_file: "", valid_till: "", renewal_price: 0, skip_health_check: false, skip_chatlist_join: false });
       setError("");
       setProgressLines([]);
       setResultMsg("");
@@ -330,7 +332,8 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
       setProgressLines([{ message: "Creation job queued...", ts: Date.now() }]);
       await api.post("/api/bots", {
         name: data.name,
-        bot_token: data.bot_token,
+        bot_token: data.token_mode === "custom" ? data.bot_token : "",
+        use_pool: data.token_mode === "pool",
         sessions_count: data.sessions_count,
         cycle: data.cycle,
         gap: data.gap,
@@ -468,27 +471,83 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
     }
 
     if (step === "bot_token") {
+      const poolCount = ctx?.pool_available ?? 0;
+      const isPool = data.token_mode === "pool";
       return (
         <>
-          <StepHeader title="Bot Token" subtitle="Paste the token from @BotFather" />
-          <Input
-            label="Bot Token" id="cw-token" placeholder="123456:ABCdef..."
-            value={data.bot_token} onChange={(e) => { update({ bot_token: e.target.value }); setError(""); }}
-            error={error}
-            autoFocus
-          />
-          {data.bot_username && (
-            <div className="mt-2 rounded-lg bg-green-500/10 border border-green-500/20 px-3 py-2 text-xs text-green-300">
-              Verified: @{data.bot_username}
-            </div>
+          <StepHeader title="Bot Token" subtitle="Use a pre-added token from the pool, or enter your own" />
+
+          {/* Mode toggle */}
+          <div className="grid grid-cols-2 gap-2 mb-4">
+            <button
+              type="button"
+              onClick={() => { update({ token_mode: "pool" }); setError(""); }}
+              className={`rounded-lg border p-3 text-left transition-all ${
+                isPool ? "border-accent bg-accent/10 ring-1 ring-accent/30" : "border-dark-700 bg-dark-800 hover:border-dark-600"
+              }`}
+            >
+              <span className={`block text-sm font-semibold ${isPool ? "text-accent" : "text-dark-200"}`}>Use from pool</span>
+              <span className="block text-[11px] text-dark-500 mt-0.5">Auto-assign a pre-added token</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { update({ token_mode: "custom" }); setError(""); }}
+              className={`rounded-lg border p-3 text-left transition-all ${
+                !isPool ? "border-accent bg-accent/10 ring-1 ring-accent/30" : "border-dark-700 bg-dark-800 hover:border-dark-600"
+              }`}
+            >
+              <span className={`block text-sm font-semibold ${!isPool ? "text-accent" : "text-dark-200"}`}>Custom token</span>
+              <span className="block text-[11px] text-dark-500 mt-0.5">Paste a token from @BotFather</span>
+            </button>
+          </div>
+
+          {isPool ? (
+            <>
+              <div className="rounded-lg bg-dark-800 border border-dark-700/50 px-3 py-2.5 flex items-center justify-between">
+                <span className="text-xs text-dark-400">Available tokens in pool</span>
+                <span className={`text-sm font-mono font-bold ${poolCount > 0 ? "text-emerald-400" : "text-danger"}`}>{poolCount}</span>
+              </div>
+              {poolCount === 0 ? (
+                <p className="text-xs text-danger mt-2">
+                  No tokens available in the pool. Add tokens on the Bot Tokens page, or switch to a custom token.
+                </p>
+              ) : (
+                <p className="text-[11px] text-dark-500 mt-2">
+                  One token will be reserved from the pool when the bot is created.
+                </p>
+              )}
+              {error && <p className="text-xs text-danger mt-2">{error}</p>}
+              <NavButtons
+                onBack={() => { setError(""); setStep("name"); }}
+                onNext={() => {
+                  if (poolCount === 0) { setError("No tokens available in the pool"); return; }
+                  setError(""); update({ bot_token: "", bot_username: "" }); setStep("sessions");
+                }}
+                nextDisabled={poolCount === 0}
+              />
+            </>
+          ) : (
+            <>
+              <Input
+                label="Bot Token" id="cw-token" placeholder="123456:ABCdef..."
+                value={data.bot_token} onChange={(e) => { update({ bot_token: e.target.value }); setError(""); }}
+                error={error}
+                autoFocus
+              />
+              {data.bot_username && (
+                <div className="mt-2 rounded-lg bg-green-500/10 border border-green-500/20 px-3 py-2 text-xs text-green-300">
+                  Verified: @{data.bot_username}
+                </div>
+              )}
+              <NavButtons
+                onBack={() => { setError(""); setStep("name"); }}
+                onNext={validateToken}
+                nextLabel="Validate & Continue"
+                nextDisabled={!data.bot_token.trim()}
+                nextLoading={validating}
+              />
+            </>
           )}
-          <NavButtons
-            onBack={() => { setError(""); setStep("name"); }}
-            onNext={validateToken}
-            nextLabel="Validate & Continue"
-            nextDisabled={!data.bot_token.trim()}
-            nextLoading={validating}
-          />
         </>
       );
     }
@@ -688,7 +747,7 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
     if (step === "summary") {
       const rows: [string, string][] = [
         ["Name", data.name],
-        ["Bot", `@${data.bot_username}`],
+        ["Bot", data.token_mode === "pool" ? "From pool (auto-assigned)" : `@${data.bot_username}`],
         ["Sessions", String(data.sessions_count)],
         ["Cycle / Gap", `${data.cycle}s / ${data.gap}s`],
         ["Mode", data.mode.charAt(0).toUpperCase() + data.mode.slice(1)],

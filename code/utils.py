@@ -410,6 +410,17 @@ async def delete_bot_from_storage(bot_token: str, move_to: str) -> bool:
         except OSError:
             pass
 
+    # --- 7. Release the pooled bot token (if this bot came from the pool) ---
+    # The pooled token *is* the bot token, so free it directly — the delete path
+    # doesn't always know the originating order id, and a stale "assigned" entry
+    # would otherwise strand the token forever.
+    try:
+        from .shop.token_pool import release_by_token
+        if release_by_token(bot_token):
+            logger.info("[Delete] Released pooled bot token back to available")
+    except Exception as e:
+        logger.warning("[Delete] Could not release pooled token: %s", e)
+
     logger.info("[Delete] Bot '%s' fully deleted (sessions → %s pool)", user_name, move_to)
     return True
 

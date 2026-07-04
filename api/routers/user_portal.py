@@ -2498,3 +2498,33 @@ async def admin_remove_bot_token(id: str = Query(None), token: str = Query(None)
     if not ok:
         raise HTTPException(404, "Token not found in pool")
     return {"ok": True, "counts": token_pool.counts()}
+
+
+@router.post("/admin/bot-tokens/reconcile")
+async def admin_reconcile_bot_tokens():
+    """Re-sync the pool with reality: release tokens whose bot was deleted (stuck
+    "assigned") or whose order was cleared (stuck "reserved"), and promote
+    reservations whose bot now exists. Same logic that runs on every restart."""
+    from code.shop import token_pool
+    from code.utils import load_adbot
+    data = await asyncio.to_thread(load_adbot)
+    live_tokens = set((data.get("bots") or {}).keys())
+    active_order_ids = None
+    try:
+        from code.shop.storage import load_orders
+        terminal = {"completed", "failed", "cancelled", "expired"}
+        orders = await asyncio.to_thread(load_orders)
+        active_order_ids = {o.get("order_id") for o in orders if o.get("status") not in terminal}
+    except Exception:
+        active_order_ids = None
+    # Keep a short grace so a reservation from a creation started moments ago
+    # isn't yanked mid-build. Genuinely stale entries were reserved long ago, so
+    # the grace never delays cleaning those up.
+    report = await asyncio.to_thread(
+        token_pool.reconcile, live_tokens, active_order_ids, 120
+    )
+    return {
+        "released": len(report.get("released", [])),
+        "promoted": len(report.get("promoted", [])),
+        "counts": token_pool.counts(),
+    }
