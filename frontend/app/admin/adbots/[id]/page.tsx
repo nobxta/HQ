@@ -2101,62 +2101,97 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
 }
 
 /* ─── LOGS ─── */
+const LOG_LEVELS = [
+  { id: "all", label: "All", match: () => true },
+  { id: "error", label: "Errors", match: (l: string) => /\[ERROR\]/i.test(l) },
+  { id: "warn", label: "Warnings", match: (l: string) => /\[WARNING\]|FloodWait/i.test(l) },
+  { id: "info", label: "Info", match: (l: string) => /\[INFO\]/i.test(l) },
+  { id: "success", label: "Posts", match: (l: string) => /sent to|Posted/i.test(l) },
+];
+
 function LogsTab({ name }: { name: string }) {
   const [lineCount, setLineCount] = useState(200);
   const { data, mutate } = useAdbotLogs(name, lineCount);
   const logRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [paused, setPaused] = useState(false);
+  const [query, setQuery] = useState("");
+  const [level, setLevel] = useState("all");
+  const frozen = useRef<string[]>([]);
+
+  const rawLines: string[] = data?.lines || [];
+  // When paused, keep showing the snapshot captured at pause time.
+  if (!paused) frozen.current = rawLines;
+  const source = paused ? frozen.current : rawLines;
+
+  const levelFn = LOG_LEVELS.find((l) => l.id === level)?.match || (() => true);
+  const q = query.trim().toLowerCase();
+  const lines = source.filter((l) => levelFn(l) && (!q || l.toLowerCase().includes(q)));
 
   useEffect(() => {
-    if (autoScroll && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [data, autoScroll]);
+    if (autoScroll && !paused && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [lines.length, autoScroll, paused]);
 
-  const lines = data?.lines || [];
+  const download = () => {
+    const blob = new Blob([source.join("\n")], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `${name}-logs.txt`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const lineClass = (line: string) =>
+    /\[ERROR\]/i.test(line) ? "text-hq-danger" :
+    /\[WARNING\]/i.test(line) ? "text-hq-warning" :
+    /FloodWait/i.test(line) ? "text-hq-warning font-medium" :
+    /sent to|Posted/i.test(line) ? "text-hq-success/80" :
+    /\[INFO\]/i.test(line) ? "text-hq-sub" : "text-hq-muted";
 
   return (
     <HqCard className="p-5">
       <HqTitle
-        sub={`${data?.total_lines || 0} total lines`}
+        sub={`${data?.total_lines || 0} total · showing ${lines.length}`}
         right={
           <div className="flex items-center gap-2">
-            <select
-              value={lineCount}
-              onChange={(e) => setLineCount(Number(e.target.value))}
-              className="rounded-[10px] border border-hq-border bg-hq-bg px-2.5 py-1.5 text-[12px] text-hq-sub outline-none focus:border-hq-accent/60"
-            >
-              <option value={100}>100 lines</option>
-              <option value={200}>200 lines</option>
-              <option value={500}>500 lines</option>
-              <option value={1000}>1000 lines</option>
+            <select value={lineCount} onChange={(e) => setLineCount(Number(e.target.value))}
+              className="rounded-[10px] border border-hq-border bg-hq-bg px-2.5 py-1.5 text-[12px] text-hq-sub outline-none focus:border-hq-accent/60">
+              {[100, 200, 500, 1000].map((n) => <option key={n} value={n}>{n} lines</option>)}
             </select>
+            <HqBtn tone={paused ? "primary" : "ghost"} onClick={() => setPaused((p) => !p)} icon={paused ? Play : Pause} className="!px-2.5 !text-[12px]">
+              {paused ? "Resume" : "Pause"}
+            </HqBtn>
             <HqBtn tone="ghost" onClick={() => setAutoScroll(!autoScroll)} className="!px-2.5 !text-[12px]">
               {autoScroll ? "Auto-scroll ON" : "Auto-scroll OFF"}
             </HqBtn>
+            <HqBtn tone="ghost" onClick={download} icon={Download} iconOnly />
             <HqBtn tone="ghost" onClick={() => mutate()} icon={RotateCw} iconOnly />
           </div>
         }
       >Live Logs</HqTitle>
-      <div
-        ref={logRef}
-        className="h-[600px] overflow-y-auto rounded-[14px] bg-hq-bg border border-hq-border p-4 font-mono text-[12px] leading-relaxed"
-      >
+
+      {/* Search + level filters */}
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <div className="relative flex-1 min-w-[180px] max-w-xs">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-hq-muted" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search logs…"
+            className="w-full rounded-[10px] border border-hq-border bg-hq-bg pl-8 pr-3 py-1.5 text-[12px] text-hq-text placeholder:text-hq-muted outline-none focus:border-hq-accent/60" />
+        </div>
+        <div className="flex gap-1 p-1 rounded-[10px] border border-hq-border bg-hq-bg">
+          {LOG_LEVELS.map((l) => (
+            <button key={l.id} onClick={() => setLevel(l.id)}
+              className={`px-2.5 py-1 text-[11px] font-medium rounded-[7px] transition-colors ${level === l.id ? "bg-hq-accent text-white" : "text-hq-sub hover:text-hq-text"}`}>
+              {l.label}
+            </button>
+          ))}
+        </div>
+        {paused && <span className="text-[11px] text-hq-warning inline-flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-hq-warning" /> Paused</span>}
+      </div>
+
+      <div ref={logRef} className="h-[560px] overflow-y-auto rounded-[14px] bg-hq-bg border border-hq-border p-4 font-mono text-[12px] leading-relaxed">
         {lines.length === 0 ? (
-          <p className="text-hq-muted">No logs yet — start the bot to see output</p>
+          <p className="text-hq-muted">{source.length === 0 ? "No logs yet — start the bot to see output" : "No lines match this filter"}</p>
         ) : (
-          lines.map((line: string, i: number) => (
-            <div
-              key={i}
-              className={`${
-                line.includes("[ERROR]") ? "text-hq-danger" :
-                line.includes("[WARNING]") ? "text-hq-warning" :
-                line.includes("FloodWait") ? "text-hq-warning font-medium" :
-                line.includes("sent to") || line.includes("Posted") ? "text-hq-success/80" :
-                line.includes("[INFO]") ? "text-hq-sub" : "text-hq-muted"
-              }`}
-            >
-              {line}
-            </div>
-          ))
+          lines.map((line, i) => <div key={i} className={lineClass(line)}>{line}</div>)
         )}
       </div>
     </HqCard>
