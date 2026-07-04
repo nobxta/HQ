@@ -2463,9 +2463,24 @@ async def nowpayments_ipn(request: Request):
 
 @router.get("/admin/bot-tokens")
 async def admin_list_bot_tokens():
-    """List the bot-token pool (tokens masked) with counts."""
+    """List the bot-token pool (tokens masked) with counts. Assigned entries are
+    annotated with the live bot's name (looked up by token) so the UI can show
+    what each token is actually powering."""
     from code.shop import token_pool
-    return {"tokens": token_pool.list_tokens(mask=True), "counts": token_pool.counts()}
+    from code.utils import load_adbot
+    tokens = await asyncio.to_thread(token_pool.list_tokens, True)
+    raw = await asyncio.to_thread(token_pool.list_tokens, False)
+    raw_by_id = {r.get("id"): r for r in raw}
+    data = await asyncio.to_thread(load_adbot)
+    bots = data.get("bots", {}) or {}
+    for entry in tokens:
+        entry["bot_name"] = ""
+        r = raw_by_id.get(entry.get("id"))
+        if r and r.get("status") == "assigned":
+            cfg = bots.get(r.get("token", ""))
+            if cfg:
+                entry["bot_name"] = cfg.get("name", "")
+    return {"tokens": tokens, "counts": token_pool.counts()}
 
 
 @router.post("/admin/bot-tokens")
