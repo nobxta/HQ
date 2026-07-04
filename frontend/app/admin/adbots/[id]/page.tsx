@@ -27,14 +27,10 @@ import type { BotUpdatePayload } from "@/lib/types";
 
 const tabs = [
   { id: "overview", label: "Overview", icon: BarChart3 },
-  { id: "posting", label: "Post / Message", icon: MessageSquare },
-  { id: "stats", label: "Stats", icon: TrendingUp },
+  { id: "content", label: "Content", icon: MessageSquare },
   { id: "sessions", label: "Sessions", icon: HardDrive },
   { id: "groups", label: "Groups", icon: FolderOpen },
-  { id: "logs", label: "Live Logs", icon: Terminal },
-  { id: "plan", label: "Plan / Billing", icon: DollarSign },
-  { id: "config", label: "Config", icon: Settings },
-  { id: "repair", label: "Fix / Repair", icon: Wrench },
+  { id: "settings", label: "Settings", icon: Settings },
 ];
 
 export default function BotDetailPage() {
@@ -72,13 +68,7 @@ export default function BotDetailPage() {
     setActionLoading("");
   };
 
-  const statusPill = bot.suspended
-    ? { label: "Suspended", cls: "text-hq-warning bg-hq-warning/10 border-hq-warning/20" }
-    : bot.frozen
-    ? { label: "Frozen", cls: "text-hq-danger bg-hq-danger/10 border-hq-danger/20" }
-    : bot.running
-    ? { label: "Running", cls: "text-hq-success bg-hq-success/10 border-hq-success/20" }
-    : { label: "Stopped", cls: "text-hq-muted bg-white/[0.04] border-hq-border" };
+  const sp = botStatus(bot);
 
   return (
     <div className="space-y-5 animate-fade-in text-hq-text">
@@ -91,7 +81,7 @@ export default function BotDetailPage() {
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-[20px] sm:text-[22px] font-semibold text-hq-text truncate">{bot.name}</h2>
-              <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${statusPill.cls}`}>{statusPill.label}</span>
+              <HqStatusPill label={sp.label} color={sp.color} />
             </div>
             <p className="text-[12px] sm:text-[13px] text-hq-sub truncate mt-0.5">
               {bot.bot_username ? `@${bot.bot_username}` : ""} · <span className="capitalize">{bot.mode}</span> · Owner: {String(bot.owner_id || "admin")}
@@ -122,7 +112,7 @@ export default function BotDetailPage() {
             onClick={() => setActiveTab(t.id)}
             className={`flex items-center gap-2 px-3.5 py-2 text-[13px] font-medium rounded-[10px] transition-all whitespace-nowrap ${
               activeTab === t.id
-                ? "bg-hq-accent text-white shadow-[0_2px_10px_rgba(44,94,255,0.25)]"
+                ? "bg-hq-accent text-white shadow-[0_2px_10px_rgba(124,92,255,0.35)]"
                 : "text-hq-sub hover:text-hq-text hover:bg-hq-hover"
             }`}
           >
@@ -134,14 +124,10 @@ export default function BotDetailPage() {
 
       {/* Tab content */}
       {activeTab === "overview" && <OverviewTab name={name} bot={bot} onUpdate={() => mutate()} />}
-      {activeTab === "posting" && <PostingTab name={name} bot={bot} onUpdate={() => mutate()} />}
-      {activeTab === "stats" && <StatsTab name={name} />}
+      {activeTab === "content" && <PostingTab name={name} bot={bot} onUpdate={() => mutate()} />}
       {activeTab === "sessions" && <SessionsTab bot={bot} name={name} onUpdate={() => mutate()} />}
       {activeTab === "groups" && <GroupsTab bot={bot} name={name} onUpdate={() => mutate()} />}
-      {activeTab === "logs" && <LogsTab name={name} />}
-      {activeTab === "plan" && <PlanTab name={name} bot={bot} onUpdate={() => mutate()} />}
-      {activeTab === "config" && <ConfigTab name={name} bot={bot} onUpdate={() => mutate()} />}
-      {activeTab === "repair" && <RepairTab name={name} bot={bot} onUpdate={() => mutate()} />}
+      {activeTab === "settings" && <SettingsTab name={name} bot={bot} onUpdate={() => mutate()} />}
 
       <ConfirmModal
         open={deleteConfirm}
@@ -165,17 +151,43 @@ export default function BotDetailPage() {
 }
 
 /* ─── OVERVIEW ─── */
-/* ── Premium dashboard primitives (HQ design system) ── */
-function HqCard({ children, className = "" }: { children: ReactNode; className?: string }) {
+/* ── Premium dashboard primitives (HQ design system, matched to Figma) ── */
+function HqCard({ children, className = "", hover = false }: { children: ReactNode; className?: string; hover?: boolean }) {
   return (
-    <div className={`rounded-[18px] border border-hq-border bg-hq-card shadow-[0_6px_24px_rgba(0,0,0,0.18)] ${className}`}>
+    <div
+      className={`relative rounded-[18px] overflow-hidden transition-all duration-150 ${hover ? "hover:-translate-y-1 hover:shadow-[0_8px_32px_rgba(124,92,255,0.12)]" : ""} ${className}`}
+      style={{
+        background: "linear-gradient(135deg,#171722 0%,#141420 100%)",
+        border: "1px solid rgba(255,255,255,0.06)",
+        boxShadow: "0 4px 24px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,255,255,0.05)",
+      }}
+    >
       {children}
     </div>
   );
 }
 
+/* Single source of truth for a bot's headline status → label + colour */
+function botStatus(bot: any): { label: string; color: string } {
+  if (bot?.suspended) return { label: "Suspended", color: "#F59E0B" };
+  if (bot?.frozen) return { label: "Frozen", color: "#EF4444" };
+  if (bot?.running) return { label: "Running", color: "#22C55E" };
+  return { label: "Stopped", color: "#64748B" };
+}
+
+/* Pulsing-dot status pill (Figma StatusBadge) */
+function HqStatusPill({ label, color }: { label: string; color: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold"
+      style={{ color, backgroundColor: `${color}1f` }}>
+      <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: color }} />
+      {label}
+    </span>
+  );
+}
+
 const HQ_BTN_TONES: Record<string, string> = {
-  primary: "bg-hq-accent hover:brightness-110 text-white shadow-[0_2px_10px_rgba(44,94,255,0.25)]",
+  primary: "bg-hq-accent hover:brightness-110 text-white shadow-[0_2px_10px_rgba(124,92,255,0.35)]",
   success: "bg-hq-success/10 hover:bg-hq-success/20 text-hq-success border border-hq-success/20",
   danger: "bg-hq-danger/10 hover:bg-hq-danger/20 text-hq-danger border border-hq-danger/20",
   secondary: "bg-hq-elev hover:bg-white/[0.06] text-hq-text border border-hq-border",
@@ -298,7 +310,7 @@ function StatTile({ label, value, sub, icon: Icon, tone = "accent" }: {
     warning: "text-hq-warning bg-hq-warning/10",
   };
   return (
-    <HqCard className="p-5 transition-transform duration-150 hover:-translate-y-0.5">
+    <HqCard hover className="p-5">
       <div className="flex items-center justify-between">
         <span className="text-[12px] text-hq-sub">{label}</span>
         <span className={`w-8 h-8 rounded-[10px] flex items-center justify-center ${toneMap[tone]}`}>
@@ -393,15 +405,7 @@ function OverviewTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
   const donutData = totalPosts > 0
     ? [{ name: "Sent", value: sent }, { name: "Failed", value: failed }]
     : [{ name: "None", value: 1 }];
-  const donutColors = totalPosts > 0 ? ["#2C5EFF", "#FF5B6E"] : ["#242830"];
-
-  const statusPill = bot.suspended
-    ? { label: "Suspended", cls: "text-hq-warning bg-hq-warning/10 border-hq-warning/20" }
-    : bot.frozen
-    ? { label: "Frozen", cls: "text-hq-danger bg-hq-danger/10 border-hq-danger/20" }
-    : bot.running
-    ? { label: "Running", cls: "text-hq-success bg-hq-success/10 border-hq-success/20" }
-    : { label: "Stopped", cls: "text-hq-muted bg-white/[0.04] border-hq-border" };
+  const donutColors = totalPosts > 0 ? ["#7C5CFF", "#EF4444"] : ["#242433"];
 
   const details: [string, any][] = [
     ["Mode", bot.mode],
@@ -416,30 +420,6 @@ function OverviewTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
 
   return (
     <div className="space-y-5">
-      {/* Hero */}
-      <HqCard className="p-5">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div className="flex items-center gap-3.5 min-w-0">
-            <div className="w-12 h-12 rounded-[14px] bg-hq-accent/10 border border-hq-accent/20 flex items-center justify-center shrink-0">
-              <Zap className="w-5 h-5 text-hq-accent" strokeWidth={1.75} />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2.5 flex-wrap">
-                <h2 className="text-[19px] font-semibold text-hq-text truncate">{bot.name}</h2>
-                <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${statusPill.cls}`}>{statusPill.label}</span>
-                <span className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-hq-border text-hq-sub capitalize">{bot.mode}</span>
-              </div>
-              <p className="text-[13px] text-hq-sub mt-1">
-                {bot.bot_username ? `@${bot.bot_username}` : "no username"}
-                {daysLeft !== null && (
-                  <span className={daysLeft <= 3 ? "text-hq-danger" : "text-hq-muted"}> · {daysLeft >= 0 ? `${daysLeft}d left` : `expired ${-daysLeft}d ago`}</span>
-                )}
-              </p>
-            </div>
-          </div>
-        </div>
-      </HqCard>
-
       {/* Stat tiles */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatTile label="Total Sent" value={sent.toLocaleString()} icon={CheckCircle2} tone="success" sub={`${cycles.toLocaleString()} cycles`} />
@@ -464,14 +444,14 @@ function OverviewTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
           ) : (
             <ResponsiveContainer width="100%" height={220}>
               <BarChart data={perfData} barCategoryGap="28%">
-                <XAxis dataKey="name" tick={{ fill: "#6C7380", fontSize: 11 }} axisLine={false} tickLine={false} />
+                <XAxis dataKey="name" tick={{ fill: "#64748B", fontSize: 11 }} axisLine={false} tickLine={false} />
                 <Tooltip
                   cursor={{ fill: "rgba(255,255,255,0.03)" }}
-                  contentStyle={{ background: "#1A1D22", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, color: "#fff", fontSize: 12 }}
-                  labelStyle={{ color: "#A2A8B3" }}
+                  contentStyle={{ background: "#1E1E2E", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, color: "#fff", fontSize: 12 }}
+                  labelStyle={{ color: "#94A3B8" }}
                 />
-                <Bar dataKey="sent" name="Sent" radius={[6, 6, 0, 0]} fill="#2C5EFF" maxBarSize={40} />
-                <Bar dataKey="failed" name="Failed" radius={[6, 6, 0, 0]} fill="#FF5B6E" maxBarSize={40} />
+                <Bar dataKey="sent" name="Sent" radius={[6, 6, 0, 0]} fill="#7C5CFF" maxBarSize={40} />
+                <Bar dataKey="failed" name="Failed" radius={[6, 6, 0, 0]} fill="#EF4444" maxBarSize={40} />
               </BarChart>
             </ResponsiveContainer>
           )}
@@ -495,10 +475,10 @@ function OverviewTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3 mt-3">
-            <LegendRow color="#2C5EFF" label="Sent" value={sent.toLocaleString()} />
-            <LegendRow color="#FF5B6E" label="Failed" value={failed.toLocaleString()} />
-            <LegendRow color="#8B7CF6" label="Sessions" value={sessionsCount} />
-            <LegendRow color="#42D392" label="Cycles" value={cycles.toLocaleString()} />
+            <LegendRow color="#7C5CFF" label="Sent" value={sent.toLocaleString()} />
+            <LegendRow color="#EF4444" label="Failed" value={failed.toLocaleString()} />
+            <LegendRow color="#00D4FF" label="Sessions" value={sessionsCount} />
+            <LegendRow color="#22C55E" label="Cycles" value={cycles.toLocaleString()} />
           </div>
         </HqCard>
       </div>
@@ -2146,6 +2126,48 @@ function ConfigTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: 
           ] as [string, string][]).map(([k, v]) => <KV key={k} k={k} v={v} />)}
         </div>
       </HqCard>
+    </div>
+  );
+}
+
+/* ─── SETTINGS (wraps General/Plan/Stats/Logs/Repair) ─── */
+const SETTINGS_SUBTABS = [
+  { id: "general", label: "General", icon: Settings },
+  { id: "plan", label: "Plan", icon: DollarSign },
+  { id: "stats", label: "Stats", icon: TrendingUp },
+  { id: "logs", label: "Logs", icon: Terminal },
+  { id: "repair", label: "Repair", icon: Wrench },
+];
+
+function SettingsTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: () => void }) {
+  const [sub, setSub] = useState("general");
+  return (
+    <div className="space-y-5">
+      {/* Secondary sub-navigation */}
+      <div className="flex gap-1 p-1 rounded-[14px] border border-hq-border bg-hq-card overflow-x-auto no-scrollbar w-fit max-w-full">
+        {SETTINGS_SUBTABS.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setSub(t.id)}
+            className={`flex items-center gap-2 px-3.5 py-2 text-[13px] font-medium rounded-[10px] transition-all whitespace-nowrap ${
+              sub === t.id
+                ? t.id === "repair"
+                  ? "bg-hq-danger text-white shadow-[0_2px_10px_rgba(239,68,68,0.35)]"
+                  : "bg-hq-accent text-white shadow-[0_2px_10px_rgba(124,92,255,0.35)]"
+                : "text-hq-sub hover:text-hq-text hover:bg-hq-hover"
+            }`}
+          >
+            <t.icon className="h-4 w-4" strokeWidth={1.75} />
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {sub === "general" && <ConfigTab name={name} bot={bot} onUpdate={onUpdate} />}
+      {sub === "plan" && <PlanTab name={name} bot={bot} onUpdate={onUpdate} />}
+      {sub === "stats" && <StatsTab name={name} />}
+      {sub === "logs" && <LogsTab name={name} />}
+      {sub === "repair" && <RepairTab name={name} bot={bot} onUpdate={onUpdate} />}
     </div>
   );
 }
