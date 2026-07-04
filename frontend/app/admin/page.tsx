@@ -14,7 +14,7 @@ import {
   CalendarClock, ShoppingCart, Activity,
   ArrowRightLeft, Loader2, Play, Trash2, RefreshCw,
   HelpCircle, MessageSquare, AlertTriangle, HardDrive,
-  ExternalLink, Hammer, Square, CheckSquare,
+  ExternalLink, Hammer, Square, CheckSquare, ChevronDown,
 } from "lucide-react";
 import { formatDateTime, timeAgo } from "@/lib/utils";
 import useSWR from "swr";
@@ -65,6 +65,7 @@ export default function DashboardPage() {
   );
   const [processing, setProcessing] = useState(false);
   const [cancelling, setCancelling] = useState<string | null>(null);
+  const [stuckOpen, setStuckOpen] = useState(false);
 
   // Orders that got paid but are stuck (insufficient/bad sessions, no token, etc.) —
   // payment is already received, so these need attention, not silence.
@@ -244,35 +245,61 @@ export default function DashboardPage() {
         }
       `}</style>
 
-      {/* ────── Paid-but-stuck orders — payment received, cannot ignore ────── */}
+      {/* ────── Paid-but-stuck orders — collapsed notification; click to reveal who ────── */}
       {stuckOrders.length > 0 && (
         <div className="clay-raise border border-warning/30 bg-warning/5 overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-3 border-b border-warning/20">
-            <div className="flex items-center gap-2.5">
-              <AlertTriangle className="h-4 w-4 text-warning shrink-0" />
-              <h3 className="text-sm font-semibold text-warning">
-                {stuckOrders.length} order{stuckOrders.length > 1 ? "s" : ""} paid but stuck in queue
-              </h3>
-            </div>
-            <Link href="/admin/payments" className="text-[11px] text-dark-400 hover:text-dark-200 flex items-center gap-1">
-              View all in Payments <ExternalLink className="h-3 w-3" />
+          <div className="flex items-center justify-between gap-3 px-4 sm:px-5 py-3">
+            <button
+              type="button"
+              onClick={() => setStuckOpen((v) => !v)}
+              aria-expanded={stuckOpen}
+              className="flex items-center gap-2.5 min-w-0 text-left group"
+            >
+              <span className="flex h-8 w-8 items-center justify-center rounded-full clay-pill bg-warning/20 text-warning shrink-0">
+                <AlertTriangle className="h-4 w-4" />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold text-warning truncate">
+                  {stuckOrders.length} order{stuckOrders.length > 1 ? "s" : ""} paid but stuck in queue
+                </span>
+                <span className="block text-[11px] text-dark-500 truncate">
+                  {stuckOpen ? "Tap to collapse" : "Tap to see exactly who — and recreate them"}
+                </span>
+              </span>
+              <ChevronDown className={`h-4 w-4 text-warning/80 shrink-0 transition-transform duration-200 ${stuckOpen ? "rotate-180" : ""}`} />
+            </button>
+            <Link href="/admin/payments" className="text-[11px] text-dark-400 hover:text-dark-200 flex items-center gap-1 shrink-0">
+              <span className="hidden sm:inline">View all in Payments</span>
+              <span className="sm:hidden">All</span>
+              <ExternalLink className="h-3 w-3" />
             </Link>
           </div>
-          <div className="divide-y divide-warning/10 max-h-64 overflow-y-auto">
-            {stuckOrders.slice(0, 8).map((o: any) => (
-              <div key={o.order_id} className="flex items-center justify-between gap-3 px-5 py-3">
-                <div className="min-w-0">
-                  <p className="text-xs font-mono text-dark-200 truncate">{o.order_id}</p>
-                  <p className="text-[11px] text-dark-500 truncate mt-0.5">
-                    {o.plan_name || "—"} {o.amount_usd ? `· $${o.amount_usd}` : ""} {o.creation_step ? `— ${o.creation_step}` : ""}
-                  </p>
+
+          {stuckOpen && (
+            <div className="border-t border-warning/20 divide-y divide-warning/10 max-h-72 overflow-y-auto custom-scrollbar animate-slide-down">
+              {stuckOrders.slice(0, 12).map((o: any) => (
+                <div key={o.order_id} className="flex items-center justify-between gap-3 px-4 sm:px-5 py-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-mono text-dark-200 truncate">{o.order_id}</p>
+                    <p className="text-[11px] text-dark-500 truncate mt-0.5">
+                      {o.plan_name || "—"} {o.amount_usd ? `· $${o.amount_usd}` : ""}
+                      {o.user_id ? ` · User ${o.user_id}` : ""}
+                      {o.creation_step ? ` — ${o.creation_step}` : ""}
+                    </p>
+                  </div>
+                  <Button variant="secondary" size="sm" className="shrink-0" onClick={() => openRecreate(o)}>
+                    <Hammer className="h-3.5 w-3.5 text-warning" /> Recreate
+                  </Button>
                 </div>
-                <Button variant="secondary" size="sm" className="shrink-0" onClick={() => openRecreate(o)}>
-                  <Hammer className="h-3.5 w-3.5 text-warning" /> Recreate
-                </Button>
-              </div>
-            ))}
-          </div>
+              ))}
+              {stuckOrders.length > 12 && (
+                <div className="px-5 py-2.5 text-[11px] text-dark-500">
+                  +{stuckOrders.length - 12} more —{" "}
+                  <Link href="/admin/payments" className="text-warning hover:underline">open Payments</Link>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
