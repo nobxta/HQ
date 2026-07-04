@@ -152,7 +152,7 @@ export default function BotDetailPage() {
       {activeTab === "logs" && <LogsTab name={name} />}
       {activeTab === "plan" && <PlanTab name={name} bot={bot} onUpdate={() => mutate()} />}
       {activeTab === "config" && <ConfigTab name={name} bot={bot} onUpdate={() => mutate()} />}
-      {activeTab === "repair" && <RepairTab name={name} />}
+      {activeTab === "repair" && <RepairTab name={name} bot={bot} onUpdate={() => mutate()} />}
 
       <ConfirmModal
         open={deleteConfirm}
@@ -2018,10 +2018,13 @@ function ConfigTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: 
 }
 
 /* ─── REPAIR ─── */
-function RepairTab({ name }: { name: string }) {
+function RepairTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: () => void }) {
   const [loading, setLoading] = useState("");
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [tokenModal, setTokenModal] = useState(false);
 
-  const repair = async (action: string, label: string) => {
+  // Runtime controls (fire-and-forget, toast only)
+  const control = async (action: string, label: string) => {
     setLoading(action);
     try {
       await api.post(`/api/bots/${name}/${action}`);
@@ -2032,32 +2035,191 @@ function RepairTab({ name }: { name: string }) {
     setLoading("");
   };
 
-  const actions = [
+  // Repair ops (may take a while, return a result message)
+  const repair = async (path: string, label: string) => {
+    setLoading(path);
+    setResult(null);
+    try {
+      const { data } = await api.post(`/api/bots/${encodeURIComponent(name)}/repair/${path}`, {}, { timeout: 180000 });
+      const text = data?.message || `${label} — done`;
+      setResult({ ok: true, text });
+      toast.success(`${label} — done`);
+      onUpdate();
+    } catch (e: any) {
+      const text = e?.response?.data?.detail || `${label} failed`;
+      setResult({ ok: false, text });
+      toast.error(text);
+    }
+    setLoading("");
+  };
+
+  const runtimeActions = [
     { id: "restart", label: "Force Restart", desc: "Kill workers and restart fresh", icon: RotateCw, color: "text-info" },
     { id: "stop", label: "Force Stop", desc: "Immediately stop all posting", icon: Square, color: "text-danger" },
     { id: "resume", label: "Resume (Unsuspend)", desc: "Clear suspended flag and resume", icon: PlayCircle, color: "text-success" },
   ];
 
+  const repairActions = [
+    { id: "config", label: "Fix Config", desc: "Validate & auto-repair the config file (paths, session index, missing fields)", icon: FileText, color: "text-info" },
+    { id: "log-group", label: "Fix Log Group", desc: "Validate the log group and recreate it across sessions if broken", icon: MessageSquare, color: "text-accent" },
+  ];
+
   return (
-    <Card>
-      <CardHeader><CardTitle>Fix & Repair Actions</CardTitle></CardHeader>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {actions.map((a) => (
+    <div className="space-y-4">
+      {/* Result banner */}
+      {result && (
+        <div className={`rounded-lg border px-4 py-3 flex items-start gap-2.5 text-sm ${
+          result.ok ? "border-success/30 bg-success/10 text-success" : "border-danger/30 bg-danger/10 text-danger"
+        }`}>
+          {result.ok ? <CheckCircle className="h-4 w-4 mt-0.5 shrink-0" /> : <XCircle className="h-4 w-4 mt-0.5 shrink-0" />}
+          <p className="flex-1">{result.text}</p>
+          <button onClick={() => setResult(null)} className="text-dark-500 hover:text-dark-300"><XCircle className="h-4 w-4" /></button>
+        </div>
+      )}
+
+      {/* Repair operations (parity with /fix) */}
+      <Card>
+        <CardHeader><CardTitle>Repair</CardTitle></CardHeader>
+        <p className="text-xs text-dark-500 -mt-2 mb-3">Same operations as the <code className="text-dark-400">/fix</code> command in the controller bot.</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {repairActions.map((a) => (
+            <button
+              key={a.id}
+              onClick={() => repair(a.id, a.label)}
+              disabled={!!loading}
+              className="flex items-start gap-3 rounded-lg border border-dark-700 bg-dark-800 p-4 text-left hover:border-accent/30 transition-all disabled:opacity-50"
+            >
+              {loading === a.id ? <Loader2 className={`h-5 w-5 animate-spin ${a.color}`} /> : <a.icon className={`h-5 w-5 ${a.color} shrink-0`} />}
+              <div>
+                <p className="text-sm font-medium text-dark-200">{a.label}</p>
+                <p className="text-xs text-dark-500">{a.desc}</p>
+              </div>
+            </button>
+          ))}
+          {/* Change bot token */}
           <button
-            key={a.id}
-            onClick={() => repair(a.id, a.label)}
-            disabled={loading === a.id}
-            className="flex items-center gap-3 rounded-lg border border-dark-700 bg-dark-800 p-4 text-left hover:border-accent/30 transition-all disabled:opacity-50"
+            onClick={() => setTokenModal(true)}
+            disabled={!!loading}
+            className="flex items-start gap-3 rounded-lg border border-dark-700 bg-dark-800 p-4 text-left hover:border-accent/30 transition-all disabled:opacity-50"
           >
-            <a.icon className={`h-5 w-5 ${a.color}`} />
+            <Key className="h-5 w-5 text-warning shrink-0" />
             <div>
-              <p className="text-sm font-medium text-dark-200">{a.label}</p>
-              <p className="text-xs text-dark-500">{a.desc}</p>
+              <p className="text-sm font-medium text-dark-200">Change Bot Token</p>
+              <p className="text-xs text-dark-500">Swap the controller bot: deactivate the old one, activate a new token (custom or from pool)</p>
             </div>
           </button>
-        ))}
+        </div>
+        <div className="mt-3 flex items-start gap-2 rounded-lg bg-dark-800/60 border border-dark-700/50 px-3 py-2">
+          <HardDrive className="h-3.5 w-3.5 text-dark-500 shrink-0 mt-0.5" />
+          <p className="text-[11px] text-dark-500">To fix or replace sessions (SpamBot check, swap dead/frozen/limited accounts), use the <span className="text-dark-300">Sessions</span> tab.</p>
+        </div>
+      </Card>
+
+      {/* Runtime controls */}
+      <Card>
+        <CardHeader><CardTitle>Runtime Controls</CardTitle></CardHeader>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {runtimeActions.map((a) => (
+            <button
+              key={a.id}
+              onClick={() => control(a.id, a.label)}
+              disabled={loading === a.id}
+              className="flex items-center gap-3 rounded-lg border border-dark-700 bg-dark-800 p-4 text-left hover:border-accent/30 transition-all disabled:opacity-50"
+            >
+              {loading === a.id ? <Loader2 className={`h-5 w-5 animate-spin ${a.color}`} /> : <a.icon className={`h-5 w-5 ${a.color}`} />}
+              <div>
+                <p className="text-sm font-medium text-dark-200">{a.label}</p>
+                <p className="text-xs text-dark-500">{a.desc}</p>
+              </div>
+            </button>
+          ))}
+        </div>
+      </Card>
+
+      <ChangeBotTokenModal
+        open={tokenModal}
+        name={name}
+        currentUsername={bot?.bot_username || ""}
+        onClose={() => setTokenModal(false)}
+        onDone={(msg) => { setTokenModal(false); setResult({ ok: true, text: msg }); onUpdate(); }}
+      />
+    </div>
+  );
+}
+
+function ChangeBotTokenModal({ open, name, currentUsername, onClose, onDone }: {
+  open: boolean; name: string; currentUsername: string; onClose: () => void; onDone: (msg: string) => void;
+}) {
+  const [mode, setMode] = useState<"custom" | "pool">("custom");
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [confirm, setConfirm] = useState(false);
+
+  useEffect(() => {
+    if (!open) { setMode("custom"); setToken(""); setBusy(false); setError(""); setConfirm(false); }
+  }, [open]);
+
+  const submit = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const payload = mode === "pool" ? { use_pool: true } : { bot_token: token.trim() };
+      const { data } = await api.post(`/api/bots/${encodeURIComponent(name)}/repair/bot-token`, payload, { timeout: 180000 });
+      onDone(data?.message || "Bot token changed");
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || "Bot token change failed");
+    }
+    setBusy(false);
+    setConfirm(false);
+  };
+
+  const canSubmit = mode === "pool" || token.trim().length > 0;
+
+  return (
+    <Modal open={open} onClose={busy ? () => {} : onClose} title="Change Bot Token" size="md">
+      <div className="space-y-4">
+        <div className="rounded-lg bg-warning/10 border border-warning/20 px-3 py-2.5 flex items-start gap-2">
+          <AlertCircle className="h-4 w-4 text-warning shrink-0 mt-0.5" />
+          <p className="text-xs text-warning/90">
+            This deactivates the current controller bot{currentUsername ? ` (@${currentUsername})` : ""} and activates a new one.
+            Posting restarts on the new bot and it's re-added to the log group. The old pool token (if any) is freed.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <button type="button" onClick={() => { setMode("custom"); setError(""); }}
+            className={`rounded-lg border p-3 text-left transition-all ${mode === "custom" ? "border-accent bg-accent/10 ring-1 ring-accent/30" : "border-dark-700 bg-dark-800 hover:border-dark-600"}`}>
+            <span className={`block text-sm font-semibold ${mode === "custom" ? "text-accent" : "text-dark-200"}`}>Custom token</span>
+            <span className="block text-[11px] text-dark-500 mt-0.5">Paste a token from @BotFather</span>
+          </button>
+          <button type="button" onClick={() => { setMode("pool"); setError(""); }}
+            className={`rounded-lg border p-3 text-left transition-all ${mode === "pool" ? "border-accent bg-accent/10 ring-1 ring-accent/30" : "border-dark-700 bg-dark-800 hover:border-dark-600"}`}>
+            <span className={`block text-sm font-semibold ${mode === "pool" ? "text-accent" : "text-dark-200"}`}>From pool</span>
+            <span className="block text-[11px] text-dark-500 mt-0.5">Use the next available pooled token</span>
+          </button>
+        </div>
+
+        {mode === "custom" && (
+          <Input
+            label="New Bot Token" id="fix-token" placeholder="123456:ABCdef..."
+            value={token} onChange={(e) => { setToken(e.target.value); setError(""); }}
+            autoFocus
+          />
+        )}
+
+        {error && <p className="text-xs text-danger">{error}</p>}
+
+        <div className="flex items-center justify-end gap-2 pt-2 border-t border-dark-800">
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>Cancel</Button>
+          {confirm ? (
+            <Button size="sm" onClick={submit} loading={busy} className="!bg-warning/90 hover:!bg-warning">Confirm change</Button>
+          ) : (
+            <Button size="sm" onClick={() => setConfirm(true)} disabled={!canSubmit}>Change token</Button>
+          )}
+        </div>
       </div>
-    </Card>
+    </Modal>
   );
 }
 

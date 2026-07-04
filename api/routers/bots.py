@@ -399,6 +399,103 @@ async def restart_bot(name: str):
     return BotControlResponse(status="queued", message=f"Bot '{name}' restart queued")
 
 
+# ─────────────────────── Repair (/fix parity) ───────────────────────
+
+@router.post("/{name}/repair/config")
+async def repair_config(name: str):
+    """Validate and auto-repair the bot's config file (same as /fix → Fix Config)."""
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+    from code.repair import repair_fix_config
+    try:
+        msg = await repair_fix_config(token)
+    except Exception as e:
+        raise HTTPException(500, f"Config repair failed: {e}")
+    await wrappers.log_admin_action("web_admin", "repair_config", target=name)
+    return {"status": "done", "message": msg}
+
+
+@router.post("/{name}/repair/log-group")
+async def repair_log_group(name: str):
+    """Validate the log group and recreate it if broken (same as /fix → Fix Log Group)."""
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+    from code.repair import repair_fix_log_group
+    try:
+        msg = await repair_fix_log_group(token)
+    except Exception as e:
+        raise HTTPException(500, f"Log group repair failed: {e}")
+    await wrappers.log_admin_action("web_admin", "repair_log_group", target=name)
+    return {"status": "done", "message": msg}
+
+
+class RepairBotTokenRequest(BaseModel):
+    bot_token: Optional[str] = None   # a custom @BotFather token
+    use_pool: bool = False            # or take the next available token from the pool
+
+
+@router.post("/{name}/repair/bot-token")
+async def repair_bot_token(name: str, body: RepairBotTokenRequest):
+    """Swap the controller bot token (same as /fix → Fix Bot Token). Deactivates the
+    old controller bot and activates the new one, migrating profile + log group."""
+    import uuid
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    from code.shop import token_pool
+    new_token = (body.bot_token or "").strip()
+    pool_order_id = ""
+
+    if body.use_pool or not new_token:
+        # Unique order id per attempt so reserve_token doesn't idempotently hand
+        # back a token already tied to this bot's name from a previous op.
+        pool_order_id = f"webfix:{name}:{uuid.uuid4().hex[:8]}"
+        reserved = await asyncio.to_thread(token_pool.reserve_token, pool_order_id)
+        if not reserved:
+            raise HTTPException(409, "No bot tokens available in the pool. Add tokens or enter a custom one.")
+        new_token = (reserved.get("token") or "").strip()
+
+    if new_token == token:
+        if pool_order_id:
+            await asyncio.to_thread(token_pool.release_order, pool_order_id)
+        raise HTTPException(400, "That's already this bot's token.")
+
+    data = await wrappers.load_adbot()
+    if new_token in data.get("bots", {}):
+        if pool_order_id:
+            await asyncio.to_thread(token_pool.release_order, pool_order_id)
+        raise HTTPException(409, "That token is already used by another bot.")
+
+    from code.repair import repair_fix_bot_token
+    try:
+        msg = await repair_fix_bot_token(token, new_token)
+    except Exception as e:
+        if pool_order_id:
+            await asyncio.to_thread(token_pool.release_order, pool_order_id)
+        raise HTTPException(500, f"Bot token change failed: {e}")
+
+    if msg.lower().startswith("invalid") or "not found" in msg.lower() or "config not found" in msg.lower():
+        # repair signalled a validation failure rather than raising.
+        if pool_order_id:
+            await asyncio.to_thread(token_pool.release_order, pool_order_id)
+        raise HTTPException(400, msg)
+
+    # Keep the pool honest: the old token is now backing nothing (free it), and the
+    # new token is now a live bot (claim it so it can't be handed out again).
+    try:
+        await asyncio.to_thread(token_pool.release_by_token, token)
+        await asyncio.to_thread(token_pool.assign_by_token, new_token)
+    except Exception:
+        pass
+
+    await wrappers.log_admin_action("web_admin", "repair_bot_token", target=name)
+    emit_dashboard_event("bot_token_changed", {"name": name})
+    return {"status": "done", "message": msg}
+
+
 @router.post("/{name}/suspend", response_model=BotControlResponse)
 async def suspend_bot(name: str):
     token = await wrappers.get_token_by_name(name)

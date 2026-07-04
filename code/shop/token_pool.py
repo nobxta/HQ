@@ -225,6 +225,29 @@ def release_by_token(token: str) -> bool:
         return changed
 
 
+def assign_by_token(token: str) -> bool:
+    """Mark a specific token (by value) as assigned — it now backs a live bot.
+
+    Used when a bot's controller token is swapped to a token that already lives
+    in the pool: without this it could stay "available" and be handed out to a
+    second bot. No-op if the token isn't in the pool.
+    """
+    token = (token or "").strip()
+    if not token:
+        return False
+    with _lock:
+        data = _load_raw()
+        changed = False
+        for t in data["tokens"]:
+            if t.get("token") == token and t.get("status") != "assigned":
+                t["status"] = "assigned"
+                t["assigned_at"] = _now()
+                changed = True
+        if changed:
+            _save_raw(data)
+        return changed
+
+
 def _parse_iso(value: str) -> Optional[datetime]:
     if not value:
         return None
