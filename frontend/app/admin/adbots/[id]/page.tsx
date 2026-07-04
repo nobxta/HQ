@@ -1,16 +1,12 @@
 "use client";
-import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
+import { useState, useRef, useEffect, useCallback, forwardRef, type ReactNode, type InputHTMLAttributes } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { getSession } from "next-auth/react";
 import { useAdbot, useAdbotStats, useAdbotLogs } from "@/lib/hooks/useAdbots";
-import Card, { CardHeader, CardTitle } from "@/components/ui/Card";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
-import Input from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 import ConfirmModal from "@/components/ConfirmModal";
-import { PageSkeleton } from "@/components/ui/Skeleton";
-import { Table, Thead, Tbody, Tr, Th, Td } from "@/components/ui/Table";
 import { useForm } from "react-hook-form";
 import {
   Play, Square, RotateCw, Trash2, ArrowLeft, Settings, Terminal,
@@ -50,19 +46,17 @@ export default function BotDetailPage() {
   const [actionLoading, setActionLoading] = useState("");
   const [deleteConfirm, setDeleteConfirm] = useState(false);
 
-  if (isLoading) return <PageSkeleton />;
+  if (isLoading) return <BotDetailSkeleton />;
   if (is404 || !bot) return (
-    <div className="flex flex-col items-center justify-center py-20 space-y-4 animate-fade-in">
-      <div className="w-16 h-16 rounded-full bg-danger/10 flex items-center justify-center">
-        <AlertCircle className="h-8 w-8 text-danger" />
+    <div className="flex flex-col items-center justify-center py-24 space-y-4 animate-fade-in text-hq-text">
+      <div className="w-16 h-16 rounded-[18px] bg-hq-danger/10 border border-hq-danger/20 flex items-center justify-center">
+        <AlertCircle className="h-8 w-8 text-hq-danger" strokeWidth={1.75} />
       </div>
-      <h2 className="text-xl font-bold text-dark-200">Bot Not Found</h2>
-      <p className="text-dark-400 text-sm text-center max-w-md">
+      <h2 className="text-[19px] font-semibold text-hq-text">Bot Not Found</h2>
+      <p className="text-hq-sub text-[13px] text-center max-w-md">
         &quot;{name}&quot; has been deleted or expired. Sessions have been returned to the free pool.
       </p>
-      <Button variant="secondary" onClick={() => router.push("/admin/adbots")}>
-        <ArrowLeft className="h-4 w-4" /> Back to Bots
-      </Button>
+      <HqBtn tone="secondary" onClick={() => router.push("/admin/adbots")} icon={ArrowLeft}>Back to Bots</HqBtn>
     </div>
   );
 
@@ -78,67 +72,61 @@ export default function BotDetailPage() {
     setActionLoading("");
   };
 
-  const status = bot.running ? "running" : bot.frozen ? "frozen" : bot.suspended ? "suspended" : "stopped";
+  const statusPill = bot.suspended
+    ? { label: "Suspended", cls: "text-hq-warning bg-hq-warning/10 border-hq-warning/20" }
+    : bot.frozen
+    ? { label: "Frozen", cls: "text-hq-danger bg-hq-danger/10 border-hq-danger/20" }
+    : bot.running
+    ? { label: "Running", cls: "text-hq-success bg-hq-success/10 border-hq-success/20" }
+    : { label: "Stopped", cls: "text-hq-muted bg-white/[0.04] border-hq-border" };
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="space-y-5 animate-fade-in text-hq-text">
       {/* Header */}
       <div className="space-y-3 sm:space-y-0 sm:flex sm:items-center sm:justify-between sm:flex-wrap sm:gap-4">
-        <div className="flex items-center gap-3">
-          <button onClick={() => router.push("/admin/adbots")} className="text-dark-400 hover:text-dark-200 shrink-0">
-            <ArrowLeft className="h-5 w-5" />
+        <div className="flex items-center gap-3 min-w-0">
+          <button onClick={() => router.push("/admin/adbots")} className="w-9 h-9 rounded-[12px] border border-hq-border bg-hq-card text-hq-sub hover:text-hq-text hover:bg-hq-elev transition-colors flex items-center justify-center shrink-0">
+            <ArrowLeft className="h-4.5 w-4.5" strokeWidth={1.75} />
           </button>
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h2 className="text-xl sm:text-2xl font-bold text-dark-100 truncate">{bot.name}</h2>
-              <Badge status={status} />
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-[20px] sm:text-[22px] font-semibold text-hq-text truncate">{bot.name}</h2>
+              <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${statusPill.cls}`}>{statusPill.label}</span>
             </div>
-            <p className="text-xs sm:text-sm text-dark-400 truncate">
-              {bot.bot_username ? `@${bot.bot_username}` : ""} · {bot.mode} · Owner: {String(bot.owner_id || "admin")}
+            <p className="text-[12px] sm:text-[13px] text-hq-sub truncate mt-0.5">
+              {bot.bot_username ? `@${bot.bot_username}` : ""} · <span className="capitalize">{bot.mode}</span> · Owner: {String(bot.owner_id || "admin")}
             </p>
           </div>
         </div>
-        <div className="flex gap-2 flex-wrap pl-8 sm:pl-0">
+        <div className="flex gap-2 flex-wrap pl-12 sm:pl-0">
           {bot.running ? (
-            <Button variant="danger" size="sm" onClick={() => doAction("stop")} loading={actionLoading === "stop"}>
-              <Square className="h-4 w-4" /> Stop
-            </Button>
+            <HqBtn tone="danger" onClick={() => doAction("stop")} loading={actionLoading === "stop"} icon={Square}>Stop</HqBtn>
           ) : (
-            <Button variant="success" size="sm" onClick={() => doAction("start")} loading={actionLoading === "start"}>
-              <Play className="h-4 w-4" /> Start
-            </Button>
+            <HqBtn tone="success" onClick={() => doAction("start")} loading={actionLoading === "start"} icon={Play}>Start</HqBtn>
           )}
-          <Button variant="secondary" size="sm" onClick={() => doAction("restart")} loading={actionLoading === "restart"}>
-            <RotateCw className="h-4 w-4" /> <span className="hidden sm:inline">Restart</span>
-          </Button>
+          <HqBtn tone="ghost" onClick={() => doAction("restart")} loading={actionLoading === "restart"} icon={RotateCw}><span className="hidden sm:inline">Restart</span></HqBtn>
           {bot.suspended ? (
-            <Button variant="secondary" size="sm" onClick={() => doAction("resume")} loading={actionLoading === "resume"}>
-              <PlayCircle className="h-4 w-4" /> <span className="hidden sm:inline">Resume</span>
-            </Button>
+            <HqBtn tone="ghost" onClick={() => doAction("resume")} loading={actionLoading === "resume"} icon={PlayCircle}><span className="hidden sm:inline">Resume</span></HqBtn>
           ) : (
-            <Button variant="ghost" size="sm" onClick={() => doAction("suspend")} loading={actionLoading === "suspend"}>
-              <Pause className="h-4 w-4" /> <span className="hidden sm:inline">Suspend</span>
-            </Button>
+            <HqBtn tone="ghost" onClick={() => doAction("suspend")} loading={actionLoading === "suspend"} icon={Pause}><span className="hidden sm:inline">Suspend</span></HqBtn>
           )}
-          <Button variant="danger" size="sm" onClick={() => setDeleteConfirm(true)}>
-            <Trash2 className="h-4 w-4" />
-          </Button>
+          <HqBtn tone="danger" onClick={() => setDeleteConfirm(true)} icon={Trash2} iconOnly />
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-dark-700/50 overflow-x-auto pb-px -mx-4 px-4 sm:mx-0 sm:px-0">
+      <div className="flex gap-1 p-1 rounded-[14px] border border-hq-border bg-hq-card overflow-x-auto no-scrollbar">
         {tabs.map((t) => (
           <button
             key={t.id}
             onClick={() => setActiveTab(t.id)}
-            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-all whitespace-nowrap ${
+            className={`flex items-center gap-2 px-3.5 py-2 text-[13px] font-medium rounded-[10px] transition-all whitespace-nowrap ${
               activeTab === t.id
-                ? "border-accent text-accent"
-                : "border-transparent text-dark-400 hover:text-dark-200"
+                ? "bg-hq-accent text-white shadow-[0_2px_10px_rgba(44,94,255,0.25)]"
+                : "text-hq-sub hover:text-hq-text hover:bg-hq-hover"
             }`}
           >
-            <t.icon className="h-4 w-4" />
+            <t.icon className="h-4 w-4" strokeWidth={1.75} />
             {t.label}
           </button>
         ))}
@@ -182,6 +170,120 @@ function HqCard({ children, className = "" }: { children: ReactNode; className?:
   return (
     <div className={`rounded-[18px] border border-hq-border bg-hq-card shadow-[0_6px_24px_rgba(0,0,0,0.18)] ${className}`}>
       {children}
+    </div>
+  );
+}
+
+const HQ_BTN_TONES: Record<string, string> = {
+  primary: "bg-hq-accent hover:brightness-110 text-white shadow-[0_2px_10px_rgba(44,94,255,0.25)]",
+  success: "bg-hq-success/10 hover:bg-hq-success/20 text-hq-success border border-hq-success/20",
+  danger: "bg-hq-danger/10 hover:bg-hq-danger/20 text-hq-danger border border-hq-danger/20",
+  secondary: "bg-hq-elev hover:bg-white/[0.06] text-hq-text border border-hq-border",
+  ghost: "bg-transparent hover:bg-hq-hover text-hq-sub border border-hq-border",
+};
+
+function HqBtn({ children, onClick, loading, disabled, icon: Icon, tone = "primary", iconOnly = false, className = "", type = "button" }: {
+  children?: ReactNode; onClick?: () => void; loading?: boolean; disabled?: boolean; icon?: any;
+  tone?: "primary" | "success" | "danger" | "secondary" | "ghost"; iconOnly?: boolean; className?: string; type?: "button" | "submit";
+}) {
+  return (
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled || loading}
+      className={`inline-flex items-center justify-center gap-1.5 rounded-[12px] font-medium text-[13px] transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed ${iconOnly ? "w-9 h-9" : "px-3.5 py-2"} ${HQ_BTN_TONES[tone]} ${className}`}
+    >
+      {loading ? <Loader2 className="h-4 w-4 animate-spin" strokeWidth={1.75} /> : Icon ? <Icon className="h-4 w-4" strokeWidth={1.75} /> : null}
+      {children}
+    </button>
+  );
+}
+
+const HqInput = forwardRef<HTMLInputElement, { label?: string } & InputHTMLAttributes<HTMLInputElement>>(
+  ({ label, id, className = "", ...props }, ref) => (
+    <div className="space-y-1.5">
+      {label && <label htmlFor={id} className="block text-[12px] font-medium text-hq-sub">{label}</label>}
+      <input
+        ref={ref}
+        id={id}
+        className={`w-full rounded-[14px] border border-hq-border bg-hq-bg px-3 py-2 text-[13px] text-hq-text placeholder:text-hq-muted focus:outline-none focus:border-hq-accent/60 transition-colors disabled:opacity-60 ${className}`}
+        {...props}
+      />
+    </div>
+  )
+);
+HqInput.displayName = "HqInput";
+
+/* Key/value row used inside hq detail cards */
+function KV({ k, v }: { k: string; v: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-1.5">
+      <span className="text-[13px] text-hq-sub">{k}</span>
+      <span className="text-[13px] text-hq-text font-medium text-right truncate">{v}</span>
+    </div>
+  );
+}
+
+/* Section title used inside hq cards */
+function HqTitle({ children, sub, right }: { children: ReactNode; sub?: string; right?: ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-3 mb-4">
+      <div>
+        <h3 className="text-[15px] font-semibold text-hq-text">{children}</h3>
+        {sub && <p className="text-[12px] text-hq-muted mt-0.5">{sub}</p>}
+      </div>
+      {right}
+    </div>
+  );
+}
+
+/* Shimmer block + full-page skeleton matching the hq dashboard layout */
+function Shimmer({ className = "" }: { className?: string }) {
+  return <div className={`animate-pulse rounded-[10px] bg-white/[0.05] ${className}`} />;
+}
+
+function BotDetailSkeleton() {
+  return (
+    <div className="space-y-5 animate-fade-in" suppressHydrationWarning>
+      {/* header */}
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <Shimmer className="w-9 h-9 !rounded-[12px]" />
+          <div className="space-y-2">
+            <Shimmer className="h-5 w-40" />
+            <Shimmer className="h-3 w-56" />
+          </div>
+        </div>
+        <div className="hidden sm:flex gap-2">
+          {[0, 1, 2].map((i) => <Shimmer key={i} className="h-9 w-20 !rounded-[12px]" />)}
+        </div>
+      </div>
+      {/* tabs */}
+      <Shimmer className="h-11 w-full !rounded-[14px]" />
+      {/* stat tiles */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="rounded-[18px] border border-hq-border bg-hq-card p-5 space-y-3">
+            <Shimmer className="h-3 w-20" />
+            <Shimmer className="h-7 w-24" />
+            <Shimmer className="h-3 w-16" />
+          </div>
+        ))}
+      </div>
+      {/* charts */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="rounded-[18px] border border-hq-border bg-hq-card p-5 lg:col-span-2 space-y-4">
+          <Shimmer className="h-4 w-40" />
+          <Shimmer className="h-[220px] w-full !rounded-[14px]" />
+        </div>
+        <div className="rounded-[18px] border border-hq-border bg-hq-card p-5 space-y-4">
+          <Shimmer className="h-4 w-28" />
+          <Shimmer className="h-[168px] w-full !rounded-full mx-auto max-w-[168px]" />
+          <div className="grid grid-cols-2 gap-3">
+            {[0, 1, 2, 3].map((i) => <Shimmer key={i} className="h-8" />)}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -569,39 +671,29 @@ function PostingTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate:
   };
 
   return (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Post Message / Link</CardTitle>
-        </CardHeader>
+    <div className="space-y-5">
+      <HqCard className="p-5">
+        <HqTitle sub="Posted to every group each cycle · supports Telegram HTML formatting">Post Message / Link</HqTitle>
         <div className="space-y-4">
-          <p className="text-xs text-dark-500">
-            This is the message that gets posted to all groups every cycle. Supports Telegram HTML formatting.
-          </p>
           <textarea
-            className="w-full h-48 rounded-lg border border-dark-600 bg-dark-950 px-4 py-3 text-sm text-dark-200 font-mono focus:outline-none focus:ring-2 focus:ring-accent/40 resize-none"
+            className="w-full h-48 rounded-[14px] border border-hq-border bg-hq-bg px-4 py-3 text-[13px] text-hq-text font-mono placeholder:text-hq-muted focus:outline-none focus:border-hq-accent/60 resize-none transition-colors"
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             placeholder="Enter post message or link…"
           />
-          <div className="flex items-center gap-3">
-            <Button onClick={handleSave} loading={saving}>
-              <Save className="h-4 w-4" /> Save Message
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => { navigator.clipboard.writeText(message); toast.success("Copied"); }}>
-              <Copy className="h-4 w-4" /> Copy
-            </Button>
+          <div className="flex items-center gap-2">
+            <HqBtn onClick={handleSave} loading={saving} icon={Save}>Save Message</HqBtn>
+            <HqBtn tone="ghost" onClick={() => { navigator.clipboard.writeText(message); toast.success("Copied"); }} icon={Copy}>Copy</HqBtn>
           </div>
         </div>
-      </Card>
+      </HqCard>
 
-      {/* Preview */}
-      <Card>
-        <CardHeader><CardTitle>Preview</CardTitle></CardHeader>
-        <div className="rounded-lg bg-dark-950 border border-dark-700 p-4 text-sm text-dark-200 whitespace-pre-wrap break-words min-h-[80px]">
-          {message || <span className="text-dark-500 italic">No message set</span>}
+      <HqCard className="p-5">
+        <HqTitle>Preview</HqTitle>
+        <div className="rounded-[14px] bg-hq-bg border border-hq-border p-4 text-[13px] text-hq-text whitespace-pre-wrap break-words min-h-[80px]">
+          {message || <span className="text-hq-muted italic">No message set</span>}
         </div>
-      </Card>
+      </HqCard>
     </div>
   );
 }
@@ -610,82 +702,78 @@ function PostingTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate:
 function StatsTab({ name }: { name: string }) {
   const { data: stats, isLoading } = useAdbotStats(name);
 
-  if (isLoading) return <PageSkeleton />;
-  if (!stats) return <Card><p className="text-dark-500">No stats available</p></Card>;
+  if (isLoading) return <BotDetailSkeleton />;
+  if (!stats) return <HqCard className="p-5"><p className="text-hq-muted text-[13px]">No stats available</p></HqCard>;
 
   const sessions = stats.session_stats || {};
+  const totalSent = stats.lifetime_sent || 0;
+  const totalFailed = stats.lifetime_failed || 0;
+  const overallRate = totalSent + totalFailed > 0 ? Math.round((totalSent / (totalSent + totalFailed)) * 100) : 0;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {/* Totals */}
-      <div className="grid grid-cols-2 gap-3 sm:gap-4 sm:grid-cols-4">
-        <QuickStat icon={CheckCircle} label="Total Sent" value={stats.lifetime_sent || 0} color="text-success" />
-        <QuickStat icon={XCircle} label="Total Failed" value={stats.lifetime_failed || 0} color="text-danger" />
-        <QuickStat icon={RotateCw} label="Cycles" value={stats.cycles || 0} color="text-accent" />
-        <QuickStat icon={HardDrive} label="Active Sessions" value={Object.keys(sessions).length} color="text-info" />
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <StatTile icon={CheckCircle2} label="Total Sent" value={totalSent.toLocaleString()} tone="success" />
+        <StatTile icon={XCircle} label="Total Failed" value={totalFailed.toLocaleString()} tone="danger" />
+        <StatTile icon={RotateCw} label="Cycles" value={(stats.cycles || 0).toLocaleString()} tone="accent" />
+        <StatTile icon={TrendingUp} label="Success Rate" value={`${overallRate}%`} tone={overallRate > 80 ? "success" : "warning"} sub={`${Object.keys(sessions).length} sessions`} />
       </div>
 
       {/* Per-session stats */}
-      <Card>
-        <CardHeader><CardTitle>Per-Session Stats</CardTitle></CardHeader>
+      <HqCard className="p-5">
+        <HqTitle sub="Delivery breakdown per account">Per-Session Stats</HqTitle>
         {Object.keys(sessions).length === 0 ? (
-          <p className="text-sm text-dark-500">No session stats recorded yet</p>
+          <div className="py-10 text-center text-[13px] text-hq-muted">No session stats recorded yet</div>
         ) : (
-          <div className="overflow-x-auto">
-          <Table>
-            <Thead>
-              <tr>
-                <Th>Session</Th>
-                <Th>Sent</Th>
-                <Th>Failed</Th>
-                <Th>Rate</Th>
-                <Th>Cycles</Th>
-                <Th>Avg Duration</Th>
-                <Th>Last Cycle</Th>
-                <Th>Best Cycle</Th>
-              </tr>
-            </Thead>
-            <Tbody>
-              {Object.entries(sessions).map(([sess, s]: [string, any]) => {
-                const sent = s.lifetime_sent || s.sent || 0;
-                const failed = s.lifetime_failed || s.failed || 0;
-                const total = sent + failed;
-                const rate = total > 0 ? ((sent) / total * 100).toFixed(1) : "—";
-                const cycles = s.cycles || 0;
-                const avgDur = s.avg_cycle_duration_sec || 0;
-                const lastSuccess = s.last_cycle_success || 0;
-                const lastAttempted = s.last_cycle_attempted || 0;
-                const lastDur = s.last_cycle_duration_sec || 0;
-                const lastTs = s.last_cycle_ts || 0;
-                const bestSuccess = s.best_cycle_success || 0;
-                return (
-                  <Tr key={sess}>
-                    <Td className="font-mono text-xs">{sess.replace(".session", "")}</Td>
-                    <Td className="text-success font-medium">{sent}</Td>
-                    <Td className="text-danger font-medium">{failed}</Td>
-                    <Td>
-                      <span className={Number(rate) > 80 ? "text-success" : Number(rate) > 50 ? "text-warning" : "text-danger"}>
-                        {rate}{rate !== "—" ? "%" : ""}
-                      </span>
-                    </Td>
-                    <Td className="text-accent font-medium">{cycles}</Td>
-                    <Td className="text-xs text-dark-300">{avgDur > 0 ? `${Math.round(avgDur)}s` : "—"}</Td>
-                    <Td className="text-xs">
-                      {lastTs > 0 ? (
-                        <span className="text-dark-300" title={new Date(lastTs * 1000).toLocaleString()}>
-                          {lastSuccess}/{lastAttempted} in {Math.round(lastDur)}s
+          <div className="overflow-x-auto -mx-1">
+            <table className="w-full text-[13px] min-w-[640px]">
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-wide text-hq-muted border-b border-hq-border">
+                  {["Session", "Sent", "Failed", "Rate", "Cycles", "Avg", "Last Cycle", "Best"].map((h) => (
+                    <th key={h} className="px-3 py-2.5 font-medium whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-hq-border/60">
+                {Object.entries(sessions).map(([sess, s]: [string, any]) => {
+                  const sent = s.lifetime_sent || s.sent || 0;
+                  const failed = s.lifetime_failed || s.failed || 0;
+                  const total = sent + failed;
+                  const rate = total > 0 ? ((sent) / total * 100).toFixed(1) : "—";
+                  const cycles = s.cycles || 0;
+                  const avgDur = s.avg_cycle_duration_sec || 0;
+                  const lastSuccess = s.last_cycle_success || 0;
+                  const lastAttempted = s.last_cycle_attempted || 0;
+                  const lastDur = s.last_cycle_duration_sec || 0;
+                  const lastTs = s.last_cycle_ts || 0;
+                  const bestSuccess = s.best_cycle_success || 0;
+                  return (
+                    <tr key={sess} className="hover:bg-hq-hover transition-colors">
+                      <td className="px-3 py-2.5 font-mono text-[12px] text-hq-sub">{sess.replace(".session", "")}</td>
+                      <td className="px-3 py-2.5 text-hq-success font-medium tabular-nums">{sent}</td>
+                      <td className="px-3 py-2.5 text-hq-danger font-medium tabular-nums">{failed}</td>
+                      <td className="px-3 py-2.5 tabular-nums">
+                        <span className={Number(rate) > 80 ? "text-hq-success" : Number(rate) > 50 ? "text-hq-warning" : "text-hq-danger"}>
+                          {rate}{rate !== "—" ? "%" : ""}
                         </span>
-                      ) : <span className="text-dark-500">—</span>}
-                    </Td>
-                    <Td className="text-xs text-accent">{bestSuccess > 0 ? `${bestSuccess} sent` : "—"}</Td>
-                  </Tr>
-                );
-              })}
-            </Tbody>
-          </Table>
+                      </td>
+                      <td className="px-3 py-2.5 text-hq-accent font-medium tabular-nums">{cycles}</td>
+                      <td className="px-3 py-2.5 text-[12px] text-hq-sub">{avgDur > 0 ? `${Math.round(avgDur)}s` : "—"}</td>
+                      <td className="px-3 py-2.5 text-[12px]">
+                        {lastTs > 0 ? (
+                          <span className="text-hq-sub" title={new Date(lastTs * 1000).toLocaleString()}>{lastSuccess}/{lastAttempted} in {Math.round(lastDur)}s</span>
+                        ) : <span className="text-hq-muted">—</span>}
+                      </td>
+                      <td className="px-3 py-2.5 text-[12px] text-hq-accent">{bestSuccess > 0 ? `${bestSuccess} sent` : "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         )}
-      </Card>
+      </HqCard>
     </div>
   );
 }
@@ -889,183 +977,146 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
   const displaySessions = details || sessions.map((s: any) => ({ ...s, status: "unknown" }));
 
   const statusBadge = (status: string) => {
-    switch (status) {
-      case "active": return <span className="inline-flex items-center gap-1 rounded bg-success/10 px-1.5 py-0.5 text-[10px] font-medium text-success"><CheckCircle className="h-3 w-3" />Active</span>;
-      case "dead": return <span className="inline-flex items-center gap-1 rounded bg-danger/10 px-1.5 py-0.5 text-[10px] font-medium text-danger"><XCircle className="h-3 w-3" />Dead</span>;
-      case "error": return <span className="inline-flex items-center gap-1 rounded bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"><AlertCircle className="h-3 w-3" />Error</span>;
-      default: return <span className="inline-flex items-center gap-1 rounded bg-dark-700 px-1.5 py-0.5 text-[10px] font-medium text-dark-400">Unknown</span>;
-    }
+    const map: Record<string, string> = {
+      active: "bg-hq-success/10 text-hq-success",
+      dead: "bg-hq-danger/10 text-hq-danger",
+      error: "bg-hq-warning/10 text-hq-warning",
+      busy: "bg-hq-accent/10 text-hq-accent",
+    };
+    const label = status === "active" ? "Active" : status === "dead" ? "Dead" : status === "error" ? "Error" : status === "busy" ? "Busy" : "Unknown";
+    const Icon = status === "active" ? CheckCircle2 : status === "dead" ? XCircle : status === "error" ? AlertCircle : null;
+    return <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium ${map[status] || "bg-white/[0.05] text-hq-muted"}`}>{Icon && <Icon className="h-3 w-3" />}{label}</span>;
   };
 
   const spambotBadge = (status: string) => {
-    switch (status) {
-      case "ACTIVE": return <span className="inline-flex items-center gap-1 rounded bg-success/10 px-1.5 py-0.5 text-[10px] font-medium text-success">Clean</span>;
-      case "TEMP_LIMITED": return <span className="inline-flex items-center gap-1 rounded bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning">Temp Limited</span>;
-      case "HARD_LIMITED": return <span className="inline-flex items-center gap-1 rounded bg-danger/10 px-1.5 py-0.5 text-[10px] font-medium text-danger">Hard Limited</span>;
-      case "FROZEN": return <span className="inline-flex items-center gap-1 rounded bg-danger/10 px-1.5 py-0.5 text-[10px] font-medium text-danger">Frozen</span>;
-      default: return <span className="inline-flex items-center gap-1 rounded bg-dark-700 px-1.5 py-0.5 text-[10px] font-medium text-dark-400">Unknown</span>;
-    }
+    const map: Record<string, [string, string]> = {
+      ACTIVE: ["bg-hq-success/10 text-hq-success", "Clean"],
+      TEMP_LIMITED: ["bg-hq-warning/10 text-hq-warning", "Temp Limited"],
+      HARD_LIMITED: ["bg-hq-danger/10 text-hq-danger", "Hard Limited"],
+      FROZEN: ["bg-hq-danger/10 text-hq-danger", "Frozen"],
+    };
+    const [cls, label] = map[status] || ["bg-white/[0.05] text-hq-muted", "Unknown"];
+    return <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium ${cls}`}>{label}</span>;
   };
 
+  const PoolPicker = ({ onPick, actionIcon: ActionIcon, actionLabel }: { onPick: (f: string) => void; actionIcon: any; actionLabel: string }) => (
+    loadingFree ? (
+      <div className="flex items-center gap-2 py-8 justify-center text-hq-muted text-[13px]"><Loader2 className="h-5 w-5 animate-spin" /> Loading free sessions…</div>
+    ) : freeSessions.length === 0 ? (
+      <p className="text-[13px] text-hq-muted text-center py-8">No sessions available in the free pool</p>
+    ) : (
+      <>
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-hq-muted" />
+          <input className="w-full rounded-[12px] border border-hq-border bg-hq-bg pl-9 pr-3 py-2 text-[13px] text-hq-text placeholder:text-hq-muted focus:outline-none focus:border-hq-accent/60"
+            placeholder="Filter sessions…" value={freeFilter} onChange={(e) => setFreeFilter(e.target.value)} />
+        </div>
+        <p className="text-[12px] text-hq-muted">{freeSessions.length} sessions available</p>
+        <div className="max-h-64 overflow-y-auto space-y-1 pr-1">
+          {freeSessions.filter(f => !freeFilter || f.includes(freeFilter)).map((f) => (
+            <div key={f} className="flex items-center justify-between rounded-[12px] bg-hq-elev border border-hq-border px-3 py-2">
+              <span className="text-[12px] font-mono text-hq-sub truncate">{f}</span>
+              <HqBtn tone="secondary" onClick={() => onPick(f)} loading={actionLoading === f} icon={ActionIcon} className="!py-1.5 !text-[12px] shrink-0">{actionLabel}</HqBtn>
+            </div>
+          ))}
+        </div>
+      </>
+    )
+  );
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {/* Actions bar */}
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="secondary" size="sm" onClick={runInfoCheck}
-          loading={bulkAction === "info"} disabled={!!bulkAction}>
-          <Eye className="h-3.5 w-3.5" /> Check Info
-        </Button>
-        <Button variant="secondary" size="sm" onClick={runValidateAll}
-          loading={bulkAction === "validating"} disabled={!!bulkAction}>
-          <ShieldCheck className="h-3.5 w-3.5" /> Validate All
-        </Button>
-        <Button variant="secondary" size="sm" onClick={runSpambotCheck}
-          loading={bulkAction === "spambot"} disabled={!!bulkAction}>
-          <Shield className="h-3.5 w-3.5" /> SpamBot Check
-        </Button>
-        <Button variant="secondary" size="sm" onClick={() => { fetchFreeSessions(); setShowAdd(true); }}>
-          <Plus className="h-3.5 w-3.5" /> Add Session
-        </Button>
-        <span className="text-xs text-dark-500 ml-auto">{sessions.length} session(s) assigned</span>
+        <HqBtn tone="secondary" onClick={runInfoCheck} loading={bulkAction === "info"} disabled={!!bulkAction} icon={Eye}>Check Info</HqBtn>
+        <HqBtn tone="secondary" onClick={runValidateAll} loading={bulkAction === "validating"} disabled={!!bulkAction} icon={ShieldCheck}>Validate All</HqBtn>
+        <HqBtn tone="secondary" onClick={runSpambotCheck} loading={bulkAction === "spambot"} disabled={!!bulkAction} icon={Shield}>SpamBot Check</HqBtn>
+        <HqBtn tone="primary" onClick={() => { fetchFreeSessions(); setShowAdd(true); }} icon={Plus}>Add Session</HqBtn>
+        <span className="text-[12px] text-hq-muted ml-auto">{sessions.length} assigned</span>
       </div>
 
       {/* Bulk result summary */}
       {bulkResult && (
-        <div className={`rounded-lg border p-3 text-sm ${
-          bulkResult.type === "validate" && bulkResult.dead > 0
-            ? "border-danger/30 bg-danger/5"
-            : bulkResult.type === "spambot" && bulkResult.limited > 0
-            ? "border-warning/30 bg-warning/5"
-            : "border-success/30 bg-success/5"
+        <div className={`rounded-[14px] border px-4 py-3 text-[13px] flex items-center gap-3 flex-wrap ${
+          bulkResult.type === "validate" && bulkResult.dead > 0 ? "border-hq-danger/30 bg-hq-danger/[0.06]"
+          : bulkResult.type === "spambot" && bulkResult.limited > 0 ? "border-hq-warning/30 bg-hq-warning/[0.06]"
+          : "border-hq-success/30 bg-hq-success/[0.06]"
         }`}>
-          {bulkResult.type === "validate" && (
-            <div className="flex items-center gap-3 flex-wrap">
-              <span className="font-medium text-dark-200">Validation Complete</span>
-              <span className="text-success text-xs">{bulkResult.active} active</span>
-              {bulkResult.dead > 0 && (
-                <span className="text-danger text-xs">{bulkResult.dead} dead (removed: {bulkResult.dead_removed?.join(", ")})</span>
-              )}
-            </div>
-          )}
-          {bulkResult.type === "spambot" && (
-            <div className="flex items-center gap-3 flex-wrap">
-              <span className="font-medium text-dark-200">SpamBot Check Complete</span>
-              <span className="text-success text-xs">{bulkResult.active} clean</span>
-              {bulkResult.limited > 0 && (
-                <span className="text-warning text-xs">{bulkResult.limited} limited</span>
-              )}
-              {bulkResult.frozen > 0 && (
-                <span className="text-danger text-xs">{bulkResult.frozen} frozen</span>
-              )}
-              {((bulkResult.moved_limited?.length || 0) + (bulkResult.moved_frozen?.length || 0)) > 0 && (
-                <span className="text-dark-400 text-xs">
-                  ({(bulkResult.moved_limited?.length || 0) + (bulkResult.moved_frozen?.length || 0)} moved to pool)
-                </span>
-              )}
-              <span className="text-dark-500 text-xs">{bulkResult.total} total</span>
-            </div>
-          )}
-          {bulkResult.type === "info" && (
-            <span className="font-medium text-dark-200">Session info loaded</span>
-          )}
-          <button onClick={() => setBulkResult(null)} className="ml-auto text-dark-500 hover:text-dark-300 text-xs">✕ dismiss</button>
+          {bulkResult.type === "validate" && (<>
+            <span className="font-medium text-hq-text">Validation Complete</span>
+            <span className="text-hq-success text-[12px]">{bulkResult.active} active</span>
+            {bulkResult.dead > 0 && <span className="text-hq-danger text-[12px]">{bulkResult.dead} dead (removed: {bulkResult.dead_removed?.join(", ")})</span>}
+          </>)}
+          {bulkResult.type === "spambot" && (<>
+            <span className="font-medium text-hq-text">SpamBot Check Complete</span>
+            <span className="text-hq-success text-[12px]">{bulkResult.active} clean</span>
+            {bulkResult.limited > 0 && <span className="text-hq-warning text-[12px]">{bulkResult.limited} limited</span>}
+            {bulkResult.frozen > 0 && <span className="text-hq-danger text-[12px]">{bulkResult.frozen} frozen</span>}
+            {((bulkResult.moved_limited?.length || 0) + (bulkResult.moved_frozen?.length || 0)) > 0 && (
+              <span className="text-hq-muted text-[12px]">({(bulkResult.moved_limited?.length || 0) + (bulkResult.moved_frozen?.length || 0)} moved to pool)</span>
+            )}
+            <span className="text-hq-muted text-[12px]">{bulkResult.total} total</span>
+          </>)}
+          {bulkResult.type === "info" && <span className="font-medium text-hq-text">Session info loaded</span>}
+          <button onClick={() => setBulkResult(null)} className="ml-auto text-hq-muted hover:text-hq-sub text-[12px]">✕ dismiss</button>
         </div>
       )}
 
-      {/* Sessions table */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Assigned Sessions</CardTitle>
-        </CardHeader>
+      {/* Sessions list */}
+      <HqCard className="p-5">
+        <HqTitle sub={`${sessions.length} account(s) powering this bot`}>Assigned Sessions</HqTitle>
         {displaySessions.length === 0 ? (
-          <p className="text-sm text-dark-500">No sessions assigned to this bot</p>
+          <p className="text-[13px] text-hq-muted py-6 text-center">No sessions assigned to this bot</p>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-2.5">
             {displaySessions.map((s: any, i: number) => (
-              <div key={s.file || i} className={`rounded-lg border p-3 sm:p-4 transition-all ${
-                s.status === "dead" ? "border-danger/30 bg-danger/[0.03]" :
-                s.status === "active" ? "border-dark-700/50 bg-dark-900/30" :
-                "border-dark-700/50"
+              <div key={s.file || i} className={`rounded-[14px] border p-3 sm:p-4 transition-colors ${
+                s.status === "dead" ? "border-hq-danger/30 bg-hq-danger/[0.04]" : "border-hq-border bg-hq-elev"
               }`}>
-                {/* Session header row */}
                 <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-2">
-                  <span className="text-dark-500 text-sm font-medium w-5">#{s.index ?? i + 1}</span>
+                  <span className="text-hq-muted text-[13px] font-medium w-5">#{s.index ?? i + 1}</span>
                   {statusBadge(s.status)}
-                  <span className="text-sm font-medium text-dark-200 truncate">{s.real_name || "Unknown"}</span>
-                  {s.premium && <span title="Premium"><Crown className="h-3.5 w-3.5 text-warning" /></span>}
-                  {s.restricted && <span title="Restricted"><Ban className="h-3.5 w-3.5 text-danger" /></span>}
+                  <span className="text-[13px] font-medium text-hq-text truncate">{s.real_name || "Unknown"}</span>
+                  {s.premium && <span title="Premium"><Crown className="h-3.5 w-3.5 text-hq-warning" /></span>}
+                  {s.restricted && <span title="Restricted"><Ban className="h-3.5 w-3.5 text-hq-danger" /></span>}
                   {spambotResults[s.file] && spambotBadge(spambotResults[s.file])}
                   <span className="flex-1" />
-                  <span className="text-[10px] font-mono text-dark-600 hidden sm:inline">{s.file}</span>
+                  <span className="text-[10px] font-mono text-hq-muted hidden sm:inline">{s.file}</span>
                 </div>
 
-                {/* Info grid */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 ml-7 text-xs">
-                  <div className="flex items-center gap-1.5">
-                    <Hash className="h-3 w-3 text-dark-600" />
-                    <span className="text-dark-500">ID:</span>
-                    <span className="font-mono text-dark-300">{s.user_id || "—"}</span>
-                  </div>
-                  {s.username && (
-                    <div className="flex items-center gap-1.5">
-                      <AtSign className="h-3 w-3 text-dark-600" />
-                      <span className="text-accent">@{s.username}</span>
-                    </div>
-                  )}
-                  {s.phone && (
-                    <div className="flex items-center gap-1.5">
-                      <Phone className="h-3 w-3 text-dark-600" />
-                      <span className="font-mono text-dark-400">{s.phone}</span>
-                    </div>
-                  )}
-                  {s.bio && (
-                    <div className="flex items-center gap-1.5 col-span-2 sm:col-span-1">
-                      <FileText className="h-3 w-3 text-dark-600 shrink-0" />
-                      <span className="text-dark-400 truncate" title={s.bio}>{s.bio}</span>
-                    </div>
-                  )}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 ml-7 text-[12px]">
+                  <div className="flex items-center gap-1.5"><Hash className="h-3 w-3 text-hq-muted" /><span className="text-hq-muted">ID:</span><span className="font-mono text-hq-sub">{s.user_id || "—"}</span></div>
+                  {s.username && <div className="flex items-center gap-1.5"><AtSign className="h-3 w-3 text-hq-muted" /><span className="text-hq-accent">@{s.username}</span></div>}
+                  {s.phone && <div className="flex items-center gap-1.5"><Phone className="h-3 w-3 text-hq-muted" /><span className="font-mono text-hq-sub">{s.phone}</span></div>}
+                  {s.bio && <div className="flex items-center gap-1.5 col-span-2 sm:col-span-1"><FileText className="h-3 w-3 text-hq-muted shrink-0" /><span className="text-hq-sub truncate" title={s.bio}>{s.bio}</span></div>}
                 </div>
 
-                {/* Error / reason display */}
                 {(s.error || s.reason) && (
-                  <div className="ml-7 mt-2 rounded bg-danger/10 px-2.5 py-1.5 text-xs text-danger">
-                    {s.error || s.reason}
-                  </div>
+                  <div className="ml-7 mt-2 rounded-[10px] bg-hq-danger/10 px-2.5 py-1.5 text-[12px] text-hq-danger">{s.error || s.reason}</div>
                 )}
 
-                {/* Action buttons */}
                 <div className="flex flex-wrap gap-1.5 ml-7 mt-3">
-                  <Button variant="ghost" size="sm" onClick={() => openEdit(s)} className="text-xs">
-                    <Edit className="h-3 w-3" /> Edit Profile
-                  </Button>
-                  <Button variant="ghost" size="sm" onClick={() => validateSession(s.file)} className="text-xs"
-                    loading={validating === s.file}>
-                    <ShieldCheck className="h-3 w-3" /> Validate
-                  </Button>
-                  <Button variant="ghost" size="sm" onClick={() => { fetchFreeSessions(); setShowReplace(s.file); }} className="text-xs">
-                    <ArrowRightLeft className="h-3 w-3" /> Replace
-                  </Button>
-                  <Button variant="ghost" size="sm" onClick={() => removeSession(s.file)} className="text-xs text-danger hover:text-danger"
-                    loading={actionLoading === s.file}>
-                    <Minus className="h-3 w-3" /> Remove
-                  </Button>
+                  <HqBtn tone="ghost" onClick={() => openEdit(s)} icon={Edit} className="!py-1.5 !text-[12px]">Edit Profile</HqBtn>
+                  <HqBtn tone="ghost" onClick={() => validateSession(s.file)} loading={validating === s.file} icon={ShieldCheck} className="!py-1.5 !text-[12px]">Validate</HqBtn>
+                  <HqBtn tone="ghost" onClick={() => { fetchFreeSessions(); setShowReplace(s.file); }} icon={ArrowRightLeft} className="!py-1.5 !text-[12px]">Replace</HqBtn>
+                  <HqBtn tone="danger" onClick={() => removeSession(s.file)} loading={actionLoading === s.file} icon={Minus} className="!py-1.5 !text-[12px]">Remove</HqBtn>
                 </div>
               </div>
             ))}
           </div>
         )}
-      </Card>
+      </HqCard>
 
       {/* Excluded sessions */}
       {bot.excluded_sessions?.length > 0 && (
-        <Card>
-          <CardHeader><CardTitle>Excluded Sessions ({bot.excluded_sessions.length})</CardTitle></CardHeader>
+        <HqCard className="p-5">
+          <HqTitle>Excluded Sessions ({bot.excluded_sessions.length})</HqTitle>
           <div className="flex flex-wrap gap-2">
             {bot.excluded_sessions.map((s: string, i: number) => (
-              <span key={i} className="rounded bg-danger/10 text-danger px-2 py-1 text-xs font-mono">{s}</span>
+              <span key={i} className="rounded-[10px] bg-hq-danger/10 text-hq-danger px-2 py-1 text-[12px] font-mono border border-hq-danger/20">{s}</span>
             ))}
           </div>
-        </Card>
+        </HqCard>
       )}
 
       {/* Edit Profile Modal */}
@@ -1073,34 +1124,24 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
         <Modal open onClose={() => { setEditMode(false); setSelected(null); }} title={`Edit Profile: ${selected.file}`} size="lg">
           <div className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <Input label="First Name" value={editData.first_name}
-                onChange={(e: any) => setEditData({ ...editData, first_name: e.target.value })} />
-              <Input label="Last Name" value={editData.last_name}
-                onChange={(e: any) => setEditData({ ...editData, last_name: e.target.value })} />
+              <HqInput label="First Name" value={editData.first_name} onChange={(e: any) => setEditData({ ...editData, first_name: e.target.value })} />
+              <HqInput label="Last Name" value={editData.last_name} onChange={(e: any) => setEditData({ ...editData, last_name: e.target.value })} />
             </div>
-            <Input label="Username (without @)" value={editData.username}
-              onChange={(e: any) => setEditData({ ...editData, username: e.target.value })}
-              placeholder="username123" />
-            <div>
-              <label className="block text-xs font-medium text-dark-400 mb-1.5">Bio</label>
+            <HqInput label="Username (without @)" value={editData.username} onChange={(e: any) => setEditData({ ...editData, username: e.target.value })} placeholder="username123" />
+            <div className="space-y-1.5">
+              <label className="block text-[12px] font-medium text-hq-sub">Bio</label>
               <textarea
-                className="w-full rounded-lg border border-dark-600 bg-dark-950 px-3 py-2 text-sm text-dark-200 focus:outline-none focus:ring-2 focus:ring-accent/40 resize-none h-24"
-                value={editData.bio}
-                onChange={(e) => setEditData({ ...editData, bio: e.target.value })}
-                placeholder="Session bio..."
-                maxLength={70}
+                className="w-full rounded-[14px] border border-hq-border bg-hq-bg px-3 py-2 text-[13px] text-hq-text focus:outline-none focus:border-hq-accent/60 resize-none h-24"
+                value={editData.bio} onChange={(e) => setEditData({ ...editData, bio: e.target.value })}
+                placeholder="Session bio…" maxLength={70}
               />
-              <p className="text-[10px] text-dark-600 mt-1">{editData.bio.length}/70 characters</p>
+              <p className="text-[10px] text-hq-muted">{editData.bio.length}/70 characters</p>
             </div>
-            <div className="flex items-center gap-3 pt-2 border-t border-dark-700">
-              <Button onClick={saveProfile} loading={saving}>
-                <Save className="h-4 w-4" /> Save Changes
-              </Button>
-              <Button variant="ghost" onClick={() => { setEditMode(false); setSelected(null); }}>Cancel</Button>
+            <div className="flex items-center gap-2 pt-2 border-t border-hq-border">
+              <HqBtn onClick={saveProfile} loading={saving} icon={Save}>Save Changes</HqBtn>
+              <HqBtn tone="ghost" onClick={() => { setEditMode(false); setSelected(null); }}>Cancel</HqBtn>
             </div>
-            <p className="text-[10px] text-dark-600">
-              Changes are applied immediately via Telegram API. Name/bio/username updates are rate-limited by Telegram.
-            </p>
+            <p className="text-[10px] text-hq-muted">Changes are applied immediately via Telegram API. Name/bio/username updates are rate-limited by Telegram.</p>
           </div>
         </Modal>
       )}
@@ -1109,33 +1150,7 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
       {showAdd && (
         <Modal open onClose={() => setShowAdd(false)} title="Add Session from Free Pool" size="lg">
           <div className="space-y-3">
-            {loadingFree ? (
-              <div className="flex items-center gap-2 py-8 justify-center text-dark-500">
-                <Loader2 className="h-5 w-5 animate-spin" /> Loading free sessions...
-              </div>
-            ) : freeSessions.length === 0 ? (
-              <p className="text-sm text-dark-500 text-center py-8">No sessions available in the free pool</p>
-            ) : (
-              <>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-dark-500" />
-                  <input className="w-full rounded-lg border border-dark-600 bg-dark-950 pl-9 pr-3 py-2 text-sm text-dark-200 focus:outline-none focus:ring-2 focus:ring-accent/40"
-                    placeholder="Filter sessions..." value={freeFilter} onChange={(e) => setFreeFilter(e.target.value)} />
-                </div>
-                <p className="text-xs text-dark-500">{freeSessions.length} sessions available</p>
-                <div className="max-h-64 overflow-y-auto space-y-1">
-                  {freeSessions.filter(f => !freeFilter || f.includes(freeFilter)).map((f) => (
-                    <div key={f} className="flex items-center justify-between rounded-lg bg-dark-800 px-3 py-2">
-                      <span className="text-xs font-mono text-dark-300">{f}</span>
-                      <Button variant="secondary" size="sm" onClick={() => addSession(f)}
-                        loading={actionLoading === f} className="text-xs">
-                        <Plus className="h-3 w-3" /> Add
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
+            <PoolPicker onPick={addSession} actionIcon={Plus} actionLabel="Add" />
           </div>
         </Modal>
       )}
@@ -1144,36 +1159,10 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
       {showReplace && (
         <Modal open onClose={() => setShowReplace("")} title={`Replace: ${showReplace}`} size="lg">
           <div className="space-y-3">
-            <p className="text-xs text-dark-500">
-              Select a session from the free pool to replace <span className="font-mono text-dark-300">{showReplace}</span>.
-              The old session will return to the free pool.
+            <p className="text-[12px] text-hq-muted">
+              Select a session from the free pool to replace <span className="font-mono text-hq-sub">{showReplace}</span>. The old session returns to the free pool.
             </p>
-            {loadingFree ? (
-              <div className="flex items-center gap-2 py-8 justify-center text-dark-500">
-                <Loader2 className="h-5 w-5 animate-spin" /> Loading...
-              </div>
-            ) : freeSessions.length === 0 ? (
-              <p className="text-sm text-dark-500 text-center py-8">No sessions available in the free pool</p>
-            ) : (
-              <>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-dark-500" />
-                  <input className="w-full rounded-lg border border-dark-600 bg-dark-950 pl-9 pr-3 py-2 text-sm text-dark-200 focus:outline-none focus:ring-2 focus:ring-accent/40"
-                    placeholder="Filter sessions..." value={freeFilter} onChange={(e) => setFreeFilter(e.target.value)} />
-                </div>
-                <div className="max-h-64 overflow-y-auto space-y-1">
-                  {freeSessions.filter(f => !freeFilter || f.includes(freeFilter)).map((f) => (
-                    <div key={f} className="flex items-center justify-between rounded-lg bg-dark-800 px-3 py-2">
-                      <span className="text-xs font-mono text-dark-300">{f}</span>
-                      <Button variant="secondary" size="sm" onClick={() => replaceSession(showReplace, f)}
-                        loading={actionLoading === f} className="text-xs">
-                        <ArrowRightLeft className="h-3 w-3" /> Replace
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
+            <PoolPicker onPick={(f) => replaceSession(showReplace, f)} actionIcon={ArrowRightLeft} actionLabel="Replace" />
           </div>
         </Modal>
       )}
@@ -1499,33 +1488,33 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
       {/* ────── Header ────── */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-xl sm:text-2xl font-bold text-dark-100 flex items-center gap-2.5">
-            <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-violet-500/20 to-blue-500/20 flex items-center justify-center">
-              <List className="h-4.5 w-4.5 text-violet-400" />
+          <h1 className="text-xl sm:text-2xl font-bold text-hq-text flex items-center gap-2.5">
+            <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-hq-accent2/20 to-hq-accent/20 flex items-center justify-center">
+              <List className="h-4.5 w-4.5 text-hq-accent2" />
             </div>
             Chat List
           </h1>
-          <p className="text-xs text-dark-500 mt-1">Manage chatlist folders &amp; groups for {name}</p>
+          <p className="text-xs text-hq-muted mt-1">Manage chatlist folders &amp; groups for {name}</p>
         </div>
         {groups.length > 0 && (
           <div className="flex items-center gap-2 text-xs">
-            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-dark-800/80 border border-dark-700/60">
-              <Globe className="h-3 w-3 text-dark-400" />
-              <span className="font-semibold text-dark-200">{groups.length}</span>
-              <span className="text-dark-500">total</span>
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-hq-elev/80 border border-hq-border/60">
+              <Globe className="h-3 w-3 text-hq-sub" />
+              <span className="font-semibold text-hq-text">{groups.length}</span>
+              <span className="text-hq-muted">total</span>
             </div>
             {forumCount > 0 && (
-              <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-violet-500/10 border border-violet-500/20">
-                <MessageSquare className="h-3 w-3 text-violet-400" />
-                <span className="font-semibold text-violet-300">{forumCount}</span>
-                <span className="text-violet-400/60">forums</span>
+              <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-hq-accent2/10 border border-hq-accent2/20">
+                <MessageSquare className="h-3 w-3 text-hq-accent2" />
+                <span className="font-semibold text-hq-accent2">{forumCount}</span>
+                <span className="text-hq-accent2/60">forums</span>
               </div>
             )}
             {plainCount > 0 && (
-              <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20">
-                <Users className="h-3 w-3 text-blue-400" />
-                <span className="font-semibold text-blue-300">{plainCount}</span>
-                <span className="text-blue-400/60">groups</span>
+              <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-hq-accent/10 border border-hq-accent/20">
+                <Users className="h-3 w-3 text-hq-accent" />
+                <span className="font-semibold text-hq-accent">{plainCount}</span>
+                <span className="text-hq-accent/60">groups</span>
               </div>
             )}
           </div>
@@ -1534,20 +1523,20 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
 
       {/* ────── Active Chatlist Status ────── */}
       {hasExistingChatlist && (
-        <div className="rounded-xl bg-gradient-to-r from-violet-500/5 via-dark-900 to-blue-500/5 border border-violet-500/20 p-4">
+        <div className="rounded-xl bg-gradient-to-r from-hq-accent2/5 via-hq-card to-hq-accent/5 border border-hq-accent2/20 p-4">
           <div className="flex items-center gap-2 mb-2">
-            <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wider">Active Chatlist</span>
+            <div className="h-2 w-2 rounded-full bg-hq-success animate-pulse" />
+            <span className="text-xs font-semibold text-hq-success uppercase tracking-wider">Active Chatlist</span>
           </div>
           <div className="space-y-1.5">
             {(bot.custom_chatlist?.links || []).map((link: string, i: number) => (
-              <div key={i} className="flex items-center gap-2 rounded-lg bg-dark-800/50 px-3 py-2">
-                <ExternalLink className="h-3 w-3 text-violet-400 shrink-0" />
-                <span className="text-xs font-mono text-violet-300/80 truncate">{link}</span>
+              <div key={i} className="flex items-center gap-2 rounded-lg bg-hq-elev/50 px-3 py-2">
+                <ExternalLink className="h-3 w-3 text-hq-accent2 shrink-0" />
+                <span className="text-xs font-mono text-hq-accent2/80 truncate">{link}</span>
               </div>
             ))}
           </div>
-          <div className="mt-3 flex items-center gap-2 text-[10px] text-dark-500">
+          <div className="mt-3 flex items-center gap-2 text-[10px] text-hq-muted">
             <FolderOpen className="h-3 w-3" />
             <span className="font-mono">{bot.group_file}</span>
           </div>
@@ -1555,39 +1544,37 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
       )}
 
       {/* ────── Chatlist Links Editor ────── */}
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            <Sparkles className="h-4 w-4 inline mr-2 text-violet-400" />
-            {hasExistingChatlist ? "Update Chatlist" : "Setup Chatlist"}
-          </CardTitle>
-        </CardHeader>
+      <HqCard className="p-4 sm:p-5">
+        <h3 className="text-[15px] font-semibold text-hq-text mb-4 flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-hq-accent2" strokeWidth={1.75} />
+          {hasExistingChatlist ? "Update Chatlist" : "Setup Chatlist"}
+        </h3>
         <div className="space-y-4">
           {hasExistingChatlist && linksChanged && (
-            <div className="rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2.5 flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
-              <p className="text-xs text-amber-300/80">Saving will replace existing groups and re-join all sessions.</p>
+            <div className="rounded-lg bg-hq-warning/10 border border-hq-warning/20 px-3 py-2.5 flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 text-hq-warning shrink-0 mt-0.5" />
+              <p className="text-xs text-hq-warning/80">Saving will replace existing groups and re-join all sessions.</p>
             </div>
           )}
 
           {chatlistLinks.length === 0 ? (
-            <div className="rounded-xl border-2 border-dashed border-dark-700 p-8 text-center">
-              <div className="h-12 w-12 mx-auto rounded-xl bg-dark-800 flex items-center justify-center mb-3">
-                <List className="h-6 w-6 text-dark-500" />
+            <div className="rounded-xl border-2 border-dashed border-hq-border p-8 text-center">
+              <div className="h-12 w-12 mx-auto rounded-xl bg-hq-elev flex items-center justify-center mb-3">
+                <List className="h-6 w-6 text-hq-muted" />
               </div>
-              <p className="text-sm text-dark-400 font-medium">No chatlist configured</p>
-              <p className="text-xs text-dark-600 mt-1">Add a t.me/addlist/ link below to get started</p>
+              <p className="text-sm text-hq-sub font-medium">No chatlist configured</p>
+              <p className="text-xs text-hq-muted mt-1">Add a t.me/addlist/ link below to get started</p>
             </div>
           ) : (
             <div className="space-y-2">
               {chatlistLinks.map((link, i) => (
-                <div key={i} className="group flex items-center gap-2 rounded-xl bg-dark-800/60 border border-dark-700 px-4 py-3 transition-all hover:border-violet-500/30">
-                  <div className="h-7 w-7 rounded-lg bg-violet-500/10 flex items-center justify-center shrink-0">
-                    <Hash className="h-3.5 w-3.5 text-violet-400" />
+                <div key={i} className="group flex items-center gap-2 rounded-xl bg-hq-elev/60 border border-hq-border px-4 py-3 transition-all hover:border-hq-accent2/30">
+                  <div className="h-7 w-7 rounded-lg bg-hq-accent2/10 flex items-center justify-center shrink-0">
+                    <Hash className="h-3.5 w-3.5 text-hq-accent2" />
                   </div>
-                  <span className="flex-1 text-sm text-violet-300 font-mono truncate">{link}</span>
+                  <span className="flex-1 text-sm text-hq-accent2 font-mono truncate">{link}</span>
                   <button onClick={() => removeLink(i)} disabled={joining}
-                    className="opacity-0 group-hover:opacity-100 text-dark-500 hover:text-red-400 transition-all p-1.5 rounded-lg hover:bg-red-500/10 disabled:opacity-50">
+                    className="opacity-0 group-hover:opacity-100 text-hq-muted hover:text-hq-danger transition-all p-1.5 rounded-lg hover:bg-hq-danger/10 disabled:opacity-50">
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
                 </div>
@@ -1598,7 +1585,7 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
           <div className="flex gap-2">
             <div className="flex-1 relative">
               <input
-                className="w-full rounded-xl border border-dark-600 bg-dark-950 pl-4 pr-3 py-2.5 text-sm text-dark-200 placeholder:text-dark-600 focus:outline-none focus:ring-2 focus:ring-violet-500/40 focus:border-violet-500/40 disabled:opacity-50 transition-all"
+                className="w-full rounded-xl border border-hq-border bg-hq-bg pl-4 pr-3 py-2.5 text-sm text-hq-text placeholder:text-hq-muted focus:outline-none focus:ring-2 focus:ring-hq-accent2/40 focus:border-hq-accent2/40 disabled:opacity-50 transition-all"
                 placeholder="https://t.me/addlist/..."
                 value={newLink}
                 onChange={(e) => setNewLink(e.target.value)}
@@ -1613,7 +1600,7 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
 
           <div className="flex flex-wrap gap-2 justify-between items-center pt-1">
             {hasExistingChatlist && (
-              <Button variant="ghost" size="sm" onClick={clearChatlist} disabled={joining} className="text-dark-500 hover:text-red-400 hover:bg-red-500/10">
+              <Button variant="ghost" size="sm" onClick={clearChatlist} disabled={joining} className="text-hq-muted hover:text-hq-danger hover:bg-hq-danger/10">
                 <Trash2 className="h-3.5 w-3.5" /> Clear
               </Button>
             )}
@@ -1623,41 +1610,41 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
                 onClick={() => { if (hasExistingChatlist && linksChanged) setShowConfirm(true); else startJoin(); }}
                 disabled={joining || chatlistLinks.length === 0}
                 loading={joining}
-                className="rounded-xl bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 border-0 shadow-lg shadow-violet-500/20"
+                className="rounded-xl bg-gradient-to-r from-hq-accent2 to-hq-accent hover:from-hq-accent2 hover:to-hq-accent border-0 shadow-lg shadow-hq-accent2/20"
               >
                 <Zap className="h-4 w-4" />
                 {joining ? "Processing..." : "Join & Scan Groups"}
               </Button>
             ) : (
               <div className="flex items-center gap-2">
-                <span className="text-xs text-amber-400">Replace existing?</span>
+                <span className="text-xs text-hq-warning">Replace existing?</span>
                 <Button variant="ghost" size="sm" onClick={() => setShowConfirm(false)}>Cancel</Button>
-                <Button size="sm" onClick={startJoin} className="bg-amber-600 hover:bg-amber-500 border-0">
+                <Button size="sm" onClick={startJoin} className="bg-hq-warning hover:bg-hq-warning border-0">
                   <RefreshCw className="h-3.5 w-3.5" /> Replace
                 </Button>
               </div>
             )}
           </div>
         </div>
-      </Card>
+      </HqCard>
 
       {/* ────── Pipeline Progress ────── */}
       {pipelineVisible && (
-        <div className="rounded-2xl bg-dark-900 border border-dark-700 overflow-hidden">
-          <div className="px-5 py-3.5 border-b border-dark-800 flex items-center gap-3">
+        <div className="rounded-2xl bg-hq-card border border-hq-border overflow-hidden">
+          <div className="px-5 py-3.5 border-b border-hq-border flex items-center gap-3">
             {joining ? (
               <div className="h-5 w-5 relative">
-                <div className="absolute inset-0 rounded-full border-2 border-violet-500/30" />
-                <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-violet-400 animate-spin" />
+                <div className="absolute inset-0 rounded-full border-2 border-hq-accent2/30" />
+                <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-hq-accent2 animate-spin" />
               </div>
             ) : hasError ? (
-              <XCircle className="h-5 w-5 text-red-400" />
+              <XCircle className="h-5 w-5 text-hq-danger" />
             ) : allDone ? (
-              <div className="h-5 w-5 rounded-full bg-emerald-500/20 flex items-center justify-center">
-                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+              <div className="h-5 w-5 rounded-full bg-hq-success/20 flex items-center justify-center">
+                <CheckCircle2 className="h-3.5 w-3.5 text-hq-success" />
               </div>
             ) : null}
-            <span className="text-sm font-semibold text-dark-200">
+            <span className="text-sm font-semibold text-hq-text">
               {joining ? "Setting up chatlist..." : hasError ? "Setup failed" : allDone ? "Chatlist ready" : "Setup"}
             </span>
           </div>
@@ -1672,17 +1659,17 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
 
               return (
                 <div key={id} className={`rounded-xl px-4 py-3 transition-all duration-500 ${
-                  isActive ? "bg-violet-500/8 ring-1 ring-violet-500/25 shadow-lg shadow-violet-500/5" :
-                  isDone ? "bg-emerald-500/5 ring-1 ring-emerald-500/15" :
-                  isError ? "bg-red-500/5 ring-1 ring-red-500/20" :
+                  isActive ? "bg-hq-accent2/8 ring-1 ring-hq-accent2/25 shadow-lg shadow-hq-accent2/5" :
+                  isDone ? "bg-hq-success/5 ring-1 ring-hq-success/15" :
+                  isError ? "bg-hq-danger/5 ring-1 ring-hq-danger/20" :
                   "bg-transparent opacity-40"
                 }`}>
                   <div className="flex items-center gap-3">
                     <div className={`h-8 w-8 rounded-lg flex items-center justify-center shrink-0 transition-all duration-300 ${
-                      isActive ? "bg-violet-500/15 text-violet-400" :
-                      isDone ? "bg-emerald-500/15 text-emerald-400" :
-                      isError ? "bg-red-500/15 text-red-400" :
-                      "bg-dark-800 text-dark-600"
+                      isActive ? "bg-hq-accent2/15 text-hq-accent2" :
+                      isDone ? "bg-hq-success/15 text-hq-success" :
+                      isError ? "bg-hq-danger/15 text-hq-danger" :
+                      "bg-hq-elev text-hq-muted"
                     }`}>
                       {isActive ? <Loader2 className="h-4 w-4 animate-spin" /> :
                        isDone ? <CheckCircle2 className="h-4 w-4" /> :
@@ -1691,19 +1678,19 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className={`text-sm font-medium transition-colors ${
-                        isActive ? "text-violet-200" : isDone ? "text-emerald-300" : isError ? "text-red-300" : "text-dark-500"
+                        isActive ? "text-hq-accent2" : isDone ? "text-hq-success" : isError ? "text-hq-danger" : "text-hq-muted"
                       }`}>{meta.label}</div>
                       {step.detail && (
                         <div className={`text-[11px] mt-0.5 truncate ${
-                          isActive ? "text-violet-400/60" : isDone ? "text-emerald-400/50" : isError ? "text-red-400/60" : "text-dark-600"
+                          isActive ? "text-hq-accent2/60" : isDone ? "text-hq-success/50" : isError ? "text-hq-danger/60" : "text-hq-muted"
                         }`}>{step.detail}</div>
                       )}
                     </div>
                     <span className={`text-[9px] font-bold uppercase tracking-widest px-2 py-1 rounded-md ${
-                      isActive ? "bg-violet-500/20 text-violet-400" :
-                      isDone ? "bg-emerald-500/15 text-emerald-500" :
-                      isError ? "bg-red-500/15 text-red-400" :
-                      "bg-dark-800 text-dark-600"
+                      isActive ? "bg-hq-accent2/20 text-hq-accent2" :
+                      isDone ? "bg-hq-success/15 text-hq-success" :
+                      isError ? "bg-hq-danger/15 text-hq-danger" :
+                      "bg-hq-elev text-hq-muted"
                     }`}>
                       {isActive ? "Running" : isDone ? "Done" : isError ? "Failed" : `Step ${i + 1}`}
                     </span>
@@ -1711,19 +1698,19 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
 
                   {id === "scrape" && isActive && scrapeStats.total > 0 && (
                     <div className="mt-3 space-y-2.5">
-                      <div className="h-1 rounded-full bg-dark-800 overflow-hidden">
-                        <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-blue-500 transition-all duration-700 ease-out"
+                      <div className="h-1 rounded-full bg-hq-elev overflow-hidden">
+                        <div className="h-full rounded-full bg-gradient-to-r from-hq-accent2 to-hq-accent transition-all duration-700 ease-out"
                           style={{ width: `${Math.min(100, (scrapeStats.current / scrapeStats.total) * 100)}%` }} />
                       </div>
                       <div className="flex gap-2">
                         {[
-                          { v: `${scrapeStats.current}/${scrapeStats.total}`, l: "Scanned", c: "text-dark-300" },
-                          { v: scrapeStats.forums, l: "Forums", c: "text-blue-400" },
-                          { v: scrapeStats.topics, l: "Topics", c: "text-emerald-400" },
+                          { v: `${scrapeStats.current}/${scrapeStats.total}`, l: "Scanned", c: "text-hq-sub" },
+                          { v: scrapeStats.forums, l: "Forums", c: "text-hq-accent" },
+                          { v: scrapeStats.topics, l: "Topics", c: "text-hq-success" },
                         ].map((s, si) => (
-                          <div key={si} className="flex-1 rounded-lg bg-dark-800/60 px-2.5 py-2 text-center">
+                          <div key={si} className="flex-1 rounded-lg bg-hq-elev/60 px-2.5 py-2 text-center">
                             <div className={`text-base font-bold ${s.c}`}>{s.v}</div>
-                            <div className="text-[9px] text-dark-600 uppercase tracking-wider">{s.l}</div>
+                            <div className="text-[9px] text-hq-muted uppercase tracking-wider">{s.l}</div>
                           </div>
                         ))}
                       </div>
@@ -1733,11 +1720,11 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
                   {id === "join_rest" && isActive && joinStats.total > 0 && (
                     <div className="mt-3 space-y-2">
                       <div className="flex justify-between text-[10px]">
-                        <span className="text-violet-400/60">Sessions</span>
-                        <span className="text-violet-300 font-medium">{joinStats.done}/{joinStats.total}</span>
+                        <span className="text-hq-accent2/60">Sessions</span>
+                        <span className="text-hq-accent2 font-medium">{joinStats.done}/{joinStats.total}</span>
                       </div>
-                      <div className="h-1 rounded-full bg-dark-800 overflow-hidden">
-                        <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-blue-500 transition-all duration-500"
+                      <div className="h-1 rounded-full bg-hq-elev overflow-hidden">
+                        <div className="h-full rounded-full bg-gradient-to-r from-hq-accent2 to-hq-accent transition-all duration-500"
                           style={{ width: `${(joinStats.done / joinStats.total) * 100}%` }} />
                       </div>
                     </div>
@@ -1748,21 +1735,21 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
           </div>
 
           {allDone && finalStats && (
-            <div className="mx-4 mb-4 rounded-xl bg-gradient-to-br from-emerald-500/10 via-violet-500/5 to-blue-500/10 border border-emerald-500/20 p-5">
+            <div className="mx-4 mb-4 rounded-xl bg-gradient-to-br from-hq-success/10 via-hq-accent2/5 to-hq-accent/10 border border-hq-success/20 p-5">
               <div className="flex items-center gap-2 mb-4">
-                <Sparkles className="h-4 w-4 text-emerald-400" />
-                <span className="text-sm font-semibold text-emerald-300">Chatlist Ready</span>
+                <Sparkles className="h-4 w-4 text-hq-success" />
+                <span className="text-sm font-semibold text-hq-success">Chatlist Ready</span>
               </div>
               <div className="grid grid-cols-4 gap-3">
                 {[
-                  { v: finalStats.groups, l: "Groups", c: "text-white", bg: "from-dark-700 to-dark-800" },
-                  { v: finalStats.forums, l: "Forums", c: "text-blue-400", bg: "from-blue-500/10 to-blue-500/5" },
-                  { v: finalStats.joined, l: "Sessions", c: "text-emerald-400", bg: "from-emerald-500/10 to-emerald-500/5" },
-                  { v: finalStats.failed, l: "Failed", c: finalStats.failed > 0 ? "text-red-400" : "text-dark-500", bg: finalStats.failed > 0 ? "from-red-500/10 to-red-500/5" : "from-dark-800 to-dark-800" },
+                  { v: finalStats.groups, l: "Groups", c: "text-white", bg: "from-hq-border to-hq-elev" },
+                  { v: finalStats.forums, l: "Forums", c: "text-hq-accent", bg: "from-hq-accent/10 to-hq-accent/5" },
+                  { v: finalStats.joined, l: "Sessions", c: "text-hq-success", bg: "from-hq-success/10 to-hq-success/5" },
+                  { v: finalStats.failed, l: "Failed", c: finalStats.failed > 0 ? "text-hq-danger" : "text-hq-muted", bg: finalStats.failed > 0 ? "from-hq-danger/10 to-hq-danger/5" : "from-hq-elev to-hq-elev" },
                 ].map((s, si) => (
                   <div key={si} className={`rounded-xl bg-gradient-to-b ${s.bg} p-3 text-center`}>
                     <div className={`text-2xl font-bold ${s.c}`}>{s.v}</div>
-                    <div className="text-[9px] text-dark-500 uppercase tracking-wider mt-1">{s.l}</div>
+                    <div className="text-[9px] text-hq-muted uppercase tracking-wider mt-1">{s.l}</div>
                   </div>
                 ))}
               </div>
@@ -1770,9 +1757,9 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
           )}
 
           {errorMsg && (
-            <div className="mx-4 mb-4 rounded-xl bg-red-500/8 border border-red-500/20 px-4 py-3 flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 text-red-400 shrink-0 mt-0.5" />
-              <p className="text-xs text-red-300/80">{errorMsg}</p>
+            <div className="mx-4 mb-4 rounded-xl bg-hq-danger/8 border border-hq-danger/20 px-4 py-3 flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 text-hq-danger shrink-0 mt-0.5" />
+              <p className="text-xs text-hq-danger/80">{errorMsg}</p>
             </div>
           )}
         </div>
@@ -1780,21 +1767,21 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
 
       {/* ────── Group List Manager ────── */}
       {!pipelineVisible && groups.length > 0 && (
-        <div className="rounded-2xl bg-dark-900 border border-dark-700 overflow-hidden">
+        <div className="rounded-2xl bg-hq-card border border-hq-border overflow-hidden">
 
           {/* Toolbar */}
-          <div className="px-4 py-3 border-b border-dark-800 flex items-center gap-2 flex-wrap">
+          <div className="px-4 py-3 border-b border-hq-border flex items-center gap-2 flex-wrap">
             <div className="flex items-center gap-2 flex-1 min-w-0">
-              <FolderOpen className="h-4 w-4 text-violet-400 shrink-0" />
-              <span className="text-sm font-semibold text-dark-200 truncate">Groups</span>
-              <span className="text-[10px] text-dark-500 font-mono truncate hidden sm:inline">{bot.group_file}</span>
+              <FolderOpen className="h-4 w-4 text-hq-accent2 shrink-0" />
+              <span className="text-sm font-semibold text-hq-text truncate">Groups</span>
+              <span className="text-[10px] text-hq-muted font-mono truncate hidden sm:inline">{bot.group_file}</span>
             </div>
 
             {/* Search */}
             <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-dark-500" />
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-hq-muted" />
               <input
-                className="w-40 sm:w-52 rounded-lg border border-dark-700 bg-dark-950 pl-7 pr-3 py-1.5 text-xs text-dark-300 placeholder:text-dark-600 focus:outline-none focus:ring-1 focus:ring-violet-500/40 transition-all"
+                className="w-40 sm:w-52 rounded-lg border border-hq-border bg-hq-bg pl-7 pr-3 py-1.5 text-xs text-hq-sub placeholder:text-hq-muted focus:outline-none focus:ring-1 focus:ring-hq-accent2/40 transition-all"
                 placeholder="Search groups..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -1804,11 +1791,11 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
             {/* Action buttons */}
             <div className="flex items-center gap-1.5">
               <button onClick={() => setAddModalOpen(true)} title="Add groups manually"
-                className="p-1.5 rounded-lg text-dark-400 hover:text-violet-400 hover:bg-violet-500/10 transition-all">
+                className="p-1.5 rounded-lg text-hq-sub hover:text-hq-accent2 hover:bg-hq-accent2/10 transition-all">
                 <Plus className="h-4 w-4" />
               </button>
               <button onClick={loadGroupFile} title="Refresh"
-                className="p-1.5 rounded-lg text-dark-400 hover:text-blue-400 hover:bg-blue-500/10 transition-all">
+                className="p-1.5 rounded-lg text-hq-sub hover:text-hq-accent hover:bg-hq-accent/10 transition-all">
                 <RefreshCw className={`h-4 w-4 ${loadingGroups ? "animate-spin" : ""}`} />
               </button>
             </div>
@@ -1816,21 +1803,21 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
 
           {/* Selection bar */}
           {selected.size > 0 && (
-            <div className="px-4 py-2.5 bg-violet-500/8 border-b border-violet-500/20 flex items-center gap-3">
-              <button onClick={toggleSelectAll} className="text-violet-400 hover:text-violet-300 transition-colors">
+            <div className="px-4 py-2.5 bg-hq-accent2/8 border-b border-hq-accent2/20 flex items-center gap-3">
+              <button onClick={toggleSelectAll} className="text-hq-accent2 hover:text-hq-accent2 transition-colors">
                 {selected.size === filteredGroups.length
                   ? <CheckSquare className="h-4 w-4" />
                   : <MinusSquare className="h-4 w-4" />
                 }
               </button>
-              <span className="text-xs text-violet-300 font-medium">{selected.size} selected</span>
+              <span className="text-xs text-hq-accent2 font-medium">{selected.size} selected</span>
               <div className="flex-1" />
               <button onClick={() => setSelected(new Set())}
-                className="text-xs text-dark-400 hover:text-dark-200 px-2 py-1 rounded-lg hover:bg-dark-800 transition-all">
+                className="text-xs text-hq-sub hover:text-hq-text px-2 py-1 rounded-lg hover:bg-hq-elev transition-all">
                 Deselect
               </button>
               <button onClick={deleteSelected} disabled={saving}
-                className="flex items-center gap-1.5 text-xs text-red-400 hover:text-red-300 px-2.5 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/15 border border-red-500/20 transition-all disabled:opacity-50">
+                className="flex items-center gap-1.5 text-xs text-hq-danger hover:text-hq-danger px-2.5 py-1.5 rounded-lg bg-hq-danger/10 hover:bg-hq-danger/15 border border-hq-danger/20 transition-all disabled:opacity-50">
                 <Trash2 className="h-3 w-3" />
                 Delete {selected.size}
               </button>
@@ -1840,7 +1827,7 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
           {/* Group rows */}
           <div className="max-h-[500px] overflow-y-auto">
             {filteredGroups.length === 0 && searchQuery && (
-              <div className="px-4 py-8 text-center text-dark-500 text-xs">
+              <div className="px-4 py-8 text-center text-hq-muted text-xs">
                 No groups matching &ldquo;{searchQuery}&rdquo;
               </div>
             )}
@@ -1853,33 +1840,33 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
               return (
                 <div
                   key={realIdx}
-                  className={`group flex items-center gap-3 px-4 py-2.5 border-b border-dark-800/50 transition-all cursor-pointer hover:bg-dark-800/40 ${
-                    isSelected ? "bg-violet-500/5" : ""
+                  className={`group flex items-center gap-3 px-4 py-2.5 border-b border-hq-border/50 transition-all cursor-pointer hover:bg-hq-elev/40 ${
+                    isSelected ? "bg-hq-accent2/5" : ""
                   }`}
                   onClick={() => toggleSelect(realIdx)}
                 >
                   {/* Checkbox */}
                   <div className={`h-5 w-5 rounded-md border flex items-center justify-center shrink-0 transition-all ${
                     isSelected
-                      ? "bg-violet-500 border-violet-500 text-white"
-                      : "border-dark-600 text-transparent group-hover:border-dark-500"
+                      ? "bg-hq-accent2 border-hq-accent2 text-white"
+                      : "border-hq-border text-transparent group-hover:border-hq-border"
                   }`}>
                     {isSelected && <CheckCircle2 className="h-3 w-3" />}
                   </div>
 
                   {/* Index */}
-                  <span className="text-[10px] text-dark-600 font-mono w-6 text-right shrink-0 select-none">
+                  <span className="text-[10px] text-hq-muted font-mono w-6 text-right shrink-0 select-none">
                     {realIdx + 1}
                   </span>
 
                   {/* Type badge */}
                   {hasTopic ? (
-                    <div className="h-6 w-6 rounded-md bg-violet-500/15 flex items-center justify-center shrink-0" title="Forum with topic">
-                      <MessageSquare className="h-3 w-3 text-violet-400" />
+                    <div className="h-6 w-6 rounded-md bg-hq-accent2/15 flex items-center justify-center shrink-0" title="Forum with topic">
+                      <MessageSquare className="h-3 w-3 text-hq-accent2" />
                     </div>
                   ) : (
-                    <div className="h-6 w-6 rounded-md bg-dark-800 flex items-center justify-center shrink-0" title="Group">
-                      <Users className="h-3 w-3 text-dark-500" />
+                    <div className="h-6 w-6 rounded-md bg-hq-elev flex items-center justify-center shrink-0" title="Group">
+                      <Users className="h-3 w-3 text-hq-muted" />
                     </div>
                   )}
 
@@ -1887,24 +1874,24 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
                   <div className="flex-1 min-w-0">
                     {g.title ? (
                       <>
-                        <div className="text-sm text-dark-200 truncate leading-tight">{g.title}</div>
-                        <div className="text-[10px] text-dark-600 font-mono leading-tight mt-0.5">{g.id}</div>
+                        <div className="text-sm text-hq-text truncate leading-tight">{g.title}</div>
+                        <div className="text-[10px] text-hq-muted font-mono leading-tight mt-0.5">{g.id}</div>
                       </>
                     ) : (
-                      <div className="text-sm text-dark-300 font-mono truncate">{g.id}</div>
+                      <div className="text-sm text-hq-sub font-mono truncate">{g.id}</div>
                     )}
                   </div>
 
                   {/* Topic badge */}
                   {hasTopic && (
-                    <div className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-500/10 border border-blue-500/20 shrink-0">
-                      <Hash className="h-2.5 w-2.5 text-blue-400" />
-                      <span className="text-[10px] font-mono text-blue-300 font-medium">{g.topic}</span>
+                    <div className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-hq-accent/10 border border-hq-accent/20 shrink-0">
+                      <Hash className="h-2.5 w-2.5 text-hq-accent" />
+                      <span className="text-[10px] font-mono text-hq-accent font-medium">{g.topic}</span>
                     </div>
                   )}
 
                   {/* Short ID */}
-                  <span className="text-[10px] text-dark-700 font-mono shrink-0 hidden sm:block">
+                  <span className="text-[10px] text-hq-muted font-mono shrink-0 hidden sm:block">
                     {shortId(g.id)}
                   </span>
                 </div>
@@ -1913,10 +1900,10 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
           </div>
 
           {/* Footer */}
-          <div className="px-4 py-2.5 border-t border-dark-800 flex items-center justify-between text-[10px] text-dark-500">
+          <div className="px-4 py-2.5 border-t border-hq-border flex items-center justify-between text-[10px] text-hq-muted">
             <span>{groups.length} groups · {forumCount} forums · {plainCount} regular</span>
             {saving && (
-              <span className="flex items-center gap-1 text-violet-400">
+              <span className="flex items-center gap-1 text-hq-accent2">
                 <Loader2 className="h-3 w-3 animate-spin" /> Saving...
               </span>
             )}
@@ -1926,30 +1913,30 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
 
       {/* Empty state when no groups */}
       {!pipelineVisible && groups.length === 0 && !loadingGroups && hasExistingChatlist && (
-        <div className="rounded-xl border-2 border-dashed border-dark-700 p-8 text-center">
-          <div className="h-12 w-12 mx-auto rounded-xl bg-dark-800 flex items-center justify-center mb-3">
-            <FolderOpen className="h-6 w-6 text-dark-500" />
+        <div className="rounded-xl border-2 border-dashed border-hq-border p-8 text-center">
+          <div className="h-12 w-12 mx-auto rounded-xl bg-hq-elev flex items-center justify-center mb-3">
+            <FolderOpen className="h-6 w-6 text-hq-muted" />
           </div>
-          <p className="text-sm text-dark-400">No groups loaded</p>
-          <p className="text-xs text-dark-600 mt-1">Click &ldquo;Join &amp; Scan Groups&rdquo; to populate</p>
+          <p className="text-sm text-hq-sub">No groups loaded</p>
+          <p className="text-xs text-hq-muted mt-1">Click &ldquo;Join &amp; Scan Groups&rdquo; to populate</p>
         </div>
       )}
 
       {/* ────── Add Groups Modal ────── */}
       <Modal open={addModalOpen} onClose={() => { setAddModalOpen(false); setAddInput(""); }} title="Add Groups Manually" size="md">
         <div className="space-y-4">
-          <p className="text-xs text-dark-400">
-            Paste group IDs (one per line). Optionally include topic ID and title separated by <code className="text-violet-400">|</code>.
+          <p className="text-xs text-hq-sub">
+            Paste group IDs (one per line). Optionally include topic ID and title separated by <code className="text-hq-accent2">|</code>.
           </p>
           <div className="space-y-1.5">
-            <div className="flex gap-2 text-[10px] text-dark-500 font-mono px-1">
+            <div className="flex gap-2 text-[10px] text-hq-muted font-mono px-1">
               <span>Format:</span>
-              <span className="text-dark-400">-100xxx</span>
+              <span className="text-hq-sub">-100xxx</span>
               <span>or</span>
-              <span className="text-dark-400">-100xxx | topic_id | Title</span>
+              <span className="text-hq-sub">-100xxx | topic_id | Title</span>
             </div>
             <textarea
-              className="w-full rounded-xl border border-dark-600 bg-dark-950 p-3 text-sm text-dark-200 placeholder:text-dark-600 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono resize-none h-40"
+              className="w-full rounded-xl border border-hq-border bg-hq-bg p-3 text-sm text-hq-text placeholder:text-hq-muted focus:outline-none focus:ring-2 focus:ring-hq-accent2/40 font-mono resize-none h-40"
               placeholder={"-1001234567890\n-1009876543210 | 123 | My Forum Group"}
               value={addInput}
               onChange={(e) => setAddInput(e.target.value)}
@@ -1958,7 +1945,7 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
           <div className="flex justify-end gap-2">
             <Button variant="ghost" size="sm" onClick={() => { setAddModalOpen(false); setAddInput(""); }}>Cancel</Button>
             <Button size="sm" onClick={addManualGroups} disabled={!addInput.trim()}
-              className="bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 border-0">
+              className="bg-gradient-to-r from-hq-accent2 to-hq-accent hover:from-hq-accent2 hover:to-hq-accent border-0">
               <Plus className="h-3.5 w-3.5" /> Add Groups
             </Button>
           </div>
@@ -1967,14 +1954,14 @@ function GroupsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: 
 
       {/* ────── Excluded groups ────── */}
       {bot.excluded_groups?.length > 0 && (
-        <Card>
-          <CardHeader><CardTitle>Excluded Groups ({bot.excluded_groups.length})</CardTitle></CardHeader>
+        <HqCard className="p-4 sm:p-5">
+          <h3 className="text-[15px] font-semibold text-hq-text mb-4">Excluded Groups ({bot.excluded_groups.length})</h3>
           <div className="flex flex-wrap gap-1.5">
             {bot.excluded_groups.map((g: number) => (
-              <span key={g} className="rounded-lg bg-dark-800 px-2 py-1 text-[10px] font-mono text-dark-500">{g}</span>
+              <span key={g} className="rounded-lg bg-hq-elev border border-hq-border px-2 py-1 text-[10px] font-mono text-hq-muted">{g}</span>
             ))}
           </div>
-        </Card>
+        </HqCard>
       )}
     </div>
   );
@@ -1994,44 +1981,44 @@ function LogsTab({ name }: { name: string }) {
   const lines = data?.lines || [];
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Live Logs ({data?.total_lines || 0} total)</CardTitle>
-        <div className="flex items-center gap-2">
-          <select
-            value={lineCount}
-            onChange={(e) => setLineCount(Number(e.target.value))}
-            className="rounded border border-dark-600 bg-dark-800 px-2 py-1 text-xs text-dark-200"
-          >
-            <option value={100}>100 lines</option>
-            <option value={200}>200 lines</option>
-            <option value={500}>500 lines</option>
-            <option value={1000}>1000 lines</option>
-          </select>
-          <Button variant="ghost" size="sm" onClick={() => setAutoScroll(!autoScroll)}>
-            {autoScroll ? "Auto-scroll ON" : "Auto-scroll OFF"}
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => mutate()}>
-            <RotateCw className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-      </CardHeader>
+    <HqCard className="p-5">
+      <HqTitle
+        sub={`${data?.total_lines || 0} total lines`}
+        right={
+          <div className="flex items-center gap-2">
+            <select
+              value={lineCount}
+              onChange={(e) => setLineCount(Number(e.target.value))}
+              className="rounded-[10px] border border-hq-border bg-hq-bg px-2.5 py-1.5 text-[12px] text-hq-sub outline-none focus:border-hq-accent/60"
+            >
+              <option value={100}>100 lines</option>
+              <option value={200}>200 lines</option>
+              <option value={500}>500 lines</option>
+              <option value={1000}>1000 lines</option>
+            </select>
+            <HqBtn tone="ghost" onClick={() => setAutoScroll(!autoScroll)} className="!px-2.5 !text-[12px]">
+              {autoScroll ? "Auto-scroll ON" : "Auto-scroll OFF"}
+            </HqBtn>
+            <HqBtn tone="ghost" onClick={() => mutate()} icon={RotateCw} iconOnly />
+          </div>
+        }
+      >Live Logs</HqTitle>
       <div
         ref={logRef}
-        className="h-[600px] overflow-y-auto rounded-lg bg-dark-950 border border-dark-700/50 p-4 font-mono text-xs leading-relaxed"
+        className="h-[600px] overflow-y-auto rounded-[14px] bg-hq-bg border border-hq-border p-4 font-mono text-[12px] leading-relaxed"
       >
         {lines.length === 0 ? (
-          <p className="text-dark-500">No logs yet — start the bot to see output</p>
+          <p className="text-hq-muted">No logs yet — start the bot to see output</p>
         ) : (
           lines.map((line: string, i: number) => (
             <div
               key={i}
               className={`${
-                line.includes("[ERROR]") ? "text-danger" :
-                line.includes("[WARNING]") ? "text-warning" :
-                line.includes("FloodWait") ? "text-warning font-medium" :
-                line.includes("sent to") || line.includes("Posted") ? "text-success/70" :
-                line.includes("[INFO]") ? "text-dark-300" : "text-dark-400"
+                line.includes("[ERROR]") ? "text-hq-danger" :
+                line.includes("[WARNING]") ? "text-hq-warning" :
+                line.includes("FloodWait") ? "text-hq-warning font-medium" :
+                line.includes("sent to") || line.includes("Posted") ? "text-hq-success/80" :
+                line.includes("[INFO]") ? "text-hq-sub" : "text-hq-muted"
               }`}
             >
               {line}
@@ -2039,7 +2026,7 @@ function LogsTab({ name }: { name: string }) {
           ))
         )}
       </div>
-    </Card>
+    </HqCard>
   );
 }
 
@@ -2068,12 +2055,11 @@ function PlanTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: ()
   const plan = bot.plan || {};
 
   return (
-    <div className="space-y-6">
-      {/* Current plan info */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card>
-          <CardHeader><CardTitle>Current Plan</CardTitle></CardHeader>
-          <div className="space-y-2.5 text-sm">
+    <div className="space-y-5">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <HqCard className="p-5">
+          <HqTitle>Current Plan</HqTitle>
+          <div className="divide-y divide-hq-border/60">
             {([
               ["Plan Name", bot.plan_name || "—"],
               ["Mode", bot.mode],
@@ -2081,37 +2067,29 @@ function PlanTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: ()
               ["Cycle", `${plan.cycle || bot.cycle}s`],
               ["Gap", `${plan.gap || bot.gap}s`],
               ["Valid Until", formatDate(bot.valid_till)],
-            ] as [string, any][]).map(([k, v]) => (
-              <div key={k} className="flex justify-between py-1 border-b border-dark-800 last:border-0">
-                <span className="text-dark-400">{k}</span>
-                <span className="text-dark-200 font-medium">{String(v)}</span>
-              </div>
-            ))}
+            ] as [string, any][]).map(([k, v]) => <KV key={k} k={k} v={String(v)} />)}
           </div>
-        </Card>
+        </HqCard>
 
-        <Card>
-          <CardHeader><CardTitle>Edit Plan / Dates</CardTitle></CardHeader>
+        <HqCard className="p-5">
+          <HqTitle>Edit Plan / Dates</HqTitle>
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-            <Input label="Plan Name" disabled value={bot.plan_name || "—"} />
-            <Input label="Valid Until" type="date" {...register("valid_till")} />
-            <Button type="submit" loading={saving}>
-              <Save className="h-4 w-4" /> Update Validity
-            </Button>
+            <HqInput label="Plan Name" disabled value={bot.plan_name || "—"} />
+            <HqInput label="Valid Until" type="date" {...register("valid_till")} />
+            <HqBtn type="submit" loading={saving} icon={Save}>Update Validity</HqBtn>
           </form>
-        </Card>
+        </HqCard>
       </div>
 
-      {/* Authorized users */}
       {bot.authorized?.length > 0 && (
-        <Card>
-          <CardHeader><CardTitle>Authorized Users</CardTitle></CardHeader>
+        <HqCard className="p-5">
+          <HqTitle>Authorized Users</HqTitle>
           <div className="flex flex-wrap gap-2">
             {bot.authorized.map((uid: number, i: number) => (
-              <span key={i} className="rounded bg-accent/10 text-accent px-3 py-1 text-sm font-mono">{uid}</span>
+              <span key={i} className="rounded-[10px] bg-hq-accent/10 text-hq-accent px-3 py-1 text-[13px] font-mono border border-hq-accent/20">{uid}</span>
             ))}
           </div>
-        </Card>
+        </HqCard>
       )}
     </div>
   );
@@ -2142,23 +2120,21 @@ function ConfigTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: 
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <Card>
-        <CardHeader><CardTitle>Edit Configuration</CardTitle></CardHeader>
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <HqCard className="p-5">
+        <HqTitle>Edit Configuration</HqTitle>
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-          <Input label="Cycle (seconds)" type="number" {...register("cycle", { valueAsNumber: true })} />
-          <Input label="Gap (seconds)" type="number" {...register("gap", { valueAsNumber: true })} />
-          <Input label="Group File" {...register("group_file")} />
-          <Input label="Valid Until" type="date" {...register("valid_till")} />
-          <Button type="submit" loading={loading}>
-            <Save className="h-4 w-4" /> Save Changes
-          </Button>
+          <HqInput label="Cycle (seconds)" type="number" {...register("cycle", { valueAsNumber: true })} />
+          <HqInput label="Gap (seconds)" type="number" {...register("gap", { valueAsNumber: true })} />
+          <HqInput label="Group File" {...register("group_file")} />
+          <HqInput label="Valid Until" type="date" {...register("valid_till")} />
+          <HqBtn type="submit" loading={loading} icon={Save}>Save Changes</HqBtn>
         </form>
-      </Card>
+      </HqCard>
 
-      <Card>
-        <CardHeader><CardTitle>Current Values</CardTitle></CardHeader>
-        <div className="space-y-2 text-sm">
+      <HqCard className="p-5">
+        <HqTitle>Current Values</HqTitle>
+        <div className="divide-y divide-hq-border/60">
           {([
             ["Cycle", `${bot.cycle}s`],
             ["Gap", `${bot.gap}s`],
@@ -2167,14 +2143,9 @@ function ConfigTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: 
             ["Valid Until", formatDate(bot.valid_till)],
             ["Sessions", bot.sessions_count],
             ["State", bot.state],
-          ] as [string, string][]).map(([k, v]) => (
-            <div key={k} className="flex justify-between py-1 border-b border-dark-800 last:border-0">
-              <span className="text-dark-400">{k}</span>
-              <span className="text-dark-200">{v}</span>
-            </div>
-          ))}
+          ] as [string, string][]).map(([k, v]) => <KV key={k} k={k} v={v} />)}
         </div>
-      </Card>
+      </HqCard>
     </div>
   );
 }
@@ -2216,87 +2187,65 @@ function RepairTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: 
   };
 
   const runtimeActions = [
-    { id: "restart", label: "Force Restart", desc: "Kill workers and restart fresh", icon: RotateCw, color: "text-info" },
-    { id: "stop", label: "Force Stop", desc: "Immediately stop all posting", icon: Square, color: "text-danger" },
-    { id: "resume", label: "Resume (Unsuspend)", desc: "Clear suspended flag and resume", icon: PlayCircle, color: "text-success" },
+    { id: "restart", label: "Force Restart", desc: "Kill workers and restart fresh", icon: RotateCw, color: "text-hq-accent bg-hq-accent/10" },
+    { id: "stop", label: "Force Stop", desc: "Immediately stop all posting", icon: Square, color: "text-hq-danger bg-hq-danger/10" },
+    { id: "resume", label: "Resume (Unsuspend)", desc: "Clear suspended flag and resume", icon: PlayCircle, color: "text-hq-success bg-hq-success/10" },
   ];
 
   const repairActions = [
-    { id: "config", label: "Fix Config", desc: "Validate & auto-repair the config file (paths, session index, missing fields)", icon: FileText, color: "text-info" },
-    { id: "log-group", label: "Fix Log Group", desc: "Validate the log group and recreate it across sessions if broken", icon: MessageSquare, color: "text-accent" },
+    { id: "config", label: "Fix Config", desc: "Validate & auto-repair the config file (paths, session index, missing fields)", icon: FileText, color: "text-hq-accent bg-hq-accent/10" },
+    { id: "log-group", label: "Fix Log Group", desc: "Validate the log group and recreate it across sessions if broken", icon: MessageSquare, color: "text-hq-accent2 bg-hq-accent2/10" },
   ];
 
+  const ActionCard = ({ a, onClick }: { a: any; onClick: () => void }) => (
+    <button
+      onClick={onClick}
+      disabled={!!loading}
+      className="flex items-start gap-3 rounded-[14px] border border-hq-border bg-hq-elev p-4 text-left hover:border-hq-accent/30 hover:-translate-y-0.5 transition-all duration-150 disabled:opacity-50"
+    >
+      <span className={`w-9 h-9 rounded-[10px] flex items-center justify-center shrink-0 ${a.color}`}>
+        {loading === a.id ? <Loader2 className="h-4.5 w-4.5 animate-spin" strokeWidth={1.75} /> : <a.icon className="h-4.5 w-4.5" strokeWidth={1.75} />}
+      </span>
+      <div className="min-w-0">
+        <p className="text-[13px] font-medium text-hq-text">{a.label}</p>
+        <p className="text-[12px] text-hq-muted mt-0.5">{a.desc}</p>
+      </div>
+    </button>
+  );
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       {/* Result banner */}
       {result && (
-        <div className={`rounded-lg border px-4 py-3 flex items-start gap-2.5 text-sm ${
-          result.ok ? "border-success/30 bg-success/10 text-success" : "border-danger/30 bg-danger/10 text-danger"
+        <div className={`rounded-[14px] border px-4 py-3 flex items-start gap-2.5 text-[13px] ${
+          result.ok ? "border-hq-success/30 bg-hq-success/10 text-hq-success" : "border-hq-danger/30 bg-hq-danger/10 text-hq-danger"
         }`}>
           {result.ok ? <CheckCircle className="h-4 w-4 mt-0.5 shrink-0" /> : <XCircle className="h-4 w-4 mt-0.5 shrink-0" />}
           <p className="flex-1">{result.text}</p>
-          <button onClick={() => setResult(null)} className="text-dark-500 hover:text-dark-300"><XCircle className="h-4 w-4" /></button>
+          <button onClick={() => setResult(null)} className="text-hq-muted hover:text-hq-sub"><XCircle className="h-4 w-4" /></button>
         </div>
       )}
 
       {/* Repair operations (parity with /fix) */}
-      <Card>
-        <CardHeader><CardTitle>Repair</CardTitle></CardHeader>
-        <p className="text-xs text-dark-500 -mt-2 mb-3">Same operations as the <code className="text-dark-400">/fix</code> command in the controller bot.</p>
+      <HqCard className="p-5">
+        <HqTitle sub="Same operations as the /fix command in the controller bot">Repair</HqTitle>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {repairActions.map((a) => (
-            <button
-              key={a.id}
-              onClick={() => repair(a.id, a.label)}
-              disabled={!!loading}
-              className="flex items-start gap-3 rounded-lg border border-dark-700 bg-dark-800 p-4 text-left hover:border-accent/30 transition-all disabled:opacity-50"
-            >
-              {loading === a.id ? <Loader2 className={`h-5 w-5 animate-spin ${a.color}`} /> : <a.icon className={`h-5 w-5 ${a.color} shrink-0`} />}
-              <div>
-                <p className="text-sm font-medium text-dark-200">{a.label}</p>
-                <p className="text-xs text-dark-500">{a.desc}</p>
-              </div>
-            </button>
-          ))}
-          {/* Change bot token */}
-          <button
-            onClick={() => setTokenModal(true)}
-            disabled={!!loading}
-            className="flex items-start gap-3 rounded-lg border border-dark-700 bg-dark-800 p-4 text-left hover:border-accent/30 transition-all disabled:opacity-50"
-          >
-            <Key className="h-5 w-5 text-warning shrink-0" />
-            <div>
-              <p className="text-sm font-medium text-dark-200">Change Bot Token</p>
-              <p className="text-xs text-dark-500">Swap the controller bot: deactivate the old one, activate a new token (custom or from pool)</p>
-            </div>
-          </button>
+          {repairActions.map((a) => <ActionCard key={a.id} a={a} onClick={() => repair(a.id, a.label)} />)}
+          <ActionCard a={{ id: "token", label: "Change Bot Token", desc: "Swap the controller bot: deactivate the old one, activate a new token", icon: Key, color: "text-hq-warning bg-hq-warning/10" }} onClick={() => setTokenModal(true)} />
         </div>
-        <div className="mt-3 flex items-start gap-2 rounded-lg bg-dark-800/60 border border-dark-700/50 px-3 py-2">
-          <HardDrive className="h-3.5 w-3.5 text-dark-500 shrink-0 mt-0.5" />
-          <p className="text-[11px] text-dark-500">To fix or replace sessions (SpamBot check, swap dead/frozen/limited accounts), use the <span className="text-dark-300">Sessions</span> tab.</p>
+        <div className="mt-3 flex items-start gap-2 rounded-[12px] bg-hq-elev border border-hq-border px-3 py-2">
+          <HardDrive className="h-3.5 w-3.5 text-hq-muted shrink-0 mt-0.5" />
+          <p className="text-[12px] text-hq-muted">To fix or replace sessions (SpamBot check, swap dead/frozen/limited accounts), use the <span className="text-hq-sub">Sessions</span> tab.</p>
         </div>
-      </Card>
+      </HqCard>
 
       {/* Runtime controls */}
-      <Card>
-        <CardHeader><CardTitle>Runtime Controls</CardTitle></CardHeader>
+      <HqCard className="p-5">
+        <HqTitle>Runtime Controls</HqTitle>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {runtimeActions.map((a) => (
-            <button
-              key={a.id}
-              onClick={() => control(a.id, a.label)}
-              disabled={loading === a.id}
-              className="flex items-center gap-3 rounded-lg border border-dark-700 bg-dark-800 p-4 text-left hover:border-accent/30 transition-all disabled:opacity-50"
-            >
-              {loading === a.id ? <Loader2 className={`h-5 w-5 animate-spin ${a.color}`} /> : <a.icon className={`h-5 w-5 ${a.color}`} />}
-              <div>
-                <p className="text-sm font-medium text-dark-200">{a.label}</p>
-                <p className="text-xs text-dark-500">{a.desc}</p>
-              </div>
-            </button>
-          ))}
+          {runtimeActions.map((a) => <ActionCard key={a.id} a={a} onClick={() => control(a.id, a.label)} />)}
         </div>
-      </Card>
+      </HqCard>
 
       <ChangeBotTokenModal
         open={tokenModal}
@@ -2341,9 +2290,9 @@ function ChangeBotTokenModal({ open, name, currentUsername, onClose, onDone }: {
   return (
     <Modal open={open} onClose={busy ? () => {} : onClose} title="Change Bot Token" size="md">
       <div className="space-y-4">
-        <div className="rounded-lg bg-warning/10 border border-warning/20 px-3 py-2.5 flex items-start gap-2">
-          <AlertCircle className="h-4 w-4 text-warning shrink-0 mt-0.5" />
-          <p className="text-xs text-warning/90">
+        <div className="rounded-lg bg-hq-warning/10 border border-hq-warning/20 px-3 py-2.5 flex items-start gap-2">
+          <AlertCircle className="h-4 w-4 text-hq-warning shrink-0 mt-0.5" />
+          <p className="text-xs text-hq-warning/90">
             This deactivates the current controller bot{currentUsername ? ` (@${currentUsername})` : ""} and activates a new one.
             Posting restarts on the new bot and it's re-added to the log group. The old pool token (if any) is freed.
           </p>
@@ -2351,31 +2300,31 @@ function ChangeBotTokenModal({ open, name, currentUsername, onClose, onDone }: {
 
         <div className="grid grid-cols-2 gap-2">
           <button type="button" onClick={() => { setMode("custom"); setError(""); }}
-            className={`rounded-lg border p-3 text-left transition-all ${mode === "custom" ? "border-accent bg-accent/10 ring-1 ring-accent/30" : "border-dark-700 bg-dark-800 hover:border-dark-600"}`}>
-            <span className={`block text-sm font-semibold ${mode === "custom" ? "text-accent" : "text-dark-200"}`}>Custom token</span>
-            <span className="block text-[11px] text-dark-500 mt-0.5">Paste a token from @BotFather</span>
+            className={`rounded-lg border p-3 text-left transition-all ${mode === "custom" ? "border-hq-accent bg-hq-accent/10 ring-1 ring-hq-accent/30" : "border-hq-border bg-hq-elev hover:border-hq-border"}`}>
+            <span className={`block text-sm font-semibold ${mode === "custom" ? "text-hq-accent" : "text-hq-text"}`}>Custom token</span>
+            <span className="block text-[11px] text-hq-muted mt-0.5">Paste a token from @BotFather</span>
           </button>
           <button type="button" onClick={() => { setMode("pool"); setError(""); }}
-            className={`rounded-lg border p-3 text-left transition-all ${mode === "pool" ? "border-accent bg-accent/10 ring-1 ring-accent/30" : "border-dark-700 bg-dark-800 hover:border-dark-600"}`}>
-            <span className={`block text-sm font-semibold ${mode === "pool" ? "text-accent" : "text-dark-200"}`}>From pool</span>
-            <span className="block text-[11px] text-dark-500 mt-0.5">Use the next available pooled token</span>
+            className={`rounded-lg border p-3 text-left transition-all ${mode === "pool" ? "border-hq-accent bg-hq-accent/10 ring-1 ring-hq-accent/30" : "border-hq-border bg-hq-elev hover:border-hq-border"}`}>
+            <span className={`block text-sm font-semibold ${mode === "pool" ? "text-hq-accent" : "text-hq-text"}`}>From pool</span>
+            <span className="block text-[11px] text-hq-muted mt-0.5">Use the next available pooled token</span>
           </button>
         </div>
 
         {mode === "custom" && (
-          <Input
+          <HqInput
             label="New Bot Token" id="fix-token" placeholder="123456:ABCdef..."
             value={token} onChange={(e) => { setToken(e.target.value); setError(""); }}
             autoFocus
           />
         )}
 
-        {error && <p className="text-xs text-danger">{error}</p>}
+        {error && <p className="text-xs text-hq-danger">{error}</p>}
 
-        <div className="flex items-center justify-end gap-2 pt-2 border-t border-dark-800">
+        <div className="flex items-center justify-end gap-2 pt-2 border-t border-hq-border">
           <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>Cancel</Button>
           {confirm ? (
-            <Button size="sm" onClick={submit} loading={busy} className="!bg-warning/90 hover:!bg-warning">Confirm change</Button>
+            <Button size="sm" onClick={submit} loading={busy} className="!bg-hq-warning/90 hover:!bg-hq-warning">Confirm change</Button>
           ) : (
             <Button size="sm" onClick={() => setConfirm(true)} disabled={!canSubmit}>Change token</Button>
           )}
@@ -2385,35 +2334,3 @@ function ChangeBotTokenModal({ open, name, currentUsername, onClose, onDone }: {
   );
 }
 
-/* ─── Helpers ─── */
-function QuickStat({ icon: Icon, label, value, color }: { icon: any; label: string; value: number | string; color: string }) {
-  return (
-    <Card className="text-center !p-4">
-      <Icon className={`h-5 w-5 mx-auto mb-1 ${color}`} />
-      <p className={`text-xl font-bold ${color}`}>{value}</p>
-      <p className="text-xs text-dark-500">{label}</p>
-    </Card>
-  );
-}
-
-function StatusRow({ label, ok, okText = "Active", failText = "Inactive" }: { label: string; ok: boolean; okText?: string; failText?: string }) {
-  return (
-    <div className="flex justify-between py-1 border-b border-dark-800 last:border-0">
-      <span className="text-dark-400">{label}</span>
-      <span className={`flex items-center gap-1.5 text-sm font-medium ${ok ? "text-success" : "text-danger"}`}>
-        {ok ? <CheckCircle className="h-3.5 w-3.5" /> : <XCircle className="h-3.5 w-3.5" />}
-        {ok ? okText : failText}
-      </span>
-    </div>
-  );
-}
-
-function DetailRow({ icon: Icon, label, value }: { icon: any; label: string; value: any }) {
-  return (
-    <div className="flex items-center gap-2 py-1.5">
-      <Icon className="h-3.5 w-3.5 text-dark-500" />
-      <span className="text-dark-400 w-20">{label}</span>
-      <span className="text-dark-200 font-medium font-mono text-xs">{String(value)}</span>
-    </div>
-  );
-}
