@@ -514,11 +514,14 @@ export default function UserLogsPage() {
     return list.sort((a, b) => (b.failed.size + b.flood.size) - (a.failed.size + a.flood.size) || a.name.localeCompare(b.name));
   }, [inRange, search]);
 
-  // Top stats: within the selected time window, respecting the account filter.
-  // Note: these are derived only from the fetched log-file window (`fetchLines` lines), which can
-  // undercount vs. the bot's true lifetime totals shown on the Dashboard (a separate, persisted
-  // counter that survives log rotation/truncation). For "All time" with no account filter we show
-  // the authoritative lifetime numbers instead of the windowed parse, so the two pages agree.
+  // Top stats. Sent/Failed (with no account filter) always show the bot's persisted lifetime
+  // counters — the same numbers the Dashboard reads — regardless of which time range is selected,
+  // so the two pages never disagree. The fetched log-file window can only ever hold a slice of
+  // history (bounded by fetchLines), so deriving these from the parsed window instead of the
+  // lifetime counter is exactly what caused Logs (175) to undercount vs. Dashboard (402). Flood has
+  // no persisted lifetime counter server-side, so it stays windowed either way. Picking a specific
+  // account switches back to the windowed per-account count, since lifetime stats aren't broken
+  // down by account here.
   const { data: lifetimeStats } = usePortalStats();
   const stats = useMemo(() => {
     let success = 0, failure = 0, flood = 0;
@@ -528,7 +531,7 @@ export default function UserLogsPage() {
       else if (p.type === "failure") failure++;
       else if (p.type === "flood") flood++;
     }
-    const usingLifetime = range === "all" && accountFilter === "all" && !!lifetimeStats;
+    const usingLifetime = accountFilter === "all" && !!lifetimeStats;
     if (usingLifetime) {
       success = lifetimeStats!.lifetime_sent ?? success;
       failure = lifetimeStats!.lifetime_failed ?? failure;
@@ -538,7 +541,7 @@ export default function UserLogsPage() {
     // windowed count as everything else — so it never mixes a lifetime figure with a windowed one.
     const total = usingLifetime ? success + failure : success + failure + flood;
     return { success, failure, flood, total };
-  }, [inRange, accountFilter, range, lifetimeStats]);
+  }, [inRange, accountFilter, lifetimeStats]);
 
   useEffect(() => {
     if (autoScroll && logRef.current) logRef.current.scrollTop = 0;
@@ -627,16 +630,17 @@ export default function UserLogsPage() {
         </div>
       </div>
 
-      {/* Stats Bar — reflects the selected time range (and account, if one is picked) */}
+      {/* Stats Bar — Sent/Failed are lifetime totals (matching the Dashboard) unless a specific
+          account is filtered; Flood always reflects the selected time range. */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
         <MiniStat icon={Send} label="Total" value={stats.total} color="text-accent" />
         <MiniStat icon={CheckCircle2} label="Sent" value={stats.success} color="text-success" />
         <MiniStat icon={XCircle} label="Failed" value={stats.failure} color="text-danger" />
         <MiniStat icon={Timer} label="Flood" value={stats.flood} color="text-warning" />
       </div>
-      {range === "all" && accountFilter === "all" && lifetimeStats && (
+      {accountFilter === "all" && lifetimeStats && (
         <p className="text-[10px] text-dark-600 -mt-2">
-          Sent/Failed are lifetime totals (match the Dashboard) · Flood and the rows below only cover the recent log window
+          Sent/Failed are lifetime totals (always match the Dashboard) · Flood and the rows below only cover the recent log window
         </p>
       )}
 
