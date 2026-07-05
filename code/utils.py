@@ -1165,7 +1165,10 @@ def log_bot_event(bot_token: str, message: str) -> None:
     if not path:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Bug 4: use UTC to match append_to_user_log() (scheduler/posting lines). Mixing local time here with
+    # UTC there produced an out-of-order, non-monotonic timeline in the same log file.
+    from datetime import timezone as _tz
+    ts = datetime.now(_tz.utc).strftime("%Y-%m-%d %H:%M:%S")
     try:
         with open(path, "a", encoding="utf-8") as f:
             f.write(f"{ts} {message}\n")

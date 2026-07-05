@@ -20,6 +20,7 @@ from .users import (
     STAGGER_WINDOW_SEC,
     STAGGER_MAX_SEC,
     _async_session_loop,
+    _starter_phase_offset,
     _target_key_for_skip,
 )
 
@@ -375,10 +376,10 @@ async def worker_main_async(
             half = max(1, total_sessions) // 2
             stagger_sec = 0.0 if global_ordinal < half else float(ENTERPRISE_STAGGER_SEC)
         else:
-            stagger_sec = min(
-                (STAGGER_WINDOW_SEC / max(1, total_sessions)) * global_ordinal,
-                STAGGER_MAX_SEC,
-            )
+            # Starter: even-spread phase = ordinal * (cycle/N). Matches the per-cycle anchor phase in
+            # _async_session_loop so cycle 1 is already correctly spaced and never collides.
+            _cycle_sec = max(config.MIN_CYCLE_SEC, int(config_snapshot.get("cycle", 3600)))
+            stagger_sec = _starter_phase_offset(global_ordinal, total_sessions, _cycle_sec)
         t = asyncio.create_task(
             _async_session_loop(
                 bot_token,

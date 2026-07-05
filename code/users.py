@@ -629,12 +629,27 @@ _chatlist_input_state: dict[str, set[int]] = {}
 _chatlist_upload_state: dict[str, set[int]] = {}
 _fix_wait_token_state: dict[str, bool] = {}
 _fix_sess_data: dict[str, dict] = {}
-# Session start gap: Starter staggers sessions over a window, capped so no session waits more than 5 minutes.
-# Formula: min(STAGGER_WINDOW_SEC / n * i, STAGGER_MAX_SEC).
-# Enterprise: first half start immediately, second half start after ENTERPRISE_STAGGER_SEC.
-STAGGER_WINDOW_SEC = 600  # 10 minutes total window (was 3600)
-STAGGER_MAX_SEC = 300  # no session waits more than 5 minutes
+# Session start gap: Starter spreads sessions EVENLY across the cycle so each group receives one
+# post per account spaced by cycle/N (no simultaneous bursts). Offset = ordinal * (cycle_sec / N).
+# This offset is applied to the scheduling anchor EVERY cycle (see _starter_phase_offset), so the
+# spacing never collapses after the first cycle. STAGGER_WINDOW_SEC/STAGGER_MAX_SEC are legacy
+# (kept for import compatibility); Starter no longer uses a fixed window.
+STAGGER_WINDOW_SEC = 600  # legacy (unused for Starter phase); kept for import compatibility
+STAGGER_MAX_SEC = 300  # legacy (unused for Starter phase); kept for import compatibility
 ENTERPRISE_STAGGER_SEC = 300  # 5 minutes — second half of sessions start after this
+# Account-level FloodWait detector: if a session hits this many group FloodWaits in ONE cycle,
+# treat it as account-level throttling (not isolated group slow-mode) and pause the whole session.
+FLOODWAIT_SESSION_PAUSE_COUNT = 5
+
+
+def _starter_phase_offset(ordinal: int, total_sessions: int, cycle_sec: float) -> float:
+    """Starter even-spread phase for session `ordinal` (0-based): ordinal * (cycle_sec / N).
+    Applied to the scheduling anchor every cycle so N accounts posting the same groups are
+    time-shifted by cycle/N — each group gets a steady drip instead of an N-account burst.
+    Returns 0 for a single session. Distinct ordinals always get distinct offsets (no collision)."""
+    n = max(1, int(total_sessions or 1))
+    idx = max(0, int(ordinal)) % n
+    return idx * (max(1.0, float(cycle_sec)) / n)
 
 # Session health monitor: check running bots every N seconds; restart if workers dropped
 SESSION_HEALTH_CHECK_INTERVAL = 60  # 1 minute — faster crash detection & restart
@@ -673,6 +688,15 @@ POST_ERROR_PEER_FLOOD = "PEER_FLOOD"
 POST_ERROR_BANNED = "BANNED"
 POST_ERROR_UNKNOWN = "UNKNOWN"
 
+# Bug 13: errors that will not resolve by retrying every cycle (paid-post required, closed forum topic,
+# no write permission). We do NOT permanently exclude these (per request) but park them on a long group
+# cooldown so accounts stop hammering them every cycle while still re-checking periodically.
+_PERMANENT_ERROR_PATTERNS = (
+    "payment_required", "allow_payment_required", "topic_closed", "topic closed",
+    "can't write in this chat", "cant write in this chat", "chat_write_forbidden", "write forbidden",
+)
+PERMANENT_ERROR_RETRY_SEC = 4 * 3600  # re-attempt permanently-failing groups at most every 4 hours
+
 
 def _classify_post_error(error_message: str) -> str | None:
     """Classify post failure into a category for session health rate.
@@ -685,7 +709,14 @@ def _classify_post_error(error_message: str) -> str | None:
         return None  # FloodWait = per-group throttle, not session health issue
     if "skip" in msg or "ignore" in msg:
         return None  # explicit skip markers
-    if "write forbidden" in msg or "chat_write_forbidden" in msg or "send message forbidden" in msg:
+    if (
+        "write forbidden" in msg
+        or "chat_write_forbidden" in msg
+        or "chatwriteforbidden" in msg
+        or "send message forbidden" in msg
+        or "can't write in this chat" in msg  # Telethon ChatWriteForbiddenError message text
+        or "cant write in this chat" in msg
+    ):
         return POST_ERROR_WRITE_FORBIDDEN
     if "peer_flood" in msg or "peer flood" in msg:
         return POST_ERROR_PEER_FLOOD
@@ -1441,13 +1472,17 @@ def _load_groups(cfg: dict) -> list[dict]:
     return _parse_groups_file(cfg)
 
 
-def _rotate_group_list_by_cycle_index(groups: list[dict], cycle_sec: int | float) -> list[dict]:
-    """Rotate group list so the logical 'head' changes each cycle. Improves fairness in Starter when FloodWait
-    causes tail groups to be skipped: over time no group is systematically last. cycle_sec from cfg (e.g. 3600)."""
+def _rotate_group_list_by_cycle_index(
+    groups: list[dict], cycle_sec: int | float, session_ordinal: int = 0
+) -> list[dict]:
+    """Rotate group list so the logical 'head' changes each cycle AND per session. The cycle term keeps
+    fairness (no group is systematically last when FloodWait trims the tail); the per-session term
+    (session_ordinal) ensures the N accounts don't all start on the same group in the same cycle, so a
+    single group isn't hit by every account back-to-back. cycle_sec from cfg (e.g. 3600)."""
     if not groups:
         return []
     sec = max(1, int(cycle_sec))
-    idx = int(time.time() // sec) % len(groups)
+    idx = (int(time.time() // sec) + max(0, int(session_ordinal))) % len(groups)
     return list(groups[idx:]) + list(groups[:idx])
 
 
@@ -1545,7 +1580,7 @@ def _assigned_groups_for_session(
         from .chatlist import STARTER_MAX_GROUPS
         capped = all_groups[:STARTER_MAX_GROUPS] if len(all_groups) > STARTER_MAX_GROUPS else all_groups
         cycle_sec = max(config.MIN_CYCLE_SEC, int(cfg.get("cycle", 3600)))
-        rotated = _rotate_group_list_by_cycle_index(list(capped), cycle_sec)
+        rotated = _rotate_group_list_by_cycle_index(list(capped), cycle_sec, session_index)
         return rotated, len(all_groups)
     # Enterprise: partition by FULL session list so no session ever gets more than 1/T of groups
     # (avoids one remaining session getting 100% when others are paused → FloodWait cascade).
@@ -1904,8 +1939,8 @@ async def _async_session_loop(
             receive_updates=True,  # required for DM auto-reply handler to receive NewMessage events
             catch_up=False,
         )
-        # Starter: always stagger session start times over the 1-hour window (e.g. 4 sessions → 0, 15, 30, 45 min).
-        # Enterprise: first half start at 0, second half after 5 min. Never skip so sessions don't all post at once.
+        # Starter: even-spread phase = ordinal * (cycle/N) so accounts post at different times (persisted
+        # every cycle by the anchor phase). Enterprise: first half at 0, second half after 5 min.
         if stagger_sec > 0:
             if report_user_log:
                 _stagger_cfg = get_config() if get_config else {}
@@ -1914,7 +1949,18 @@ async def _async_session_loop(
                     f"(mode={get_plan_mode(_stagger_cfg)}: staggered start after {int(stagger_sec)}s)"
                 )
             logger.info("[Stagger] session=%s waiting %.0fs before first cycle", session_file, stagger_sec)
-            await asyncio.sleep(stagger_sec)
+            # Chunked, stop-aware wait: the phase can be a large fraction of the cycle, so a single sleep
+            # would make Stop unresponsive and starve heartbeats. Poll stop_event and beat while waiting.
+            _stagger_deadline = time.time() + stagger_sec
+            while time.time() < _stagger_deadline:
+                if stop_event and stop_event.is_set():
+                    break
+                if report_heartbeat:
+                    report_heartbeat()
+                await asyncio.sleep(min(SCHEDULER_POLL_INTERVAL_SEC, max(0.5, _stagger_deadline - time.time())))
+            if stop_event and stop_event.is_set():
+                logger.info("Session %s stopping (stop during stagger)", session_file)
+                return
         # Cache resolved entities per session across cycles to reduce resolve_peer calls
         entity_cache: dict[str, Any] = {}
         joined_log_group = False
@@ -2012,9 +2058,17 @@ async def _async_session_loop(
             # we wake AT that boundary; if we targeted "next" we would sleep one more cycle and skip it (2x interval).
             now_ts = time.time()
             cycle_anchor = float(cfg.get("cycle_anchor_ts") or now_ts)
-            cycle_index = int((now_ts - cycle_anchor) // cycle_sec) if cycle_sec > 0 else 0
-            current_boundary = cycle_anchor + cycle_index * cycle_sec
-            next_cycle_time = current_boundary  # run at this boundary (we are at or past it, or will wait until it)
+            # Starter: apply this session's persistent phase offset (ordinal * cycle/N) to the anchor so
+            # accounts stay evenly spaced EVERY cycle, not just the first (fixes stagger-collapse). Enterprise
+            # shards groups across sessions instead, so it uses the bare anchor (no phase).
+            _sched_mode = get_plan_mode(cfg)
+            session_phase = 0.0 if _sched_mode == "Enterprise" else _starter_phase_offset(session_ordinal, total_workers, cycle_sec)
+            anchor_phased = cycle_anchor + session_phase
+            cycle_index = int((now_ts - anchor_phased) // cycle_sec) if cycle_sec > 0 else 0
+            if cycle_index < 0:
+                cycle_index = 0
+            current_boundary = anchor_phased + cycle_index * cycle_sec
+            next_cycle_time = current_boundary  # run at this phased boundary (wait until it, or run now if past)
             delta_sec = next_cycle_time - now_ts
             delay_sec = now_ts - next_cycle_time if now_ts > next_cycle_time else 0.0
             # Instant first cycle: run immediately on start instead of waiting for cycle boundary
@@ -2212,6 +2266,7 @@ async def _async_session_loop(
             posts_skipped_cycle = 0
             posts_skipped_cooldown = 0
             posts_skipped_floodwait = 0
+            _floodwait_session_paused = False  # Bug 2: set when account-level flood pauses this session mid-cycle
             cycle_failures_permanent = 0
             cycle_failures_transient = 0
             skipped_permanently_excluded = 0  # set in Enterprise branch above; 0 for Starter
@@ -2310,6 +2365,28 @@ async def _async_session_loop(
                     if report_user_log:
                         report_user_log(f"[CycleScheduler] group_skipped_reason=already_posted_this_cycle")
                     continue
+                _g_chat_id = g.get("chat_id")
+                # Bug 3: this account was previously banned from sending to this group (24h TTL) — skip it
+                # instead of re-hitting a group that already rejected us every cycle. Prefer the worker's
+                # per-session ban snapshot (get_ban_skip); fall back to global storage in single-process mode.
+                _ban_skip = get_ban_skip(session_file, g) if get_ban_skip else _should_skip_target_for_ban(bot_token, session_file, g)
+                if _ban_skip:
+                    logger.info("[BanSkip] session=%s group_key=%s skipped (prior send ban, within TTL)", session_file, group_key)
+                    posts_skipped_cycle += 1
+                    continue
+                # Bug 7: respect a group's learned rate limit / slow mode. A prior FloodWait recorded the
+                # exact interval the group demands; don't post again until it elapses — the group naturally
+                # slots into a later cycle (post once, learn the interval, resume after it completes).
+                _gc_until = group_cooldowns.get(_g_chat_id, 0) if _g_chat_id is not None else 0
+                _now_cd = time.time()
+                if _gc_until and _now_cd < _gc_until:
+                    logger.info(
+                        "[GroupCooldown] session=%s chat_id=%s wait_remaining=%.0fs — group rate-limited, skip this cycle",
+                        session_file, _g_chat_id, _gc_until - _now_cd,
+                    )
+                    posts_skipped_cycle += 1
+                    posts_skipped_cooldown += 1
+                    continue
                 # No group cooldown, no ban skip — attempt every group every cycle
                 now = time.time()
                 scheduled_for = cycle_start + idx * effective_gap_cycle
@@ -2406,14 +2483,38 @@ async def _async_session_loop(
                         posts_success_cycle += 1
                         break
                     except (FloodWaitGroupSkip, FloodWaitPause) as e:
-                        # FloodWait on this group — log it and move on to the next group. Never pause session.
-                        logger.info("[FloodWait] session=%s chat_id=%s wait=%ss — skipping group, continuing", session_file, chat_id, e.seconds)
+                        _fw_seconds = int(getattr(e, "seconds", 0) or 0)
+                        # Bug 7: remember this group's required interval so future cycles skip it until it elapses.
+                        if chat_id is not None and _fw_seconds > 0:
+                            group_cooldowns[chat_id] = time.time() + _fw_seconds
+                        logger.info("[FloodWait] session=%s chat_id=%s wait=%ss — skipping group, continuing", session_file, chat_id, _fw_seconds)
                         if report_user_log:
-                            report_user_log(f"[FloodWait] chat_id={chat_id} wait={e.seconds}s — skipping group, session continues")
+                            report_user_log(f"[FloodWait] chat_id={chat_id} wait={_fw_seconds}s — skipping group, session continues")
                         posts_skipped_cycle += 1
                         posts_skipped_floodwait += 1
                         if report_post_attempt:
-                            report_post_attempt(session_file, chat_id, topic_id, False, f"floodwait_{e.seconds}s", group_name=getattr(entity, "title", str(chat_id)) if "entity" in dir() else str(chat_id))
+                            report_post_attempt(session_file, chat_id, topic_id, False, f"floodwait_{_fw_seconds}s", group_name=getattr(entity, "title", str(chat_id)) if "entity" in dir() else str(chat_id))
+                        # Bug 2: account-level FloodWait detection. A single very long wait (FloodWaitPause) or
+                        # many group FloodWaits in one cycle means Telegram is throttling the ACCOUNT, not one
+                        # group — stop posting with this account and pause it so we do not deepen the flood.
+                        _fw_key = (bot_token, session_file)
+                        _session_floodwait_counts[_fw_key] = _session_floodwait_counts.get(_fw_key, 0) + 1
+                        if isinstance(e, FloodWaitPause) or _session_floodwait_counts[_fw_key] >= FLOODWAIT_SESSION_PAUSE_COUNT:
+                            _pause_secs = max(_fw_seconds, SESSION_COOLDOWN_SEC)
+                            _unblock = time.time() + _pause_secs
+                            logger.warning(
+                                "[FloodWait] session=%s account-level throttling (floods_this_cycle=%s, wait=%ss) — pausing session %ss",
+                                session_file, _session_floodwait_counts[_fw_key], _fw_seconds, _pause_secs,
+                            )
+                            if report_user_log:
+                                report_user_log(f"[FloodWait] session={session_file} paused {int(_pause_secs)}s (account-level flood, stops hammering)")
+                            if report_session_paused:
+                                report_session_paused(session_file, _unblock, int(_pause_secs))
+                            else:
+                                def _upd_pause(c, _sf=session_file, _ub=_unblock):
+                                    c.setdefault("session_pause_until", {})[_sf] = _ub
+                                _save_bot_config(bot_token, _upd_pause)
+                            _floodwait_session_paused = True
                         break
                     except Exception as e:
                         action, _ = handler.handle(e)
@@ -2458,6 +2559,14 @@ async def _async_session_loop(
                                 report_ban_error(session_file, chat_id, topic_id)
                             else:
                                 _increment_ban_error_count(bot_token, session_file, chat_id, topic_id)
+                        # Bug 13: park permanently-failing groups (paid post / topic closed / no write) on a
+                        # long cooldown so we stop retrying them every cycle (not permanently excluded).
+                        elif chat_id is not None and any(p in err_lower for p in _PERMANENT_ERROR_PATTERNS):
+                            group_cooldowns[chat_id] = time.time() + PERMANENT_ERROR_RETRY_SEC
+                            logger.info(
+                                "[PermanentCooldown] session=%s chat_id=%s parked %.0fh (%s)",
+                                session_file, chat_id, PERMANENT_ERROR_RETRY_SEC / 3600.0, err_lower[:60],
+                            )
                         # Enterprise permanent error pruning disabled per request
                         if mode == "Enterprise":
                             if is_permanent_error(e) or action == AdBotAction.SKIP_GROUP:
@@ -2469,9 +2578,13 @@ async def _async_session_loop(
                                 cycle_failures_transient += 1
                         break
                 # No relative sleep here; next iteration sleeps until its scheduled_for (absolute-time)
+                if _floodwait_session_paused:
+                    # Account-level flood: stop this cycle immediately; session resumes after pause expires.
+                    break
             # Starter only: drain deferred groups (reassignment from PAUSED sessions).
             # Enterprise deterministic: each session only processes its shard; no draining so interval = cycle_sec.
-            if mode != "Enterprise" and is_session_available(bot_token, session_file, cfg):
+            # Skip draining if this session just paused for account-level flood (don't keep posting).
+            if mode != "Enterprise" and not _floodwait_session_paused and is_session_available(bot_token, session_file, cfg):
                 drain_flood_paused = False
                 while True:
                     if time.time() >= cycle_end_ts:
@@ -2546,8 +2659,11 @@ async def _async_session_loop(
                             _log_post_result(bot_token, True, session_ordinal + 1, session_file, report_log=report_log, report_post_attempt=report_post_attempt, group_title=group_title, link=msg_link or "(no link)", chat_id=chat_id, topic_id=topic_id)
                             posts_success_cycle += 1
                         except (FloodWaitGroupSkip, FloodWaitPause) as e:
-                            # FloodWait on deferred group — log and skip, session keeps going
-                            logger.info("[FloodWait] session=%s chat_id=%s wait=%ss deferred — skipping", session_file, chat_id, e.seconds)
+                            # FloodWait on deferred group — record the group's interval (Bug 7), log and skip.
+                            _fw_seconds = int(getattr(e, "seconds", 0) or 0)
+                            if chat_id is not None and _fw_seconds > 0:
+                                group_cooldowns[chat_id] = time.time() + _fw_seconds
+                            logger.info("[FloodWait] session=%s chat_id=%s wait=%ss deferred — skipping", session_file, chat_id, _fw_seconds)
                             posts_skipped_cycle += 1
                             posts_skipped_floodwait += 1
                             break
@@ -3132,7 +3248,13 @@ def _apply_worker_result(msg: dict) -> None:
         ts = msg.get("timestamp", time.time())
         from datetime import datetime as _dt
         time_str = _dt.utcfromtimestamp(ts).strftime("%Y-%m-%dT%H:%M:%SZ")
-        _is_skip = not success and any(p in (error_message or "") for p in ("group_floodwait", "group_cooldown"))
+        # Bug 11: a FloodWait/cooldown deferral is a SKIP, not a failure. The worker reports these as
+        # "floodwait_<n>s" / "...cooldown..." (or with wait_seconds set) — match those, not the old
+        # "group_floodwait" token that never appeared, so skips aren't mislabeled [POST_FAILURE].
+        _em = (error_message or "").lower()
+        _is_skip = (wait_seconds is not None) or (
+            not success and ("floodwait" in _em or "flood_wait" in _em or "cooldown" in _em or "slowmode" in _em or "slow mode" in _em)
+        )
         status = "success" if success else ("skipped" if _is_skip else "failure")
         account = session_file.replace(".session", "") if (session_file and session_file.endswith(".session")) else (session_file or "unknown")
         group_id_display = f"{group_id}#{topic_id}" if topic_id is not None else str(group_id)
@@ -3141,6 +3263,10 @@ def _apply_worker_result(msg: dict) -> None:
             line = f"[FLOOD_WAIT] account={account} group_name={group_name_safe} group_id={group_id_display} wait={wait_seconds}s"
         elif success:
             line = f"[POST_SUCCESS] account={account} group_name={group_name_safe} group_id={group_id_display}"
+        elif _is_skip:
+            # Deferral (FloodWait / rate-limit cooldown) — not a delivery failure.
+            _skip_reason = (error_message or "rate_limited")[:120].replace("\n", " ")
+            line = f"[POST_SKIPPED] account={account} group_name={group_name_safe} group_id={group_id_display} reason={repr(_skip_reason)}"
         else:
             err_safe = (error_message or "unknown")[:200].replace("\n", " ")
             line = f"[POST_FAILURE] account={account} group_name={group_name_safe} group_id={group_id_display} error={repr(err_safe)}"
@@ -3183,20 +3309,24 @@ def _apply_worker_result(msg: dict) -> None:
                 entry.append({"s": success, "ts": ts, "category": category or ""})
                 entry = entry[-SESSION_ERROR_ROLLING_WINDOW:]
                 by_sess[session_file] = entry
-                # Only count hard-error entries (category is not None/empty) in the rate.
-                # FloodWait and unknown errors are per-group throttles, not session health signals.
+                # Count only genuine session-health failures (BANNED / WRITE_FORBIDDEN / PEER_FLOOD) in the
+                # numerator. FloodWait/unknown are per-group throttles, not session health signals.
                 hard_errors = [
                     e for e in entry
                     if isinstance(e, dict) and not e.get("s")
                     and e.get("category") and e["category"] not in ("", POST_ERROR_FLOOD_WAIT, POST_ERROR_UNKNOWN)
                 ]
-                # Denominator = total hard-error-classified attempts (both success and hard-failure)
-                hard_total = sum(
+                # Bug 8: denominator MUST include successful posts, otherwise it only ever contains hard
+                # failures and the rate is always 1.0 → a single per-group ban would benching the whole
+                # account. Denominator = successes + hard failures (exclude FloodWait/unknown skips).
+                considered = sum(
                     1 for e in entry
-                    if isinstance(e, dict)
-                    and e.get("category") and e["category"] not in ("", POST_ERROR_FLOOD_WAIT, POST_ERROR_UNKNOWN)
-                ) or len(entry)  # fallback: if no classified entries yet, use total (avoids div-by-zero)
-                rate = (len(hard_errors) / hard_total) if hard_total else 0
+                    if isinstance(e, dict) and (
+                        e.get("s")
+                        or (e.get("category") and e["category"] not in ("", POST_ERROR_FLOOD_WAIT, POST_ERROR_UNKNOWN))
+                    )
+                )
+                rate = (len(hard_errors) / considered) if considered else 0
                 save_stats(name, st)
                 # Only write user JSON when cooldown threshold is crossed (not on every post attempt)
                 if rate >= SESSION_ERROR_RATE_THRESHOLD:
@@ -3207,10 +3337,13 @@ def _apply_worker_result(msg: dict) -> None:
                         c["session_cooldown_until"] = cooldown_map
                     _save_bot_config(bot_token, upd)
         # New stats: buffer event; flush every N events or every 5s (batched, crash-safe).
-        _stats_buffer_event(bot_token, session_file, success, ts)
-        p = _get_stats_pending(bot_token)
-        if len(p["pending_events"]) >= STATS_BATCH_SIZE or (time.time() - p["last_flush_ts"]) >= STATS_FLUSH_INTERVAL_SEC:
-            _flush_bot_stats(bot_token)
+        # Bug 10: a FloodWait/cooldown deferral is neither a delivered post nor a delivery failure — it is a
+        # skip. Do not buffer skips, so they don't inflate lifetime_failed / last24h_buckets "failed" counts.
+        if not _is_skip:
+            _stats_buffer_event(bot_token, session_file, success, ts)
+            p = _get_stats_pending(bot_token)
+            if len(p["pending_events"]) >= STATS_BATCH_SIZE or (time.time() - p["last_flush_ts"]) >= STATS_FLUSH_INTERVAL_SEC:
+                _flush_bot_stats(bot_token)
     elif msg_type == "audit_log":
         # Worker session lifecycle → write to adbot.log for forensic audit
         worker_id = msg.get("worker_id", "")
@@ -3295,11 +3428,10 @@ def _check_scheduler_drift_for_bot(bot_token: str) -> None:
                 "[SchedulerDriftWarning] session=%s drift_cycles=%.1f expected_cycles=%.1f actual_cycles=%s",
                 session_file, drift, expected_cycles, actual_cycles,
             )
-            # Optional realign: set last_cycle_time to nearest expected boundary so next cycle stays on schedule
-            aligned = first_ts + actual_cycles * cycle_sec
-            def upd(c):
-                c.setdefault("last_cycle_time", {})[session_file] = aligned
-            _save_bot_config(bot_token, upd)
+            # NOTE: scheduling is deterministic from cycle_anchor_ts + per-session phase (see
+            # _async_session_loop), so it does not accumulate drift and there is nothing to realign.
+            # (Historically this wrote last_cycle_time, but the scheduler never reads that value —
+            # writing it was a no-op. Kept as a diagnostic warning only.)
 
 
 async def _drift_check_loop() -> None:
@@ -3520,7 +3652,8 @@ async def _restart_single_worker(bot_token: str, worker_id: int) -> bool:
                 half = max(1, total_sessions) // 2
                 _worker_stagger_sec[key] = 0.0 if global_ordinal < half else float(ENTERPRISE_STAGGER_SEC)
             else:
-                _worker_stagger_sec[key] = (STAGGER_WINDOW_SEC / max(1, total_sessions)) * global_ordinal
+                _restart_cycle_sec = max(config.MIN_CYCLE_SEC, int(cfg_restart.get("cycle", 3600)))
+                _worker_stagger_sec[key] = _starter_phase_offset(global_ordinal, total_sessions, _restart_cycle_sec)
         else:
             _worker_stagger_sec[key] = 0.0
         try:
@@ -3782,7 +3915,8 @@ async def _start_posting(
             half = max(1, total_sessions) // 2
             stagger_sec = 0.0 if global_ordinal < half else float(ENTERPRISE_STAGGER_SEC)
         else:
-            stagger_sec = (STAGGER_WINDOW_SEC / max(1, total_sessions)) * global_ordinal
+            _start_cycle_sec = max(config.MIN_CYCLE_SEC, int(cfg.get("cycle", 3600)))
+            stagger_sec = _starter_phase_offset(global_ordinal, total_sessions, _start_cycle_sec)
         _worker_stagger_sec[key] = stagger_sec
     # Send START to each worker so they begin posting (avoids connection storms; workers wait for this).
     for _proc, cmd_q, w_id, _chunk in workers_list:
