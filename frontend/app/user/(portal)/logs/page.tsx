@@ -1,14 +1,12 @@
 "use client";
 import { useState, useRef, useEffect, useMemo } from "react";
 import { usePortalBot, usePortalLogs, usePortalStats, usePortalSessionValid } from "@/lib/hooks/usePortal";
-import Card, { CardHeader, CardTitle } from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
-import { PageSkeleton } from "@/components/ui/Skeleton";
 import {
-  RotateCw, CheckCircle2, XCircle, AlertTriangle, Clock,
-  Radio, Filter, List, Zap, Hash, MessageSquare, Play,
-  Timer, ChevronDown, ChevronRight, Send, Wifi, WifiOff,
-  Activity, Server, ExternalLink,
+  RotateCw, CheckCircle2, XCircle, Clock,
+  Radio, Search, Zap, Hash, MessageSquare, Play,
+  Timer, ChevronDown, ChevronRight, Send, Wifi,
+  Activity, Users, Copy, Check,
 } from "lucide-react";
 
 /* ────────────────────── Types ────────────────────── */
@@ -61,6 +59,23 @@ function toLocalTime(ts: string): { time: string; full: string } {
   } catch {
     return { time: ts, full: ts };
   }
+}
+
+// Relative "N minutes ago" label, matching the reference design's friendlier row timestamps.
+function relTime(ts?: string): string {
+  if (!ts) return "";
+  let n = ts.trim();
+  if (!n.endsWith("Z") && !n.includes("+")) n = n.replace(" ", "T") + "Z";
+  const t = new Date(n).getTime();
+  if (isNaN(t)) return ts;
+  const diff = Math.max(0, Date.now() - t);
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} minute${m === 1 ? "" : "s"} ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} hour${h === 1 ? "" : "s"} ago`;
+  return `${Math.floor(h / 24)} day${Math.floor(h / 24) === 1 ? "" : "s"} ago`;
 }
 
 function extractGroupNameStructured(s: string): string {
@@ -341,17 +356,17 @@ function cleanError(err: string): string {
 
 /* ────────────────────── Filter ────────────────────── */
 
-type FilterType = "all" | "posting" | "success" | "failure" | "flood" | "system";
+type FilterType = "all" | "success" | "failure" | "flood" | "system";
 
 // Time ranges for the top stats + list window. ms = Infinity means "all time".
 const TIME_RANGES: { key: string; label: string; ms: number }[] = [
-  { key: "1h", label: "1 hour", ms: 3600e3 },
-  { key: "6h", label: "6 hours", ms: 6 * 3600e3 },
-  { key: "24h", label: "24 hours", ms: 24 * 3600e3 },
-  { key: "48h", label: "48 hours", ms: 48 * 3600e3 },
-  { key: "7d", label: "7 days", ms: 7 * 24 * 3600e3 },
-  { key: "30d", label: "30 days", ms: 30 * 24 * 3600e3 },
   { key: "all", label: "All time", ms: Infinity },
+  { key: "1h", label: "Last hour", ms: 3600e3 },
+  { key: "6h", label: "Last 6 hours", ms: 6 * 3600e3 },
+  { key: "24h", label: "Last 24 hours", ms: 24 * 3600e3 },
+  { key: "48h", label: "Last 48 hours", ms: 48 * 3600e3 },
+  { key: "7d", label: "Last 7 days", ms: 7 * 24 * 3600e3 },
+  { key: "30d", label: "Last 30 days", ms: 30 * 24 * 3600e3 },
 ];
 
 // Parse an entry's UTC timestamp string to epoch ms (NaN if missing/unparseable).
@@ -381,7 +396,13 @@ export default function UserLogsPage() {
   // that might again exceed whatever the server currently accepts, start generous and step the request
   // size down automatically on a 422 until it succeeds, so the page always shows whatever it can get.
   const [fetchLines, setFetchLines] = useState(1000);
-  const [displayCount, setDisplayCount] = useState(1000);  // how many rows to render (default 1000)
+  const [displayCount] = useState(1000);  // how many rows to render
+  // usePortalSessionValid() reads localStorage, which doesn't exist during SSR — evaluating it
+  // immediately would render a different tree on the server vs. the client's first paint and
+  // trigger a hydration mismatch. Defer the invalid-session branch until after mount so the first
+  // client render matches the server's, then swap in the real check.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
   const sessionValid = usePortalSessionValid();
   const { data: bot } = usePortalBot();
   const { data, error: logsError, isLoading: logsLoading, mutate } = usePortalLogs(fetchLines);
@@ -392,14 +413,16 @@ export default function UserLogsPage() {
       setFetchLines((n) => (n > 500 ? 500 : n > 200 ? 200 : 100));
     }
   }, [logsError, fetchLines]);
-  const logRef = useRef<HTMLDivElement>(null);
-  const [autoScroll, setAutoScroll] = useState(true);
+
+  const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState<FilterType>("all");
   const [accountFilter, setAccountFilter] = useState<string>("all");
-  const [expandedIdx, setExpandedIdx] = useState<Set<number>>(new Set());
+  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const [search, setSearch] = useState("");        // free-text search (account, group, status, reason)
   const [view, setView] = useState<"timeline" | "groups">("timeline");  // timeline vs per-group insights
-  const [range, setRange] = useState("24h");       // time window for stats + list (24h default)
+  const [range, setRange] = useState("all");        // time window for stats + list (All time default)
+  const [rangeOpen, setRangeOpen] = useState(false);
+  const [acctOpen, setAcctOpen] = useState(false);
 
   const lines: string[] = data?.lines || [];
 
@@ -423,7 +446,7 @@ export default function UserLogsPage() {
     return collapsed;
   }, [lines]);
 
-  // Discover unique accounts (from ALL history so chips are stable regardless of the time window)
+  // Discover unique accounts (from ALL history so options are stable regardless of the time window)
   const accounts = useMemo(() => {
     const set = new Set<string>();
     for (const p of parsed) {
@@ -441,7 +464,7 @@ export default function UserLogsPage() {
   const rangeMs = TIME_RANGES.find((r) => r.key === range)?.ms ?? Infinity;
 
   // Entries within the selected time window. Everything below (stats, list, groups) works off this,
-  // so the time-range buttons drive the whole page while the "rows" selector only limits how many render.
+  // so the time-range dropdown drives the whole page while the "rows" cap only limits how many render.
   const inRange = useMemo(() => {
     if (rangeMs === Infinity) return parsed;
     const cutoff = nowRef - rangeMs;
@@ -450,7 +473,7 @@ export default function UserLogsPage() {
 
   // Per-account stats (within the selected time window)
   const accountStats = useMemo(() => {
-    const map: Record<string, { sent: number; failed: number; flood: number; lastSent?: string; lastFailed?: string }> = {};
+    const map: Record<string, { sent: number; failed: number; flood: number; lastSent?: string; lastFailed?: string; lastEventType?: LogType; lastEventTime?: string }> = {};
     for (const p of inRange) {
       if (!p.account) continue;
       if (!map[p.account]) map[p.account] = { sent: 0, failed: 0, flood: 0 };
@@ -464,6 +487,10 @@ export default function UserLogsPage() {
       } else if (p.type === "flood") {
         s.flood++;
       }
+      if (p.type === "success" || p.type === "failure" || p.type === "flood") {
+        s.lastEventType = p.type;
+        s.lastEventTime = p.timestamp;
+      }
     }
     return map;
   }, [inRange]);
@@ -472,8 +499,7 @@ export default function UserLogsPage() {
   const [filtered, matchTotal] = useMemo(() => {
     let result = inRange;
     // Type filter
-    if (filter === "posting") result = result.filter((p) => p.type === "success" || p.type === "failure" || p.type === "flood");
-    else if (filter === "success") result = result.filter((p) => p.type === "success");
+    if (filter === "success") result = result.filter((p) => p.type === "success");
     else if (filter === "failure") result = result.filter((p) => p.type === "failure");
     else if (filter === "flood") result = result.filter((p) => p.type === "flood");
     else if (filter === "system") result = result.filter((p) => ["system", "cycle_start", "cycle_end", "connect"].includes(p.type));
@@ -518,8 +544,8 @@ export default function UserLogsPage() {
   // counters — the same numbers the Dashboard reads — regardless of which time range is selected,
   // so the two pages never disagree. The fetched log-file window can only ever hold a slice of
   // history (bounded by fetchLines), so deriving these from the parsed window instead of the
-  // lifetime counter is exactly what caused Logs (175) to undercount vs. Dashboard (402). Flood has
-  // no persisted lifetime counter server-side, so it stays windowed either way. Picking a specific
+  // lifetime counter is exactly what caused Logs to undercount vs. Dashboard. Flood has no
+  // persisted lifetime counter server-side, so it stays windowed either way. Picking a specific
   // account switches back to the windowed per-account count, since lifetime stats aren't broken
   // down by account here.
   const { data: lifetimeStats } = usePortalStats();
@@ -543,32 +569,57 @@ export default function UserLogsPage() {
     return { success, failure, flood, total };
   }, [inRange, accountFilter, lifetimeStats]);
 
-  useEffect(() => {
-    if (autoScroll && logRef.current) logRef.current.scrollTop = 0;
-  }, [data, autoScroll]);
+  const systemCount = useMemo(
+    () => inRange.filter((p) => ["system", "cycle_start", "cycle_end", "connect"].includes(p.type)).length,
+    [inRange]
+  );
 
-  const toggleExpand = (idx: number) => {
-    setExpandedIdx((prev) => {
-      const next = new Set(prev);
-      if (next.has(idx)) next.delete(idx);
-      else next.add(idx);
-      return next;
-    });
+  // Accounts currently sitting in a flood/waiting state (their most recent post-event was a flood).
+  const waitingAccounts = useMemo(
+    () => Object.values(accountStats).filter((s) => s.lastEventType === "flood").length,
+    [accountStats]
+  );
+
+  const lastSuccessTime = useMemo(() => {
+    for (let i = inRange.length - 1; i >= 0; i--) {
+      if (inRange[i].type === "success") return inRange[i].timestamp;
+    }
+    return undefined;
+  }, [inRange]);
+
+  const topActiveGroups = useMemo(
+    () => [...groupAgg].sort((a, b) => b.sent.size - a.sent.size).filter((g) => g.sent.size > 0).slice(0, 5),
+    [groupAgg]
+  );
+  const topWaitingGroups = useMemo(
+    () => [...groupAgg].sort((a, b) => b.flood.size - a.flood.size).filter((g) => g.flood.size > 0).slice(0, 4),
+    [groupAgg]
+  );
+
+  // Overall health verdict, used by the System Status card + sidebar pill.
+  const health = stats.total === 0 ? "quiet" : stats.failure / Math.max(1, stats.total) > 0.15 ? "critical" : stats.failure > 0 || waitingAccounts > 0 ? "attention" : "healthy";
+  const healthCopy: Record<string, { label: string; color: string }> = {
+    quiet: { label: "No activity yet", color: "text-dark-500" },
+    healthy: { label: "Healthy", color: "text-success" },
+    attention: { label: "Needs attention", color: "text-warning" },
+    critical: { label: "Critical", color: "text-danger" },
   };
 
-  const filterBtns: { key: FilterType; label: string; icon: any; color: string }[] = [
-    { key: "all", label: "All", icon: List, color: "text-dark-300" },
-    { key: "posting", label: `Posts (${stats.total})`, icon: Send, color: "text-accent" },
-    { key: "success", label: `Sent (${stats.success})`, icon: CheckCircle2, color: "text-success" },
-    { key: "failure", label: `Failed (${stats.failure})`, icon: XCircle, color: "text-danger" },
-    { key: "flood", label: `Flood (${stats.flood})`, icon: Timer, color: "text-warning" },
-    { key: "system", label: "System", icon: Server, color: "text-dark-400" },
+  const refresh = () => {
+    setRefreshing(true);
+    mutate();
+    setTimeout(() => setRefreshing(false), 700);
+  };
+
+  const filterChips: { key: FilterType; label: string; count: number }[] = [
+    { key: "all", label: "All Activity", count: stats.total },
+    { key: "success", label: "Successful", count: stats.success },
+    { key: "failure", label: "Problems", count: stats.failure },
+    { key: "flood", label: "Waiting", count: stats.flood },
+    { key: "system", label: "System Events", count: systemCount },
   ];
 
-  // Active account stats for the sidebar chip
-  const activeAcctStats = accountFilter !== "all" ? accountStats[accountFilter] : null;
-
-  if (!sessionValid) {
+  if (mounted && !sessionValid) {
     return (
       <div className="flex flex-col items-center justify-center h-[60vh] text-center gap-3 animate-fade-in">
         <XCircle className="h-8 w-8 text-danger/60" />
@@ -583,253 +634,331 @@ export default function UserLogsPage() {
     );
   }
 
+  const closeMenus = () => { setRangeOpen(false); setAcctOpen(false); };
+
   return (
-    <div className="space-y-4 sm:space-y-5 animate-fade-in">
+    <div className="space-y-5 animate-fade-in" onClick={closeMenus}>
       {/* Header */}
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-xl sm:text-2xl font-bold text-dark-100">Live Logs</h1>
-          {accountFilter !== "all" && (
-            <p className="text-xs text-accent mt-0.5">Filtered: {accountFilter}</p>
-          )}
+          <h1 className="text-2xl sm:text-[28px] font-bold tracking-tight text-dark-100">Live Activity</h1>
+          <p className="text-sm text-dark-500 mt-1">See everything your accounts are doing in real time.</p>
         </div>
-        <div className="flex items-center gap-2">
-          {bot?.running && (
-            <span className="flex items-center gap-1.5 text-xs text-success">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-success" />
-              </span>
-              Live
+        <div className="flex items-center gap-2.5">
+          <button
+            onClick={(e) => { e.stopPropagation(); refresh(); }}
+            className="flex items-center gap-2 rounded-xl border border-dark-700 bg-dark-900 px-3.5 py-2.5 text-sm font-semibold text-dark-300 hover:bg-dark-800 hover:border-dark-600 transition-colors"
+          >
+            <RotateCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} /> Refresh
+          </button>
+
+          {/* Time-range dropdown */}
+          <div className="relative" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => { setRangeOpen((v) => !v); setAcctOpen(false); }}
+              className="flex items-center gap-2.5 rounded-xl border border-dark-700 bg-dark-900 px-3.5 py-2.5 text-sm text-dark-100 hover:bg-dark-800 hover:border-dark-600 transition-colors"
+            >
+              <span className="text-dark-500 font-medium hidden sm:inline">Showing Data From</span>
+              <span className="font-bold">{TIME_RANGES.find((r) => r.key === range)?.label}</span>
+              <ChevronDown className="h-3 w-3 text-dark-500" />
+            </button>
+            {rangeOpen && (
+              <div className="absolute right-0 top-[calc(100%+8px)] z-30 min-w-[200px] rounded-2xl border border-dark-700 bg-dark-850 p-1.5 shadow-2xl animate-scale-in">
+                {TIME_RANGES.map((r) => {
+                  const active = range === r.key;
+                  return (
+                    <button
+                      key={r.key}
+                      onClick={() => { setRange(r.key); setRangeOpen(false); }}
+                      className={`flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-sm transition-colors ${active ? "text-dark-100 font-bold bg-dark-800" : "text-dark-400 font-medium hover:bg-dark-800/60"}`}
+                    >
+                      <span className="w-4 text-accent">{active ? "✓" : ""}</span>
+                      {r.label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Health overview cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <HealthCard icon={CheckCircle2} value={stats.success} label="Posts Sent" tint="success" />
+        <HealthCard icon={Send} value={stats.total} label="Total Posts" tint="accent" />
+        <HealthCard icon={XCircle} value={stats.failure} label="Failed Posts" tint="danger" />
+        <HealthCard icon={Timer} value={stats.flood} label="Waiting" tint="warning" />
+        <HealthCard icon={Users} value={accounts.length} label="Active Accounts" tint="info" />
+        <div className="rounded-2xl border border-dark-700/50 bg-gradient-to-br from-dark-900 to-dark-850 px-4 py-3.5 flex items-center gap-3.5">
+          <div className="h-9 w-9 rounded-xl bg-success/10 flex items-center justify-center shrink-0">
+            <span className="relative flex h-2.5 w-2.5">
+              {health === "healthy" && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75" />}
+              <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${health === "healthy" ? "bg-success" : health === "attention" ? "bg-warning" : health === "critical" ? "bg-danger" : "bg-dark-600"}`} />
             </span>
-          )}
-          <Button variant="ghost" size="sm" onClick={() => mutate()}>
-            <RotateCw className="h-3.5 w-3.5" />
-          </Button>
+          </div>
+          <div className="min-w-0">
+            <p className={`text-lg font-bold leading-tight ${healthCopy[health].color}`}>{healthCopy[health].label}</p>
+            <p className="text-xs text-dark-500 mt-0.5 whitespace-nowrap">System Status</p>
+          </div>
         </div>
-      </div>
-
-      {/* Time-range selector — drives the stats + list window */}
-      <div className="-mx-1 overflow-x-auto pb-1">
-        <div className="flex items-center gap-1.5 px-1 min-w-max">
-          <Clock className="h-3.5 w-3.5 text-dark-500 shrink-0" />
-          {TIME_RANGES.map((r) => {
-            const active = range === r.key;
-            return (
-              <button
-                key={r.key}
-                onClick={() => setRange(r.key)}
-                className={`shrink-0 rounded-lg px-2.5 py-1 text-[10px] sm:text-xs font-medium transition-all ${
-                  active ? "bg-accent/20 text-accent ring-1 ring-accent/30" : "text-dark-400 hover:text-dark-200 hover:bg-dark-800"
-                }`}
-              >
-                {r.label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Stats Bar — Sent/Failed are lifetime totals (matching the Dashboard) unless a specific
-          account is filtered; Flood always reflects the selected time range. */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
-        <MiniStat icon={Send} label="Total" value={stats.total} color="text-accent" />
-        <MiniStat icon={CheckCircle2} label="Sent" value={stats.success} color="text-success" />
-        <MiniStat icon={XCircle} label="Failed" value={stats.failure} color="text-danger" />
-        <MiniStat icon={Timer} label="Flood" value={stats.flood} color="text-warning" />
       </div>
       {accountFilter === "all" && lifetimeStats && (
-        <p className="text-[10px] text-dark-600 -mt-2">
-          Sent/Failed are lifetime totals (always match the Dashboard) · Flood and the rows below only cover the recent log window
+        <p className="text-[11px] text-dark-600 -mt-3">
+          Sent/Failed/Total are lifetime totals (always match the Dashboard) · Waiting reflects the selected time range only
         </p>
       )}
 
-      {/* Account filter chips (when active account selected, show its details) */}
-      {activeAcctStats && (
-        <div className="flex flex-wrap items-center gap-3 rounded-lg bg-accent/5 border border-accent/20 px-3 py-2.5 animate-slide-up">
-          <span className="text-xs font-medium text-accent">{accountFilter}</span>
-          <span className="h-3 border-r border-dark-700" />
-          <span className="text-[10px] text-success">{activeAcctStats.sent} sent</span>
-          <span className="text-[10px] text-danger">{activeAcctStats.failed} failed</span>
-          {activeAcctStats.flood > 0 && <span className="text-[10px] text-warning">{activeAcctStats.flood} flood</span>}
-          {activeAcctStats.lastSent && (
-            <>
-              <span className="h-3 border-r border-dark-700" />
-              <span className="text-[10px] text-dark-400">Last sent: <span className="text-dark-200">{activeAcctStats.lastSent}</span></span>
-            </>
-          )}
-          {activeAcctStats.lastFailed && (
-            <>
-              <span className="h-3 border-r border-dark-700 hidden sm:inline" />
-              <span className="text-[10px] text-dark-400 hidden sm:inline">Last failed: <span className="text-dark-200">{activeAcctStats.lastFailed}</span></span>
-            </>
-          )}
-          <div className="flex-1" />
-          <button onClick={() => setAccountFilter("all")} className="text-[10px] text-dark-500 hover:text-dark-300">Clear</button>
-        </div>
-      )}
+      {/* Search */}
+      <div className="relative">
+        <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-dark-500" />
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={view === "groups" ? "Search a group by name…" : "Search group names, accounts, or messages…"}
+          className="w-full rounded-2xl border border-dark-700 bg-dark-900 pl-11 pr-11 py-3.5 text-sm text-dark-100 placeholder:text-dark-500 focus:outline-none focus:border-accent/60 focus:ring-4 focus:ring-accent/10 transition-all"
+        />
+        {search && (
+          <button onClick={() => setSearch("")} className="absolute right-4 top-1/2 -translate-y-1/2 text-dark-500 hover:text-dark-300">
+            <XCircle className="h-4 w-4" />
+          </button>
+        )}
+      </div>
 
-      {/* Filters + Controls */}
-      <Card className="!p-3">
-        {/* Row 0: Search + view toggle */}
-        <div className="flex flex-wrap items-center gap-2 mb-2">
-          <div className="relative flex-1 min-w-[180px]">
-            <Filter className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-dark-500" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={view === "groups" ? "Search a group by name…" : "Search account, group, status, error…"}
-              className="w-full rounded-lg border border-dark-600 bg-dark-800 pl-8 pr-8 py-1.5 text-[11px] sm:text-xs text-dark-100 placeholder:text-dark-500 focus:outline-none focus:ring-1 focus:ring-accent/40"
-            />
-            {search && (
-              <button onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-dark-500 hover:text-dark-300">
-                <XCircle className="h-3.5 w-3.5" />
-              </button>
-            )}
-          </div>
-          <div className="flex items-center rounded-lg border border-dark-700 overflow-hidden">
-            <button
-              onClick={() => setView("timeline")}
-              className={`flex items-center gap-1 px-2.5 py-1.5 text-[10px] sm:text-xs font-medium transition-all ${view === "timeline" ? "bg-dark-700 text-dark-100" : "text-dark-400 hover:text-dark-200"}`}
-            >
-              <List className="h-3 w-3" /> Timeline
-            </button>
-            <button
-              onClick={() => setView("groups")}
-              className={`flex items-center gap-1 px-2.5 py-1.5 text-[10px] sm:text-xs font-medium transition-all ${view === "groups" ? "bg-dark-700 text-dark-100" : "text-dark-400 hover:text-dark-200"}`}
-            >
-              <Hash className="h-3 w-3" /> By Group
-            </button>
-          </div>
-        </div>
-        {/* Row 1: Type filters */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          {filterBtns.map((f) => {
-            const Icon = f.icon;
+      {/* Filter chips + account dropdown + view toggle */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap gap-2">
+          {filterChips.map((f) => {
             const active = filter === f.key;
             return (
               <button
                 key={f.key}
                 onClick={() => setFilter(f.key)}
-                className={`flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[10px] sm:text-xs font-medium transition-all ${
-                  active
-                    ? "bg-dark-700 text-dark-100 ring-1 ring-dark-500"
-                    : "text-dark-400 hover:text-dark-200 hover:bg-dark-800"
+                className={`flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold transition-all ${
+                  active ? "bg-dark-700 text-dark-100 ring-1 ring-dark-500" : "bg-dark-900 text-dark-400 border border-dark-700/50 hover:text-dark-200 hover:border-dark-600"
                 }`}
               >
-                <Icon className={`h-3 w-3 ${active ? f.color : ""}`} />
                 {f.label}
+                <span className={`text-xs font-bold rounded-full px-2 py-0.5 ${active ? "bg-dark-600 text-dark-100" : "bg-dark-800 text-dark-500"}`}>{f.count}</span>
               </button>
             );
           })}
-          <div className="flex-1" />
-          <select
-            value={displayCount}
-            onChange={(e) => setDisplayCount(Number(e.target.value))}
-            className="rounded border border-dark-600 bg-dark-800 px-2 py-1 text-[10px] sm:text-xs text-dark-200"
-          >
-            <option value={200}>200 rows</option>
-            <option value={500}>500 rows</option>
-            <option value={1000}>1,000 rows</option>
-            <option value={2000}>2,000 rows</option>
-            <option value={5000}>5,000 rows</option>
-            <option value={10000}>All rows</option>
-          </select>
         </div>
 
-        {/* Row 2: Account filter (only if 2+ accounts) */}
-        {accounts.length > 1 && (
-          <div className="flex flex-wrap items-center gap-1.5 mt-2 pt-2 border-t border-dark-800/50">
-            <span className="text-[10px] text-dark-500 mr-1">Account:</span>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center rounded-xl border border-dark-700 bg-dark-900 overflow-hidden">
             <button
-              onClick={() => setAccountFilter("all")}
-              className={`rounded-full px-2.5 py-1 text-[10px] font-medium transition-all ${
-                accountFilter === "all"
-                  ? "bg-accent/20 text-accent ring-1 ring-accent/30"
-                  : "text-dark-400 hover:text-dark-200 hover:bg-dark-800"
-              }`}
+              onClick={() => setView("timeline")}
+              className={`px-3 py-2.5 text-xs font-semibold transition-colors ${view === "timeline" ? "bg-dark-700 text-dark-100" : "text-dark-500 hover:text-dark-300"}`}
             >
-              All
+              Timeline
             </button>
-            {accounts.map((acct, i) => {
-              const as = accountStats[acct];
-              const active = accountFilter === acct;
-              return (
-                <button
-                  key={acct}
-                  onClick={() => setAccountFilter(acct)}
-                  className={`rounded-full px-2.5 py-1 text-[10px] font-medium transition-all ${
-                    active
-                      ? "bg-accent/20 text-accent ring-1 ring-accent/30"
-                      : "text-dark-400 hover:text-dark-200 hover:bg-dark-800"
-                  }`}
-                >
-                  Acc {i + 1}
-                  {as && <span className="ml-1 opacity-60">({as.sent}/{as.sent + as.failed})</span>}
-                </button>
-              );
-            })}
+            <button
+              onClick={() => setView("groups")}
+              className={`px-3 py-2.5 text-xs font-semibold transition-colors ${view === "groups" ? "bg-dark-700 text-dark-100" : "text-dark-500 hover:text-dark-300"}`}
+            >
+              By Group
+            </button>
           </div>
-        )}
-      </Card>
 
-      {/* Log Entries */}
-      <div
-        ref={logRef}
-        className="h-[60vh] sm:h-[calc(100vh-380px)] min-h-[300px] overflow-y-auto rounded-xl bg-dark-950 border border-dark-700/50"
-      >
-        {view === "groups" ? (
-          groupAgg.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-dark-500">
-              <Hash className="h-8 w-8 mb-2 opacity-40" />
-              <p className="text-sm">{search ? "No group matches your search" : "No group activity yet"}</p>
+          {/* Account dropdown */}
+          {accounts.length > 1 && (
+            <div className="relative" onClick={(e) => e.stopPropagation()}>
+              <button
+                onClick={() => { setAcctOpen((v) => !v); setRangeOpen(false); }}
+                className="flex items-center gap-2.5 rounded-xl border border-dark-700 bg-dark-900 px-3.5 py-2.5 text-sm text-dark-100 hover:bg-dark-800 hover:border-dark-600 transition-colors"
+              >
+                <span className="text-dark-500 font-medium hidden sm:inline">Showing Accounts</span>
+                <span className="font-bold">{accountFilter === "all" ? "All Accounts" : `Acc ${accounts.indexOf(accountFilter) + 1}`}</span>
+                <ChevronDown className="h-3 w-3 text-dark-500" />
+              </button>
+              {acctOpen && (
+                <div className="absolute right-0 top-[calc(100%+8px)] z-30 min-w-[260px] rounded-2xl border border-dark-700 bg-dark-850 p-1.5 shadow-2xl animate-scale-in">
+                  <button
+                    onClick={() => { setAccountFilter("all"); setAcctOpen(false); }}
+                    className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm transition-colors ${accountFilter === "all" ? "bg-dark-800 text-dark-100 font-bold" : "text-dark-400 font-medium hover:bg-dark-800/60"}`}
+                  >
+                    <span className="w-4 text-accent">{accountFilter === "all" ? "✓" : ""}</span>
+                    <span className="flex-1 text-left">All Accounts</span>
+                  </button>
+                  {accounts.map((acct, i) => {
+                    const active = accountFilter === acct;
+                    const as = accountStats[acct];
+                    return (
+                      <button
+                        key={acct}
+                        onClick={() => { setAccountFilter(acct); setAcctOpen(false); }}
+                        className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm transition-colors ${active ? "bg-dark-800 text-dark-100 font-bold" : "text-dark-400 font-medium hover:bg-dark-800/60"}`}
+                      >
+                        <span className="w-4 text-accent">{active ? "✓" : ""}</span>
+                        <span className="flex-1 text-left">Acc {i + 1}</span>
+                        <span className={`h-1.5 w-1.5 rounded-full ${as?.lastEventType === "flood" ? "bg-warning" : "bg-success"}`} />
+                        <span className="text-xs text-dark-500">{as ? `${as.sent}/${as.sent + as.failed}` : "—"}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-          ) : (
-            <div className="divide-y divide-dark-800/30">
-              {groupAgg.map((g) => (
-                <GroupRow key={g.name} group={g} accounts={accounts} />
-              ))}
-            </div>
-          )
-        ) : logsError ? (
-          <div className="flex flex-col items-center justify-center h-full text-dark-500 gap-2">
-            <XCircle className="h-8 w-8 mb-1 opacity-40 text-danger" />
-            <p className="text-sm text-danger/80">Couldn't load logs — retrying every few seconds</p>
-            <p className="text-[10px] text-dark-600">{(logsError as any)?.message || "Connection issue"}</p>
-          </div>
-        ) : logsLoading && lines.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-dark-500">
-            <RotateCw className="h-6 w-6 mb-2 opacity-40 animate-spin" />
-            <p className="text-sm">Loading logs…</p>
-          </div>
-        ) : filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-dark-500">
-            <MessageSquare className="h-8 w-8 mb-2 opacity-40" />
-            <p className="text-sm">
-              {lines.length === 0 ? "No logs yet — start the bot to see output" : "No matching logs for this filter"}
-            </p>
-          </div>
-        ) : (
-          <div className="divide-y divide-dark-800/30">
-            {filtered.map((entry, i) => (
-              <LogEntry
-                key={i}
-                entry={entry}
-                expanded={expandedIdx.has(i)}
-                onToggle={() => toggleExpand(i)}
-                showAccount={accountFilter === "all" && accounts.length > 1}
-                accountIndex={accounts.indexOf(entry.account || "") + 1}
-              />
-            ))}
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
-      <p className="text-[10px] text-dark-600 text-right">
-        {view === "groups"
-          ? `${groupAgg.length} groups · ${accounts.length} accounts · ${TIME_RANGES.find((r) => r.key === range)?.label} · ${data?.total_lines || 0} total log lines`
-          : `Showing ${filtered.length} of ${matchTotal} matches · ${TIME_RANGES.find((r) => r.key === range)?.label} · ${data?.total_lines || 0} total in log file`}
-      </p>
+      {/* Log list + sidebar */}
+      <div className="grid gap-5" style={{ gridTemplateColumns: "minmax(0,1fr)" }}>
+        <div className="grid lg:grid-cols-[minmax(0,1fr)_300px] gap-5 items-start">
+          {/* LOG LIST */}
+          <div className="min-w-0">
+            {view === "groups" ? (
+              groupAgg.length === 0 ? (
+                <EmptyState label={search ? "No group matches your search" : "No group activity yet"} />
+              ) : (
+                <div className="grid gap-2.5">
+                  {groupAgg.map((g) => (
+                    <GroupRow key={g.name} group={g} accounts={accounts} />
+                  ))}
+                </div>
+              )
+            ) : logsError ? (
+              <div className="rounded-2xl border border-dark-700/50 bg-dark-900 py-16 flex flex-col items-center justify-center gap-2 text-dark-500">
+                <XCircle className="h-7 w-7 text-danger/60" />
+                <p className="text-sm text-danger/80">Couldn't load logs — retrying every few seconds</p>
+                <p className="text-[11px] text-dark-600">{(logsError as any)?.message || "Connection issue"}</p>
+              </div>
+            ) : logsLoading && lines.length === 0 ? (
+              <div className="rounded-2xl border border-dark-700/50 bg-dark-900 py-16 flex flex-col items-center justify-center gap-2 text-dark-500">
+                <RotateCw className="h-6 w-6 animate-spin opacity-50" />
+                <p className="text-sm">Loading logs…</p>
+              </div>
+            ) : filtered.length === 0 ? (
+              lines.length === 0 ? (
+                <EmptyState label="No logs yet — start the bot to see output" icon="🎉" title="Everything looks good." />
+              ) : (
+                <EmptyState label="No activity found for this time period." title="Nothing matches yet." />
+              )
+            ) : (
+              <div className="grid gap-2.5">
+                {filtered.map((entry, i) => (
+                  <LogRow
+                    key={i}
+                    entry={entry}
+                    expanded={expandedIdx === i}
+                    onToggle={() => setExpandedIdx(expandedIdx === i ? null : i)}
+                    showAccount={accountFilter === "all" && accounts.length > 1}
+                    accountIndex={accounts.indexOf(entry.account || "") + 1}
+                  />
+                ))}
+              </div>
+            )}
+
+            <p className="text-[11px] text-dark-600 text-right mt-3">
+              {view === "groups"
+                ? `${groupAgg.length} groups · ${accounts.length} accounts · ${TIME_RANGES.find((r) => r.key === range)?.label} · ${data?.total_lines || 0} total log lines`
+                : `Showing ${filtered.length} of ${matchTotal} matches · ${TIME_RANGES.find((r) => r.key === range)?.label} · ${data?.total_lines || 0} total in log file`}
+            </p>
+          </div>
+
+          {/* SIDEBAR */}
+          <div className="hidden lg:grid gap-4 sticky top-4">
+            <div className="rounded-2xl border border-dark-700/50 bg-dark-900 p-5">
+              <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-4">Current Status</p>
+              <div className={`flex items-center gap-2.5 rounded-xl px-3.5 py-3 mb-5 border ${
+                health === "healthy" ? "bg-success/10 border-success/25" : health === "attention" ? "bg-warning/10 border-warning/25" : health === "critical" ? "bg-danger/10 border-danger/25" : "bg-dark-800 border-dark-700"
+              }`}>
+                <span className="relative flex h-2.5 w-2.5">
+                  {health === "healthy" && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75" />}
+                  <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${health === "healthy" ? "bg-success" : health === "attention" ? "bg-warning" : health === "critical" ? "bg-danger" : "bg-dark-600"}`} />
+                </span>
+                <span className={`text-sm font-bold ${healthCopy[health].color}`}>
+                  {health === "healthy" ? "All Systems Working" : healthCopy[health].label}
+                </span>
+              </div>
+              <div className="grid gap-3.5">
+                <SidebarStat label="Accounts posting" value={`${Object.values(accountStats).filter((s) => s.sent > 0).length} of ${accounts.length || 0}`} />
+                <SidebarStat label="Last successful post" value={lastSuccessTime ? relTime(lastSuccessTime) : "—"} />
+                <SidebarStat label="Accounts waiting" value={String(waitingAccounts)} tint={waitingAccounts > 0 ? "warning" : undefined} />
+                <SidebarStat label="Recent problems" value={String(stats.failure)} tint={stats.failure > 0 ? "danger" : undefined} />
+              </div>
+            </div>
+
+            {topActiveGroups.length > 0 && (
+              <div className="rounded-2xl border border-dark-700/50 bg-dark-900 p-5">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-4">Top Active Groups</p>
+                <div className="grid gap-3">
+                  {topActiveGroups.map((g) => (
+                    <div key={g.name} className="flex items-center justify-between gap-2">
+                      <span className="text-sm text-dark-200 font-medium truncate">{g.name}</span>
+                      <span className="text-xs font-bold text-success shrink-0">{g.sent.size} posts</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {topWaitingGroups.length > 0 && (
+              <div className="rounded-2xl border border-dark-700/50 bg-dark-900 p-5">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-4">Top Waiting Groups</p>
+                <div className="grid gap-3">
+                  {topWaitingGroups.map((g) => (
+                    <div key={g.name} className="flex items-center justify-between gap-2">
+                      <span className="text-sm text-dark-200 font-medium truncate">{g.name}</span>
+                      <span className="text-xs font-bold text-warning shrink-0">{g.flood.size}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <style jsx global>{`
+        @keyframes scaleInSm { from { opacity: 0; transform: translateY(-6px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+        .animate-scale-in { animation: scaleInSm 150ms cubic-bezier(0.16,1,0.3,1); }
+      `}</style>
+    </div>
+  );
+}
+
+/* ────────────────────── Health card ────────────────────── */
+
+function HealthCard({
+  icon: Icon,
+  value,
+  label,
+  tint,
+}: {
+  icon: any;
+  value: number;
+  label: string;
+  tint: "success" | "accent" | "danger" | "warning" | "info";
+}) {
+  const tintClasses: Record<string, { bg: string; text: string }> = {
+    success: { bg: "bg-success/10", text: "text-success" },
+    accent: { bg: "bg-accent/10", text: "text-accent" },
+    danger: { bg: "bg-danger/10", text: "text-danger" },
+    warning: { bg: "bg-warning/10", text: "text-warning" },
+    info: { bg: "bg-blue-500/10", text: "text-blue-400" },
+  };
+  const c = tintClasses[tint];
+  return (
+    <div className="rounded-2xl border border-dark-700/50 bg-dark-900 px-4 py-3.5 flex items-center gap-3.5 transition-transform hover:-translate-y-0.5">
+      <div className={`h-9 w-9 rounded-xl flex items-center justify-center shrink-0 ${c.bg}`}>
+        <Icon className={`h-4 w-4 ${c.text}`} />
+      </div>
+      <div className="min-w-0">
+        <p className="text-lg font-bold text-dark-100 leading-tight">{value}</p>
+        <p className="text-xs text-dark-500 mt-0.5 whitespace-nowrap">{label}</p>
+      </div>
+    </div>
+  );
+}
+
+function SidebarStat({ label, value, tint }: { label: string; value: string; tint?: "warning" | "danger" }) {
+  return (
+    <div className="flex items-baseline justify-between gap-2">
+      <span className="text-sm text-dark-500">{label}</span>
+      <span className={`text-sm font-bold ${tint === "warning" ? "text-warning" : tint === "danger" ? "text-danger" : "text-dark-100"}`}>{value}</span>
     </div>
   );
 }
@@ -849,16 +978,16 @@ function GroupRow({
 }) {
   const total = accounts.length || Object.keys(group.byAccount).length;
   return (
-    <div className="px-3 py-2.5">
-      <div className="flex items-center justify-between gap-2 mb-1.5">
+    <div className="rounded-2xl border border-dark-700/50 bg-dark-900 px-4 py-3.5">
+      <div className="flex items-center justify-between gap-2 mb-2">
         <div className="min-w-0">
-          <p className="text-xs sm:text-sm font-medium text-dark-100 truncate">{group.name}</p>
-          {group.groupId && <p className="text-[9px] text-dark-600 font-mono truncate">{group.groupId}</p>}
+          <p className="text-sm font-semibold text-dark-100 truncate">{group.name}</p>
+          {group.groupId && <p className="text-[10px] text-dark-600 font-mono truncate">{group.groupId}</p>}
         </div>
-        <div className="flex items-center gap-2 shrink-0 text-[10px]">
-          <span className="text-success">{group.sent.size} sent</span>
-          {group.flood.size > 0 && <span className="text-warning">{group.flood.size} skipped</span>}
-          {group.failed.size > 0 && <span className="text-danger">{group.failed.size} failed</span>}
+        <div className="flex items-center gap-2 shrink-0 text-xs">
+          <span className="text-success font-semibold">{group.sent.size} sent</span>
+          {group.flood.size > 0 && <span className="text-warning font-semibold">{group.flood.size} waiting</span>}
+          {group.failed.size > 0 && <span className="text-danger font-semibold">{group.failed.size} failed</span>}
           <span className="text-dark-500">{group.sent.size}/{total} acc</span>
         </div>
       </div>
@@ -873,9 +1002,9 @@ function GroupRow({
             : rec.type === "flood"
             ? "bg-warning/10 text-warning"
             : "bg-danger/10 text-danger";
-          const label = !rec ? "no post" : rec.type === "success" ? "sent" : rec.type === "flood" ? `skip ${rec.wait ? rec.wait + "s" : ""}`.trim() : "failed";
+          const label = !rec ? "no post" : rec.type === "success" ? "sent" : rec.type === "flood" ? `wait ${rec.wait ? rec.wait + "s" : ""}`.trim() : "failed";
           return (
-            <span key={acct} className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[9px] ${cls}`} title={rec?.time ? toLocalTime(rec.time).full : "never posted"}>
+            <span key={acct} className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] ${cls}`} title={rec?.time ? toLocalTime(rec.time).full : "never posted"}>
               <span className="font-medium">Acc {i + 1}</span>
               <span className="opacity-70">{label}</span>
               {t && <span className="opacity-50">{t}</span>}
@@ -887,9 +1016,77 @@ function GroupRow({
   );
 }
 
-/* ────────────────────── Log Entry ────────────────────── */
+/* ────────────────────── Log Row (Timeline view) ────────────────────── */
 
-function LogEntry({
+// Friendly, plain-language copy for the expand panel — mirrors the reference design's
+// "What happened" / "Do you need to do anything?" framing instead of dumping raw fields.
+function friendlyCopy(entry: ParsedLog): { title: string; subtitle: string; what: string; action: string } {
+  const group = entry.groupName || entry.groupId || "";
+  switch (entry.type) {
+    case "success":
+      return {
+        title: "Successfully posted",
+        subtitle: group ? `${group}${entry.account ? ` · Using ${entry.account}` : ""}` : entry.account || "",
+        what: `Your post was delivered${group ? ` to the ${group} group` : ""} without any issues.`,
+        action: "No — everything worked as expected.",
+      };
+    case "failure":
+      return {
+        title: "Couldn't send post",
+        subtitle: [group, entry.error].filter(Boolean).join(" · "),
+        what: `Telegram returned an error while sending this post${group ? ` to ${group}` : ""}.${entry.error ? ` Reason: ${entry.error}.` : ""}`,
+        action: "Usually not — we'll retry automatically. If this keeps happening for days, consider checking this group.",
+      };
+    case "flood": {
+      const mins = entry.waitSeconds ? Math.round(Number(entry.waitSeconds) / 60) : null;
+      const waitLabel = mins ? `about ${mins} minute${mins === 1 ? "" : "s"}` : entry.waitSeconds ? `${entry.waitSeconds} seconds` : "a short while";
+      return {
+        title: `Waiting ${waitLabel}`,
+        subtitle: entry.message || (group ? `${group} · Telegram asked this account to slow down` : "Telegram asked this account to slow down"),
+        what: `Telegram asked this account to wait ${waitLabel} before posting again${group ? ` in ${group}` : ""}. This is normal and happens when an account posts frequently.`,
+        action: "Nothing — posting will resume automatically once the wait is over.",
+      };
+    }
+    case "connect":
+      return {
+        title: "Account connected successfully",
+        subtitle: "Ready to post",
+        what: "The account connected successfully and is ready to post.",
+        action: "No — this is just a confirmation.",
+      };
+    case "cycle_start":
+    case "cycle_end":
+      return {
+        title: entry.message || "Scheduler update",
+        subtitle: "Scheduled automatically",
+        what: entry.message?.includes("no groups assigned")
+          ? "This account has no groups assigned right now, so its posting cycle completed without sending anything."
+          : "The posting scheduler moved to its next step for this account automatically.",
+        action: "No — this is background activity.",
+      };
+    default:
+      return {
+        title: entry.message || "System event",
+        subtitle: "",
+        what: entry.message || entry.raw,
+        action: "No — this is background activity.",
+      };
+  }
+}
+
+function typeMeta(type: LogType): { icon: any; tint: string; glyphBg: string } {
+  switch (type) {
+    case "success": return { icon: CheckCircle2, tint: "text-success", glyphBg: "bg-success/10" };
+    case "failure": return { icon: XCircle, tint: "text-danger", glyphBg: "bg-danger/10" };
+    case "flood": return { icon: Timer, tint: "text-warning", glyphBg: "bg-warning/10" };
+    case "connect": return { icon: Wifi, tint: "text-blue-400", glyphBg: "bg-blue-500/10" };
+    case "cycle_start": return { icon: Activity, tint: "text-accent", glyphBg: "bg-accent/10" };
+    case "cycle_end": return { icon: Zap, tint: "text-dark-400", glyphBg: "bg-dark-800" };
+    default: return { icon: Radio, tint: "text-dark-400", glyphBg: "bg-dark-800" };
+  }
+}
+
+function LogRow({
   entry,
   expanded,
   onToggle,
@@ -902,203 +1099,85 @@ function LogEntry({
   showAccount?: boolean;
   accountIndex?: number;
 }) {
-  const isPostEvent = entry.type === "success" || entry.type === "failure" || entry.type === "flood";
+  const [copied, setCopied] = useState(false);
+  const copy = friendlyCopy(entry);
+  const meta = typeMeta(entry.type);
+  const Icon = meta.icon;
 
-  // ─── Post events: success / failure / flood ───
-  if (isPostEvent) {
-    // Account-level events (e.g. "paused …") carry a readable message but no group — show that, not "Unknown group".
-    const groupDisplay = entry.groupName || entry.message || entry.groupId || "Unknown group";
+  const copyRaw = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(entry.raw).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
+  };
 
-    return (
-      <div
-        className={`px-3 sm:px-4 py-2 cursor-pointer transition-colors hover:bg-dark-900/30 ${
-          entry.type === "failure" ? "bg-danger/[0.03]" :
-          entry.type === "flood" ? "bg-warning/[0.03]" : ""
-        }`}
-        onClick={onToggle}
-      >
-        <div className="flex items-center gap-2 sm:gap-3">
-          {/* Icon */}
-          {entry.type === "success" ? (
-            <CheckCircle2 className="h-3.5 w-3.5 text-success shrink-0" />
-          ) : entry.type === "flood" ? (
-            <Timer className="h-3.5 w-3.5 text-warning shrink-0" />
-          ) : (
-            <XCircle className="h-3.5 w-3.5 text-danger shrink-0" />
-          )}
-
-          {/* Timestamp */}
-          {entry.timestamp && (
-            <span className="text-[10px] font-mono text-dark-600 shrink-0 hidden sm:inline" title={toLocalTime(entry.timestamp).full}>
-              {toLocalTime(entry.timestamp).time}
-            </span>
-          )}
-
-          {/* Group name */}
-          {entry.groupLink ? (
-            <a
-              href={entry.groupLink}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(e) => e.stopPropagation()}
-              className={`flex-1 min-w-0 text-xs sm:text-sm truncate inline-flex items-center gap-1 hover:underline ${
-                entry.type === "success" ? "text-dark-200 hover:text-accent" :
-                entry.type === "flood" ? "text-warning/80 hover:text-warning" : "text-dark-300 hover:text-dark-100"
-              }`}
-            >
-              {groupDisplay}
-              <ExternalLink className="h-2.5 w-2.5 shrink-0 opacity-40" />
-            </a>
-          ) : (
-            <span className={`flex-1 min-w-0 text-xs sm:text-sm truncate ${
-              entry.type === "success" ? "text-dark-200" :
-              entry.type === "flood" ? "text-warning/80" : "text-dark-300"
-            }`}>
-              {groupDisplay}
-            </span>
-          )}
-
-          {/* Error reason (short) */}
-          {entry.type === "failure" && entry.error && (
-            <span className="shrink-0 text-[10px] text-danger/60 hidden sm:inline max-w-[180px] truncate">
-              {entry.error}
-            </span>
-          )}
-
-          {/* Status badge */}
-          {entry.type === "success" ? (
-            <span className="shrink-0 rounded bg-success/10 px-1.5 py-0.5 text-[10px] font-medium text-success">
-              Sent
-            </span>
-          ) : entry.type === "flood" ? (
-            <span className="shrink-0 rounded bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning">
-              {entry.waitSeconds}s
-            </span>
-          ) : (
-            <span className="shrink-0 rounded bg-danger/10 px-1.5 py-0.5 text-[10px] font-medium text-danger">
-              Failed
-            </span>
-          )}
-
-          {/* Account badge */}
+  return (
+    <div
+      onClick={onToggle}
+      className={`rounded-2xl border bg-dark-900 px-4 sm:px-5 py-4 cursor-pointer transition-all hover:-translate-y-0.5 hover:border-dark-600 ${expanded ? "border-dark-600 shadow-lg shadow-black/20" : "border-dark-700/50"}`}
+    >
+      <div className="flex gap-3.5 items-start flex-wrap sm:flex-nowrap">
+        <div className={`h-9 w-9 rounded-full flex items-center justify-center shrink-0 ${meta.glyphBg}`}>
+          <Icon className={`h-4 w-4 ${meta.tint}`} />
+        </div>
+        <div className="flex-1 min-w-[180px]">
+          <p className="text-[11px] font-semibold text-dark-500 mb-0.5">
+            {entry.timestamp ? relTime(entry.timestamp) : ""}
+          </p>
+          <p className="text-sm font-bold text-dark-100">{copy.title}</p>
+          {copy.subtitle && <p className="text-xs text-dark-500 mt-0.5 truncate">{copy.subtitle}</p>}
+        </div>
+        <div className="flex items-center gap-2 shrink-0 ml-auto">
           {showAccount && accountIndex && accountIndex > 0 && (
-            <span className="shrink-0 rounded bg-dark-800 px-1.5 py-0.5 text-[9px] font-medium text-dark-400 hidden sm:inline">
+            <span className="rounded-full bg-dark-800 border border-dark-700 px-2.5 py-1 text-[11px] font-semibold text-dark-400">
               Acc {accountIndex}
             </span>
           )}
-
-          {/* Expand */}
-          {expanded ? (
-            <ChevronDown className="h-3 w-3 text-dark-600 shrink-0" />
-          ) : (
-            <ChevronRight className="h-3 w-3 text-dark-600 shrink-0" />
-          )}
+          <ChevronRight className={`h-4 w-4 text-dark-600 transition-transform ${expanded ? "rotate-90" : ""}`} />
         </div>
+      </div>
 
-        {/* Expanded details */}
-        {expanded && (
-          <div className="mt-2 ml-5 sm:ml-6 rounded-lg bg-dark-900/50 border border-dark-800/50 p-2.5 space-y-1.5">
-            <DetailRow label="Account" value={entry.account || "—"} mono />
-            <DetailRow label="Group" value={entry.groupName || "—"} link={entry.groupLink} />
-            {entry.groupId && <DetailRow label="Group ID" value={entry.groupId} mono />}
-            {entry.error && <DetailRow label="Error" value={entry.error} className="text-danger" />}
-            {entry.waitSeconds && <DetailRow label="Wait" value={`${entry.waitSeconds} seconds`} className="text-warning" />}
-            {entry.timestamp && <DetailRow label="Time" value={toLocalTime(entry.timestamp).full} mono />}
-            <div className="pt-1.5 border-t border-dark-800/50">
-              <p className="text-[9px] font-mono text-dark-700 break-all leading-relaxed">{entry.raw}</p>
-            </div>
+      {expanded && (
+        <div className="mt-4 ml-0 sm:ml-[52px] rounded-xl bg-dark-950 border border-dark-700/50 p-4 sm:p-5 grid gap-3.5 animate-scale-in">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pb-3.5 border-b border-dark-800">
+            <ExpandField label="Posted at" value={entry.timestamp ? toLocalTime(entry.timestamp).full : "—"} />
+            <ExpandField label="Account" value={entry.account || "—"} />
+            <ExpandField label="Group" value={entry.groupName || entry.groupId || "—"} />
           </div>
-        )}
-      </div>
-    );
-  }
-
-  // ─── Cycle start / connect / cycle end — quiet scheduler chatter, not actionable events ───
-  // Rendered identically (session chip + muted message) so a run of these reads as one calm
-  // status strip instead of three visually distinct row types competing for attention.
-  if (entry.type === "cycle_start" || entry.type === "connect" || entry.type === "cycle_end") {
-    const icon = entry.type === "connect"
-      ? <Wifi className="h-3 w-3 text-success/50 shrink-0" />
-      : entry.type === "cycle_end"
-      ? <Zap className="h-3 w-3 text-dark-600 shrink-0" />
-      : <Activity className="h-3 w-3 text-accent/50 shrink-0" />;
-    const isIdle = entry.message?.includes("no groups assigned");
-
-    return (
-      <div className="px-3 sm:px-4 py-1 flex items-center gap-2">
-        {icon}
-        {entry.accountShort && (
-          <span className="shrink-0 rounded bg-dark-900 px-1.5 py-[1px] text-[9px] font-mono text-dark-500">
-            {entry.accountShort}
-          </span>
-        )}
-        <span className={`text-[11px] truncate ${isIdle ? "text-dark-600" : "text-dark-500"}`}>{entry.message}</span>
-      </div>
-    );
-  }
-
-  // ─── System / info ───
-  return (
-    <div className="px-3 sm:px-4 py-1.5 flex items-start gap-2">
-      {entry.message?.toLowerCase().includes("start") ? (
-        <Play className="h-3 w-3 text-success/60 shrink-0 mt-0.5" />
-      ) : entry.message?.toLowerCase().includes("stop") ? (
-        <XCircle className="h-3 w-3 text-danger/60 shrink-0 mt-0.5" />
-      ) : entry.message?.toLowerCase().includes("stagger") || entry.message?.toLowerCase().includes("wait") ? (
-        <Clock className="h-3 w-3 text-dark-500 shrink-0 mt-0.5" />
-      ) : (
-        <Radio className="h-3 w-3 text-dark-500 shrink-0 mt-0.5" />
-      )}
-      <div className="min-w-0 flex-1">
-        {entry.timestamp && (
-          <span className="text-[10px] font-mono text-dark-600 mr-2" title={toLocalTime(entry.timestamp).full}>{toLocalTime(entry.timestamp).time}</span>
-        )}
-        <span className={`text-[11px] break-all ${
-          entry.message?.toLowerCase().includes("start") ? "text-success/70" :
-          entry.message?.toLowerCase().includes("stop") ? "text-danger/70" :
-          "text-dark-500"
-        }`}>
-          {entry.message || entry.raw}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-/* ────────────────────── Helpers ────────────────────── */
-
-function DetailRow({ label, value, mono, className, link }: { label: string; value: string; mono?: boolean; className?: string; link?: string }) {
-  return (
-    <div className="flex gap-2 text-[10px] sm:text-xs">
-      <span className="text-dark-600 shrink-0 w-16">{label}</span>
-      {link ? (
-        <a href={link} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline inline-flex items-center gap-1 break-all">
-          {value}
-          <ExternalLink className="h-2.5 w-2.5 shrink-0 opacity-60" />
-        </a>
-      ) : (
-        <span className={`${mono ? "font-mono" : ""} ${className || "text-dark-400"} break-all`}>{value}</span>
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-dark-500 mb-1">What happened</p>
+            <p className="text-sm text-dark-300 leading-relaxed">{copy.what}</p>
+          </div>
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-dark-500 mb-1">Do you need to do anything?</p>
+            <p className="text-sm text-dark-300 leading-relaxed">{copy.action}</p>
+          </div>
+          <div className="pt-3 border-t border-dark-800 relative">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-dark-600 mb-1">Log detail</p>
+            <p className="text-[11px] font-mono text-dark-600 break-all leading-relaxed pr-8">{entry.raw}</p>
+            <button onClick={copyRaw} className="absolute right-0 top-2.5 flex items-center justify-center h-6 w-6 rounded-md text-dark-500 hover:text-dark-200 hover:bg-dark-800 transition-colors" title="Copy raw log">
+              {copied ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
 }
 
-function MiniStat({
-  icon: Icon,
-  label,
-  value,
-  color,
-}: {
-  icon: any;
-  label: string;
-  value: number;
-  color: string;
-}) {
+function ExpandField({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg bg-dark-900 border border-dark-700/50 px-2.5 py-2 sm:px-3 sm:py-2.5 text-center">
-      <Icon className={`h-3.5 w-3.5 mx-auto mb-0.5 ${color}`} />
-      <p className={`text-sm sm:text-base font-bold ${color}`}>{value}</p>
-      <p className="text-[9px] sm:text-[10px] text-dark-500">{label}</p>
+    <div>
+      <span className="text-[10px] font-bold uppercase tracking-wider text-dark-600 block mb-0.5">{label}</span>
+      <span className="text-sm font-semibold text-dark-200 break-words">{value}</span>
+    </div>
+  );
+}
+
+function EmptyState({ label, title, icon }: { label: string; title?: string; icon?: string }) {
+  return (
+    <div className="rounded-2xl border border-dark-700/50 bg-dark-900 py-16 px-6 text-center">
+      <div className="text-4xl mb-3">{icon || <MessageSquare className="h-9 w-9 mx-auto opacity-30" />}</div>
+      {title && <p className="text-base font-bold text-dark-200 mb-1">{title}</p>}
+      <p className="text-sm text-dark-500">{label}</p>
     </div>
   );
 }
