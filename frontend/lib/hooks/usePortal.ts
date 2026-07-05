@@ -11,13 +11,12 @@ function useSession() {
   return getPortalSession();
 }
 
-// A parsed session object can still be missing/blank fields (e.g. telegram_id defaulting to 0)
-// if login stored an incomplete session. Firing a request with telegram_id=0 doesn't fail loudly —
-// the API 422s it every single poll forever, silently, while the UI just shows stale/frozen data
-// from the last time the session was actually valid. Treat a falsy bot_name/telegram_id the same
-// as "no session" so we stop hammering the API and the page can show a clear "log in again" state.
+// telegram_id: 0 is a legitimate value here — bots with no owner_id assigned yet are intentionally
+// accessible with telegram_id=0 (see api/routers/user_portal.py `_get_user_bot`: telegram_id==0 is
+// allowed when owner_id in (None, 0)). Only a missing bot_name (or no session at all) means the
+// session itself is unusable — don't require telegram_id to be truthy.
 function validSession(s: ReturnType<typeof getPortalSession>) {
-  return s && s.bot_name && s.telegram_id ? s : null;
+  return s && s.bot_name ? s : null;
 }
 
 export function usePortalBot() {
