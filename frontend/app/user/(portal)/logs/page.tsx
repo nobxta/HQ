@@ -527,12 +527,16 @@ export default function UserLogsPage() {
       else if (p.type === "failure") failure++;
       else if (p.type === "flood") flood++;
     }
-    if (range === "all" && accountFilter === "all" && lifetimeStats) {
-      success = lifetimeStats.lifetime_sent ?? success;
-      failure = lifetimeStats.lifetime_failed ?? failure;
+    const usingLifetime = range === "all" && accountFilter === "all" && !!lifetimeStats;
+    if (usingLifetime) {
+      success = lifetimeStats!.lifetime_sent ?? success;
+      failure = lifetimeStats!.lifetime_failed ?? failure;
       // flood has no persisted lifetime counter server-side — stays windowed (best effort from the fetched log tail)
     }
-    return { success, failure, flood, total: success + failure + flood };
+    // Total tracks whichever scale Sent/Failed are on — lifetime when available, otherwise the same
+    // windowed count as everything else — so it never mixes a lifetime figure with a windowed one.
+    const total = usingLifetime ? success + failure : success + failure + flood;
+    return { success, failure, flood, total };
   }, [inRange, accountFilter, range, lifetimeStats]);
 
   useEffect(() => {
