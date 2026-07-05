@@ -376,14 +376,21 @@ function matchesSearch(p: ParsedLog, q: string): boolean {
 
 export default function UserLogsPage() {
   // Fetch a generous window so the top stats & time-range buttons are accurate regardless of how many
-  // rows the user chooses to display. Bounded (not the whole 10 MB file) to keep the 3s live poll + parse
-  // cheap; covers many hours/days of activity for a typical bot. Lowered from 10000 — reading and
-  // splitting a large log file on every 3s poll risked slow/failing responses on bots with big log
-  // files, which then rendered as a misleading "No logs yet" (fetch error left `data` empty).
-  const FETCH_LINES = 3000;
+  // rows the user chooses to display. Some deployments cap the `lines` query param lower than the API
+  // allows (a request for 10000 was seen 422-ing while 1000 succeeded) — rather than hardcode a number
+  // that might again exceed whatever the server currently accepts, start generous and step the request
+  // size down automatically on a 422 until it succeeds, so the page always shows whatever it can get.
+  const [fetchLines, setFetchLines] = useState(1000);
   const [displayCount, setDisplayCount] = useState(1000);  // how many rows to render (default 1000)
   const { data: bot } = usePortalBot();
-  const { data, error: logsError, isLoading: logsLoading, mutate } = usePortalLogs(FETCH_LINES);
+  const { data, error: logsError, isLoading: logsLoading, mutate } = usePortalLogs(fetchLines);
+
+  useEffect(() => {
+    const status = (logsError as any)?.response?.status;
+    if (status === 422 && fetchLines > 100) {
+      setFetchLines((n) => (n > 500 ? 500 : n > 200 ? 200 : 100));
+    }
+  }, [logsError, fetchLines]);
   const logRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [filter, setFilter] = useState<FilterType>("all");
@@ -475,9 +482,9 @@ export default function UserLogsPage() {
     const q = search.trim().toLowerCase();
     if (q) result = result.filter((p) => matchesSearch(p, q));
     const reversed = [...result].reverse();  // newest first
-    const capped = displayCount >= FETCH_LINES ? reversed : reversed.slice(0, displayCount);
+    const capped = displayCount >= fetchLines ? reversed : reversed.slice(0, displayCount);
     return [capped, reversed.length] as const;
-  }, [inRange, filter, accountFilter, search, displayCount]);
+  }, [inRange, filter, accountFilter, search, displayCount, fetchLines]);
 
   // Per-group aggregation: for every group, which accounts posted / were rate-limited / failed, and when.
   const groupAgg = useMemo(() => {
