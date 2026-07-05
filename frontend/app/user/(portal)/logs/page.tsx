@@ -242,6 +242,18 @@ function parseLine(line: string): ParsedLog {
     };
   }
 
+  // ─── [NextCycle] session=… next run in N min (cycle continues) — scheduling notice, not a new event ───
+  if (trimmed.startsWith("[NextCycle]")) {
+    const session = trimmed.match(/session=(\S+)/)?.[1] || "";
+    const mins = trimmed.match(/next run in\s+(\d+)\s*min/)?.[1];
+    return {
+      raw: line, type: "cycle_end",
+      accountShort: shortAccount(session.replace(".session", "")),
+      message: mins ? `Next cycle in ${mins}m` : "Cycle continues",
+      detail: trimmed,
+    };
+  }
+
   // ─── Connect events ───
   if (trimmed.startsWith("[Connect]")) {
     const session = trimmed.match(/session=(\S+)/)?.[1] || "";
@@ -288,6 +300,15 @@ function parseLine(line: string): ParsedLog {
   if (trimmed.includes("AdBot stopped") || trimmed.includes("stopped")) {
     return { raw: line, type: "system", message: trimmed };
   }
+  // "+1908…368.session - cycle completed (no groups assigned)" — session-scoped idle notice
+  const cycleCompleteMatch = trimmed.match(/^(\S+)\.session\s*-\s*cycle completed\s*(\(.*\))?/);
+  if (cycleCompleteMatch) {
+    return {
+      raw: line, type: "cycle_end",
+      accountShort: shortAccount(cycleCompleteMatch[1]),
+      message: cycleCompleteMatch[2] === "(no groups assigned)" ? "Cycle complete — no groups assigned" : "Cycle complete",
+    };
+  }
   if (trimmed.includes("failure rate") || trimmed.includes("cycle complete")) {
     return { raw: line, type: "cycle_end", message: trimmed };
   }
@@ -322,6 +343,26 @@ function cleanError(err: string): string {
 
 type FilterType = "all" | "posting" | "success" | "failure" | "flood" | "system";
 
+// Time ranges for the top stats + list window. ms = Infinity means "all time".
+const TIME_RANGES: { key: string; label: string; ms: number }[] = [
+  { key: "1h", label: "1 hour", ms: 3600e3 },
+  { key: "6h", label: "6 hours", ms: 6 * 3600e3 },
+  { key: "24h", label: "24 hours", ms: 24 * 3600e3 },
+  { key: "48h", label: "48 hours", ms: 48 * 3600e3 },
+  { key: "7d", label: "7 days", ms: 7 * 24 * 3600e3 },
+  { key: "30d", label: "30 days", ms: 30 * 24 * 3600e3 },
+  { key: "all", label: "All time", ms: Infinity },
+];
+
+// Parse an entry's UTC timestamp string to epoch ms (NaN if missing/unparseable).
+function entryMs(p: ParsedLog): number {
+  if (!p.timestamp) return NaN;
+  let n = p.timestamp.trim();
+  if (!n.endsWith("Z") && !n.includes("+")) n = n.replace(" ", "T") + "Z";
+  const t = new Date(n).getTime();
+  return isNaN(t) ? NaN : t;
+}
+
 // Match a parsed entry against a lowercase free-text query (account, group, status word, reason, raw).
 function matchesSearch(p: ParsedLog, q: string): boolean {
   const statusWord = p.type === "success" ? "sent" : p.type === "failure" ? "failed" : p.type === "flood" ? "skipped flood rate limit" : p.type;
@@ -334,9 +375,13 @@ function matchesSearch(p: ParsedLog, q: string): boolean {
 /* ────────────────────── Component ────────────────────── */
 
 export default function UserLogsPage() {
-  const [lineCount, setLineCount] = useState(500);
+  // Fetch a generous window so the top stats & time-range buttons are accurate regardless of how many
+  // rows the user chooses to display. Bounded (not the whole 10 MB file) to keep the 3s live poll + parse
+  // cheap; covers many hours/days of activity for a typical bot.
+  const FETCH_LINES = 10000;
+  const [displayCount, setDisplayCount] = useState(1000);  // how many rows to render (default 1000)
   const { data: bot } = usePortalBot();
-  const { data, mutate } = usePortalLogs(lineCount);
+  const { data, mutate } = usePortalLogs(FETCH_LINES);
   const logRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [filter, setFilter] = useState<FilterType>("all");
@@ -344,16 +389,31 @@ export default function UserLogsPage() {
   const [expandedIdx, setExpandedIdx] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState("");        // free-text search (account, group, status, reason)
   const [view, setView] = useState<"timeline" | "groups">("timeline");  // timeline vs per-group insights
+  const [range, setRange] = useState("24h");       // time window for stats + list (24h default)
 
   const lines: string[] = data?.lines || [];
 
-  // Parse all, filter out noise
-  const parsed = useMemo(() =>
-    lines.map(parseLine).filter((p) => p.type !== "noise"),
-    [lines]
-  );
+  // Parse all, filter out noise, then collapse each session's scheduler chatter run down to its
+  // latest line. A single idle cycle logs "Cycle started" → "Cycle window" → "Cycle started" →
+  // "[NextCycle]" for the same session back to back — none of the intermediate states matter once
+  // the run moves on, so we keep only the most recent line per same-session chatter run (e.g. just
+  // "Next cycle in 30m") instead of rendering all 4-5 as separate rows.
+  const parsed = useMemo(() => {
+    const list = lines.map(parseLine).filter((p) => p.type !== "noise");
+    const collapsed: ParsedLog[] = [];
+    const isChatter = (p: ParsedLog) => p.type === "cycle_start" || p.type === "cycle_end" || p.type === "system";
+    for (const p of list) {
+      const prev = collapsed[collapsed.length - 1];
+      if (isChatter(p) && prev && isChatter(prev) && prev.accountShort === p.accountShort && p.accountShort) {
+        collapsed[collapsed.length - 1] = p; // supersede — same session's chatter run continues
+        continue;
+      }
+      collapsed.push(p);
+    }
+    return collapsed;
+  }, [lines]);
 
-  // Discover unique accounts
+  // Discover unique accounts (from ALL history so chips are stable regardless of the time window)
   const accounts = useMemo(() => {
     const set = new Set<string>();
     for (const p of parsed) {
@@ -362,10 +422,26 @@ export default function UserLogsPage() {
     return Array.from(set).sort();
   }, [parsed]);
 
-  // Per-account stats
+  // Anchor "now" to the newest log line (robust to client/server clock skew); fall back to real now.
+  const nowRef = useMemo(() => {
+    let mx = 0;
+    for (const p of parsed) { const t = entryMs(p); if (!isNaN(t) && t > mx) mx = t; }
+    return mx || Date.now();
+  }, [parsed]);
+  const rangeMs = TIME_RANGES.find((r) => r.key === range)?.ms ?? Infinity;
+
+  // Entries within the selected time window. Everything below (stats, list, groups) works off this,
+  // so the time-range buttons drive the whole page while the "rows" selector only limits how many render.
+  const inRange = useMemo(() => {
+    if (rangeMs === Infinity) return parsed;
+    const cutoff = nowRef - rangeMs;
+    return parsed.filter((p) => { const t = entryMs(p); return !isNaN(t) && t >= cutoff; });
+  }, [parsed, nowRef, rangeMs]);
+
+  // Per-account stats (within the selected time window)
   const accountStats = useMemo(() => {
     const map: Record<string, { sent: number; failed: number; flood: number; lastSent?: string; lastFailed?: string }> = {};
-    for (const p of parsed) {
+    for (const p of inRange) {
       if (!p.account) continue;
       if (!map[p.account]) map[p.account] = { sent: 0, failed: 0, flood: 0 };
       const s = map[p.account];
@@ -380,10 +456,11 @@ export default function UserLogsPage() {
       }
     }
     return map;
-  }, [parsed]);
+  }, [inRange]);
 
-  const filtered = useMemo(() => {
-    let result = parsed;
+  // Total matches before we cap to displayCount (so the footer can say "showing 1000 of N")
+  const [filtered, matchTotal] = useMemo(() => {
+    let result = inRange;
     // Type filter
     if (filter === "posting") result = result.filter((p) => p.type === "success" || p.type === "failure" || p.type === "flood");
     else if (filter === "success") result = result.filter((p) => p.type === "success");
@@ -395,8 +472,10 @@ export default function UserLogsPage() {
     // Free-text search (account / group / status / reason / raw)
     const q = search.trim().toLowerCase();
     if (q) result = result.filter((p) => matchesSearch(p, q));
-    return [...result].reverse();
-  }, [parsed, filter, accountFilter, search]);
+    const reversed = [...result].reverse();  // newest first
+    const capped = displayCount >= FETCH_LINES ? reversed : reversed.slice(0, displayCount);
+    return [capped, reversed.length] as const;
+  }, [inRange, filter, accountFilter, search, displayCount]);
 
   // Per-group aggregation: for every group, which accounts posted / were rate-limited / failed, and when.
   const groupAgg = useMemo(() => {
@@ -406,14 +485,14 @@ export default function UserLogsPage() {
       sent: Set<string>; flood: Set<string>; failed: Set<string>;
       lastTime?: string;
     }> = {};
-    for (const p of parsed) {
+    for (const p of inRange) {
       if (!p.groupName || !p.account) continue;
       if (p.type !== "success" && p.type !== "failure" && p.type !== "flood") continue;
       const key = p.groupName;
       if (!map[key]) map[key] = { name: p.groupName, groupId: p.groupId, byAccount: {}, sent: new Set(), flood: new Set(), failed: new Set() };
       const g = map[key];
       if (!g.groupId && p.groupId) g.groupId = p.groupId;
-      // Keep the most recent status per account (parsed is oldest→newest, so overwrite is fine)
+      // Keep the most recent status per account (inRange is oldest→newest, so overwrite is fine)
       g.byAccount[p.account] = { type: p.type, time: p.timestamp, wait: p.waitSeconds };
       if (p.timestamp) g.lastTime = p.timestamp;
       (p.type === "success" ? g.sent : p.type === "flood" ? g.flood : g.failed).add(p.account);
@@ -423,19 +502,19 @@ export default function UserLogsPage() {
     if (q) list = list.filter((g) => g.name.toLowerCase().includes(q) || (g.groupId || "").toLowerCase().includes(q));
     // Sort: groups with problems (failed/flood) first, then by name
     return list.sort((a, b) => (b.failed.size + b.flood.size) - (a.failed.size + a.flood.size) || a.name.localeCompare(b.name));
-  }, [parsed, search]);
+  }, [inRange, search]);
 
-  // Stats (respect account filter)
+  // Top stats: within the selected time window, respecting the account filter.
   const stats = useMemo(() => {
     let success = 0, failure = 0, flood = 0;
-    const source = accountFilter !== "all" ? parsed.filter((p) => p.account === accountFilter) : parsed;
+    const source = accountFilter !== "all" ? inRange.filter((p) => p.account === accountFilter) : inRange;
     for (const p of source) {
       if (p.type === "success") success++;
       else if (p.type === "failure") failure++;
       else if (p.type === "flood") flood++;
     }
     return { success, failure, flood, total: success + failure + flood };
-  }, [parsed, accountFilter]);
+  }, [inRange, accountFilter]);
 
   useEffect(() => {
     if (autoScroll && logRef.current) logRef.current.scrollTop = 0;
@@ -488,8 +567,29 @@ export default function UserLogsPage() {
         </div>
       </div>
 
-      {/* Stats Bar */}
-      <div className="grid grid-cols-4 gap-2 sm:gap-3">
+      {/* Time-range selector — drives the stats + list window */}
+      <div className="-mx-1 overflow-x-auto pb-1">
+        <div className="flex items-center gap-1.5 px-1 min-w-max">
+          <Clock className="h-3.5 w-3.5 text-dark-500 shrink-0" />
+          {TIME_RANGES.map((r) => {
+            const active = range === r.key;
+            return (
+              <button
+                key={r.key}
+                onClick={() => setRange(r.key)}
+                className={`shrink-0 rounded-lg px-2.5 py-1 text-[10px] sm:text-xs font-medium transition-all ${
+                  active ? "bg-accent/20 text-accent ring-1 ring-accent/30" : "text-dark-400 hover:text-dark-200 hover:bg-dark-800"
+                }`}
+              >
+                {r.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Stats Bar — reflects the selected time range (and account, if one is picked) */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
         <MiniStat icon={Send} label="Total" value={stats.total} color="text-accent" />
         <MiniStat icon={CheckCircle2} label="Sent" value={stats.success} color="text-success" />
         <MiniStat icon={XCircle} label="Failed" value={stats.failure} color="text-danger" />
@@ -576,16 +676,16 @@ export default function UserLogsPage() {
           })}
           <div className="flex-1" />
           <select
-            value={lineCount}
-            onChange={(e) => setLineCount(Number(e.target.value))}
+            value={displayCount}
+            onChange={(e) => setDisplayCount(Number(e.target.value))}
             className="rounded border border-dark-600 bg-dark-800 px-2 py-1 text-[10px] sm:text-xs text-dark-200"
           >
-            <option value={200}>200 lines</option>
-            <option value={500}>500 lines</option>
-            <option value={1000}>1,000 lines</option>
-            <option value={2000}>2,000 lines</option>
-            <option value={5000}>5,000 lines</option>
-            <option value={20000}>All history</option>
+            <option value={200}>200 rows</option>
+            <option value={500}>500 rows</option>
+            <option value={1000}>1,000 rows</option>
+            <option value={2000}>2,000 rows</option>
+            <option value={5000}>5,000 rows</option>
+            <option value={10000}>All rows</option>
           </select>
         </div>
 
@@ -668,8 +768,8 @@ export default function UserLogsPage() {
 
       <p className="text-[10px] text-dark-600 text-right">
         {view === "groups"
-          ? `${groupAgg.length} groups · ${accounts.length} accounts · ${data?.total_lines || 0} total log lines`
-          : `Showing ${filtered.length} of ${parsed.length} entries · ${data?.total_lines || 0} total in log file`}
+          ? `${groupAgg.length} groups · ${accounts.length} accounts · ${TIME_RANGES.find((r) => r.key === range)?.label} · ${data?.total_lines || 0} total log lines`
+          : `Showing ${filtered.length} of ${matchTotal} matches · ${TIME_RANGES.find((r) => r.key === range)?.label} · ${data?.total_lines || 0} total in log file`}
       </p>
     </div>
   );
@@ -747,7 +847,8 @@ function LogEntry({
 
   // ─── Post events: success / failure / flood ───
   if (isPostEvent) {
-    const groupDisplay = entry.groupName || entry.groupId || "Unknown group";
+    // Account-level events (e.g. "paused …") carry a readable message but no group — show that, not "Unknown group".
+    const groupDisplay = entry.groupName || entry.message || entry.groupId || "Unknown group";
 
     return (
       <div
@@ -853,29 +954,26 @@ function LogEntry({
     );
   }
 
-  // ─── Cycle start / connect ───
-  if (entry.type === "cycle_start" || entry.type === "connect") {
+  // ─── Cycle start / connect / cycle end — quiet scheduler chatter, not actionable events ───
+  // Rendered identically (session chip + muted message) so a run of these reads as one calm
+  // status strip instead of three visually distinct row types competing for attention.
+  if (entry.type === "cycle_start" || entry.type === "connect" || entry.type === "cycle_end") {
     const icon = entry.type === "connect"
-      ? <Wifi className="h-3 w-3 text-success/60 shrink-0" />
-      : <Activity className="h-3 w-3 text-accent/60 shrink-0" />;
+      ? <Wifi className="h-3 w-3 text-success/50 shrink-0" />
+      : entry.type === "cycle_end"
+      ? <Zap className="h-3 w-3 text-dark-600 shrink-0" />
+      : <Activity className="h-3 w-3 text-accent/50 shrink-0" />;
+    const isIdle = entry.message?.includes("no groups assigned");
 
     return (
-      <div className="px-3 sm:px-4 py-1.5 flex items-center gap-2">
+      <div className="px-3 sm:px-4 py-1 flex items-center gap-2">
         {icon}
         {entry.accountShort && (
-          <span className="text-[10px] font-mono text-dark-600 shrink-0">{entry.accountShort}</span>
+          <span className="shrink-0 rounded bg-dark-900 px-1.5 py-[1px] text-[9px] font-mono text-dark-500">
+            {entry.accountShort}
+          </span>
         )}
-        <span className="text-[11px] text-dark-500">{entry.message}</span>
-      </div>
-    );
-  }
-
-  // ─── Cycle end ───
-  if (entry.type === "cycle_end") {
-    return (
-      <div className="px-3 sm:px-4 py-1.5 flex items-center gap-2 bg-dark-900/30">
-        <Zap className="h-3 w-3 text-dark-500 shrink-0" />
-        <span className="text-[11px] text-dark-500">{entry.message}</span>
+        <span className={`text-[11px] truncate ${isIdle ? "text-dark-600" : "text-dark-500"}`}>{entry.message}</span>
       </div>
     );
   }
