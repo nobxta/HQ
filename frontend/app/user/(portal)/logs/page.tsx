@@ -377,11 +377,13 @@ function matchesSearch(p: ParsedLog, q: string): boolean {
 export default function UserLogsPage() {
   // Fetch a generous window so the top stats & time-range buttons are accurate regardless of how many
   // rows the user chooses to display. Bounded (not the whole 10 MB file) to keep the 3s live poll + parse
-  // cheap; covers many hours/days of activity for a typical bot.
-  const FETCH_LINES = 10000;
+  // cheap; covers many hours/days of activity for a typical bot. Lowered from 10000 — reading and
+  // splitting a large log file on every 3s poll risked slow/failing responses on bots with big log
+  // files, which then rendered as a misleading "No logs yet" (fetch error left `data` empty).
+  const FETCH_LINES = 3000;
   const [displayCount, setDisplayCount] = useState(1000);  // how many rows to render (default 1000)
   const { data: bot } = usePortalBot();
-  const { data, mutate } = usePortalLogs(FETCH_LINES);
+  const { data, error: logsError, isLoading: logsLoading, mutate } = usePortalLogs(FETCH_LINES);
   const logRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [filter, setFilter] = useState<FilterType>("all");
@@ -743,6 +745,17 @@ export default function UserLogsPage() {
               ))}
             </div>
           )
+        ) : logsError ? (
+          <div className="flex flex-col items-center justify-center h-full text-dark-500 gap-2">
+            <XCircle className="h-8 w-8 mb-1 opacity-40 text-danger" />
+            <p className="text-sm text-danger/80">Couldn't load logs — retrying every few seconds</p>
+            <p className="text-[10px] text-dark-600">{(logsError as any)?.message || "Connection issue"}</p>
+          </div>
+        ) : logsLoading && lines.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-dark-500">
+            <RotateCw className="h-6 w-6 mb-2 opacity-40 animate-spin" />
+            <p className="text-sm">Loading logs…</p>
+          </div>
         ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-dark-500">
             <MessageSquare className="h-8 w-8 mb-2 opacity-40" />
