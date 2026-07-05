@@ -1,6 +1,6 @@
 "use client";
 import { useState, useRef, useEffect, useMemo } from "react";
-import { usePortalBot, usePortalLogs } from "@/lib/hooks/usePortal";
+import { usePortalBot, usePortalLogs, usePortalStats } from "@/lib/hooks/usePortal";
 import Card, { CardHeader, CardTitle } from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import { PageSkeleton } from "@/components/ui/Skeleton";
@@ -514,6 +514,11 @@ export default function UserLogsPage() {
   }, [inRange, search]);
 
   // Top stats: within the selected time window, respecting the account filter.
+  // Note: these are derived only from the fetched log-file window (`fetchLines` lines), which can
+  // undercount vs. the bot's true lifetime totals shown on the Dashboard (a separate, persisted
+  // counter that survives log rotation/truncation). For "All time" with no account filter we show
+  // the authoritative lifetime numbers instead of the windowed parse, so the two pages agree.
+  const { data: lifetimeStats } = usePortalStats();
   const stats = useMemo(() => {
     let success = 0, failure = 0, flood = 0;
     const source = accountFilter !== "all" ? inRange.filter((p) => p.account === accountFilter) : inRange;
@@ -522,8 +527,13 @@ export default function UserLogsPage() {
       else if (p.type === "failure") failure++;
       else if (p.type === "flood") flood++;
     }
+    if (range === "all" && accountFilter === "all" && lifetimeStats) {
+      success = lifetimeStats.lifetime_sent ?? success;
+      failure = lifetimeStats.lifetime_failed ?? failure;
+      // flood has no persisted lifetime counter server-side — stays windowed (best effort from the fetched log tail)
+    }
     return { success, failure, flood, total: success + failure + flood };
-  }, [inRange, accountFilter]);
+  }, [inRange, accountFilter, range, lifetimeStats]);
 
   useEffect(() => {
     if (autoScroll && logRef.current) logRef.current.scrollTop = 0;
@@ -604,6 +614,11 @@ export default function UserLogsPage() {
         <MiniStat icon={XCircle} label="Failed" value={stats.failure} color="text-danger" />
         <MiniStat icon={Timer} label="Flood" value={stats.flood} color="text-warning" />
       </div>
+      {range === "all" && accountFilter === "all" && lifetimeStats && (
+        <p className="text-[10px] text-dark-600 -mt-2">
+          Sent/Failed are lifetime totals (match the Dashboard) · Flood and the rows below only cover the recent log window
+        </p>
+      )}
 
       {/* Account filter chips (when active account selected, show its details) */}
       {activeAcctStats && (
