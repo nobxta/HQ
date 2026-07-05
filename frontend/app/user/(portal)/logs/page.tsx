@@ -103,8 +103,8 @@ function parseLine(line: string): ParsedLog {
       return { raw: line, type: "noise" };
     }
   }
-  // "918077466203.session 61 groups" — session assignment summary, noise
-  if (/^\d+\.session\s+\d+\s+groups$/.test(trimmed)) {
+  // "918077466203.session 61 groups" / "+18584268801.session 22 groups" — session assignment summary, noise
+  if (/^\+?\d+\.session\s+\d+\s+groups$/.test(trimmed)) {
     return { raw: line, type: "noise" };
   }
 
@@ -410,7 +410,7 @@ export default function UserLogsPage() {
   const parsed = useMemo(() => {
     const list = lines.map(parseLine).filter((p) => p.type !== "noise");
     const collapsed: ParsedLog[] = [];
-    const isChatter = (p: ParsedLog) => p.type === "cycle_start" || p.type === "cycle_end" || p.type === "system";
+    const isChatter = (p: ParsedLog) => p.type === "cycle_start" || p.type === "cycle_end" || p.type === "system" || p.type === "connect";
     for (const p of list) {
       const prev = collapsed[collapsed.length - 1];
       if (isChatter(p) && prev && isChatter(prev) && prev.accountShort === p.accountShort && p.accountShort) {
