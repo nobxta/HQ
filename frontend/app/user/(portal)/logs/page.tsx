@@ -1,6 +1,6 @@
 "use client";
 import { useState, useRef, useEffect, useMemo } from "react";
-import { usePortalBot, usePortalLogs, usePortalStats } from "@/lib/hooks/usePortal";
+import { usePortalBot, usePortalLogs, usePortalStats, usePortalSessionValid } from "@/lib/hooks/usePortal";
 import Card, { CardHeader, CardTitle } from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import { PageSkeleton } from "@/components/ui/Skeleton";
@@ -382,6 +382,7 @@ export default function UserLogsPage() {
   // size down automatically on a 422 until it succeeds, so the page always shows whatever it can get.
   const [fetchLines, setFetchLines] = useState(1000);
   const [displayCount, setDisplayCount] = useState(1000);  // how many rows to render (default 1000)
+  const sessionValid = usePortalSessionValid();
   const { data: bot } = usePortalBot();
   const { data, error: logsError, isLoading: logsLoading, mutate } = usePortalLogs(fetchLines);
 
@@ -563,6 +564,21 @@ export default function UserLogsPage() {
 
   // Active account stats for the sidebar chip
   const activeAcctStats = accountFilter !== "all" ? accountStats[accountFilter] : null;
+
+  if (!sessionValid) {
+    return (
+      <div className="flex flex-col items-center justify-center h-[60vh] text-center gap-3 animate-fade-in">
+        <XCircle className="h-8 w-8 text-danger/60" />
+        <div>
+          <p className="text-sm font-medium text-dark-200">Your session looks invalid</p>
+          <p className="text-xs text-dark-500 mt-1">Please log out and log back in to keep seeing live data.</p>
+        </div>
+        <Button variant="secondary" size="sm" onClick={() => { window.location.href = "/user/login"; }}>
+          Go to login
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4 sm:space-y-5 animate-fade-in">
