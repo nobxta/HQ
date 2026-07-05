@@ -389,7 +389,7 @@ async def portal_get_stats(bot_name: str, telegram_id: int = Query(...)):
 
 
 @router.get("/bot/{bot_name}/logs")
-async def portal_get_logs(bot_name: str, telegram_id: int = Query(...), lines: int = Query(100, ge=1, le=500)):
+async def portal_get_logs(bot_name: str, telegram_id: int = Query(...), lines: int = Query(100, ge=1, le=20000)):
     await _get_user_bot(telegram_id, bot_name)
     from code.config import DATA_LOGS_DIR
     from code.utils import name_to_filename

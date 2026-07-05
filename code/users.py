@@ -2494,12 +2494,15 @@ async def _async_session_loop(
                         posts_skipped_floodwait += 1
                         if report_post_attempt:
                             report_post_attempt(session_file, chat_id, topic_id, False, f"floodwait_{_fw_seconds}s", group_name=getattr(entity, "title", str(chat_id)) if "entity" in dir() else str(chat_id))
-                        # Bug 2: account-level FloodWait detection. A single very long wait (FloodWaitPause) or
-                        # many group FloodWaits in one cycle means Telegram is throttling the ACCOUNT, not one
-                        # group — stop posting with this account and pause it so we do not deepen the flood.
+                        # Only a GENUINE account-level flood (a single very long wait, surfaced as
+                        # FloodWaitPause when seconds > FLOODWAIT_THRESHOLD_SEC) pauses the whole session.
+                        # Normal per-group rate limits / slow modes are handled by group_cooldowns above:
+                        # skip just that group and keep posting to the others. Counting per-group floods and
+                        # pausing the account was wrong — when several groups each have their own (e.g. 1h)
+                        # limit shorter than the cycle, it benched the whole account and produced empty cycles.
                         _fw_key = (bot_token, session_file)
                         _session_floodwait_counts[_fw_key] = _session_floodwait_counts.get(_fw_key, 0) + 1
-                        if isinstance(e, FloodWaitPause) or _session_floodwait_counts[_fw_key] >= FLOODWAIT_SESSION_PAUSE_COUNT:
+                        if isinstance(e, FloodWaitPause):
                             _pause_secs = max(_fw_seconds, SESSION_COOLDOWN_SEC)
                             _unblock = time.time() + _pause_secs
                             logger.warning(

@@ -151,6 +151,35 @@ function parseLine(line: string): ParsedLog {
     };
   }
 
+  // ─── Structured: [POST_SKIPPED] — a rate-limit/FloodWait deferral (group's own limit), not a failure ───
+  if (trimmed.startsWith("[POST_SKIPPED]")) {
+    const acct = trimmed.match(/account=(\S+)/)?.[1] || "";
+    const gid = trimmed.match(/group_id=(\S+)/)?.[1] || "";
+    const wait = trimmed.match(/floodwait_(\d+)s/)?.[1] || "";
+    return {
+      raw: line, type: "flood",
+      account: acct, accountShort: shortAccount(acct),
+      groupName: extractGroupNameStructured(trimmed),
+      groupId: gid, waitSeconds: wait,
+    };
+  }
+
+  // ─── [FloodWait] session=… paused Ns — account-level pause notice (keep, readable) ───
+  if (trimmed.startsWith("[FloodWait]") && trimmed.includes("paused")) {
+    const sess = (trimmed.match(/session=(\S+)/)?.[1] || "").replace(".session", "");
+    const wait = trimmed.match(/paused\s+(\d+)s/)?.[1] || "";
+    return {
+      raw: line, type: "flood",
+      account: sess, accountShort: shortAccount(sess),
+      waitSeconds: wait,
+      message: `Account paused ${wait}s — Telegram rate-limited this account`,
+    };
+  }
+  // [FloodWait] chat_id=… "skipping group" duplicates the [POST_SKIPPED] line above — hide it.
+  if (trimmed.startsWith("[FloodWait]")) {
+    return { raw: line, type: "noise" };
+  }
+
   // ─── Human-readable: "Account N - Failed in GROUP: error" ───
   const failMatch = trimmed.match(/^Account\s+(\d+)\s*-\s*Failed in\s+(.+?):\s*(.+)$/);
   if (failMatch) {
@@ -293,6 +322,15 @@ function cleanError(err: string): string {
 
 type FilterType = "all" | "posting" | "success" | "failure" | "flood" | "system";
 
+// Match a parsed entry against a lowercase free-text query (account, group, status word, reason, raw).
+function matchesSearch(p: ParsedLog, q: string): boolean {
+  const statusWord = p.type === "success" ? "sent" : p.type === "failure" ? "failed" : p.type === "flood" ? "skipped flood rate limit" : p.type;
+  const hay = [
+    p.account, p.accountShort, p.groupName, p.groupId, p.error, p.message, p.waitSeconds, statusWord, p.raw,
+  ].filter(Boolean).join(" ").toLowerCase();
+  return hay.includes(q);
+}
+
 /* ────────────────────── Component ────────────────────── */
 
 export default function UserLogsPage() {
@@ -304,6 +342,8 @@ export default function UserLogsPage() {
   const [filter, setFilter] = useState<FilterType>("all");
   const [accountFilter, setAccountFilter] = useState<string>("all");
   const [expandedIdx, setExpandedIdx] = useState<Set<number>>(new Set());
+  const [search, setSearch] = useState("");        // free-text search (account, group, status, reason)
+  const [view, setView] = useState<"timeline" | "groups">("timeline");  // timeline vs per-group insights
 
   const lines: string[] = data?.lines || [];
 
@@ -352,8 +392,38 @@ export default function UserLogsPage() {
     else if (filter === "system") result = result.filter((p) => ["system", "cycle_start", "cycle_end", "connect"].includes(p.type));
     // Account filter
     if (accountFilter !== "all") result = result.filter((p) => p.account === accountFilter);
+    // Free-text search (account / group / status / reason / raw)
+    const q = search.trim().toLowerCase();
+    if (q) result = result.filter((p) => matchesSearch(p, q));
     return [...result].reverse();
-  }, [parsed, filter, accountFilter]);
+  }, [parsed, filter, accountFilter, search]);
+
+  // Per-group aggregation: for every group, which accounts posted / were rate-limited / failed, and when.
+  const groupAgg = useMemo(() => {
+    const map: Record<string, {
+      name: string; groupId?: string;
+      byAccount: Record<string, { type: LogType; time?: string; wait?: string }>;
+      sent: Set<string>; flood: Set<string>; failed: Set<string>;
+      lastTime?: string;
+    }> = {};
+    for (const p of parsed) {
+      if (!p.groupName || !p.account) continue;
+      if (p.type !== "success" && p.type !== "failure" && p.type !== "flood") continue;
+      const key = p.groupName;
+      if (!map[key]) map[key] = { name: p.groupName, groupId: p.groupId, byAccount: {}, sent: new Set(), flood: new Set(), failed: new Set() };
+      const g = map[key];
+      if (!g.groupId && p.groupId) g.groupId = p.groupId;
+      // Keep the most recent status per account (parsed is oldest→newest, so overwrite is fine)
+      g.byAccount[p.account] = { type: p.type, time: p.timestamp, wait: p.waitSeconds };
+      if (p.timestamp) g.lastTime = p.timestamp;
+      (p.type === "success" ? g.sent : p.type === "flood" ? g.flood : g.failed).add(p.account);
+    }
+    let list = Object.values(map);
+    const q = search.trim().toLowerCase();
+    if (q) list = list.filter((g) => g.name.toLowerCase().includes(q) || (g.groupId || "").toLowerCase().includes(q));
+    // Sort: groups with problems (failed/flood) first, then by name
+    return list.sort((a, b) => (b.failed.size + b.flood.size) - (a.failed.size + a.flood.size) || a.name.localeCompare(b.name));
+  }, [parsed, search]);
 
   // Stats (respect account filter)
   const stats = useMemo(() => {
@@ -453,6 +523,37 @@ export default function UserLogsPage() {
 
       {/* Filters + Controls */}
       <Card className="!p-3">
+        {/* Row 0: Search + view toggle */}
+        <div className="flex flex-wrap items-center gap-2 mb-2">
+          <div className="relative flex-1 min-w-[180px]">
+            <Filter className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-dark-500" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={view === "groups" ? "Search a group by name…" : "Search account, group, status, error…"}
+              className="w-full rounded-lg border border-dark-600 bg-dark-800 pl-8 pr-8 py-1.5 text-[11px] sm:text-xs text-dark-100 placeholder:text-dark-500 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            />
+            {search && (
+              <button onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-dark-500 hover:text-dark-300">
+                <XCircle className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+          <div className="flex items-center rounded-lg border border-dark-700 overflow-hidden">
+            <button
+              onClick={() => setView("timeline")}
+              className={`flex items-center gap-1 px-2.5 py-1.5 text-[10px] sm:text-xs font-medium transition-all ${view === "timeline" ? "bg-dark-700 text-dark-100" : "text-dark-400 hover:text-dark-200"}`}
+            >
+              <List className="h-3 w-3" /> Timeline
+            </button>
+            <button
+              onClick={() => setView("groups")}
+              className={`flex items-center gap-1 px-2.5 py-1.5 text-[10px] sm:text-xs font-medium transition-all ${view === "groups" ? "bg-dark-700 text-dark-100" : "text-dark-400 hover:text-dark-200"}`}
+            >
+              <Hash className="h-3 w-3" /> By Group
+            </button>
+          </div>
+        </div>
         {/* Row 1: Type filters */}
         <div className="flex flex-wrap items-center gap-1.5">
           {filterBtns.map((f) => {
@@ -479,9 +580,12 @@ export default function UserLogsPage() {
             onChange={(e) => setLineCount(Number(e.target.value))}
             className="rounded border border-dark-600 bg-dark-800 px-2 py-1 text-[10px] sm:text-xs text-dark-200"
           >
-            <option value={100}>100 lines</option>
             <option value={200}>200 lines</option>
             <option value={500}>500 lines</option>
+            <option value={1000}>1,000 lines</option>
+            <option value={2000}>2,000 lines</option>
+            <option value={5000}>5,000 lines</option>
+            <option value={20000}>All history</option>
           </select>
         </div>
 
@@ -526,7 +630,20 @@ export default function UserLogsPage() {
         ref={logRef}
         className="h-[60vh] sm:h-[calc(100vh-380px)] min-h-[300px] overflow-y-auto rounded-xl bg-dark-950 border border-dark-700/50"
       >
-        {filtered.length === 0 ? (
+        {view === "groups" ? (
+          groupAgg.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-dark-500">
+              <Hash className="h-8 w-8 mb-2 opacity-40" />
+              <p className="text-sm">{search ? "No group matches your search" : "No group activity yet"}</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-dark-800/30">
+              {groupAgg.map((g) => (
+                <GroupRow key={g.name} group={g} accounts={accounts} />
+              ))}
+            </div>
+          )
+        ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-dark-500">
             <MessageSquare className="h-8 w-8 mb-2 opacity-40" />
             <p className="text-sm">
@@ -550,8 +667,63 @@ export default function UserLogsPage() {
       </div>
 
       <p className="text-[10px] text-dark-600 text-right">
-        Showing {filtered.length} of {parsed.length} entries · {data?.total_lines || 0} total in log file
+        {view === "groups"
+          ? `${groupAgg.length} groups · ${accounts.length} accounts · ${data?.total_lines || 0} total log lines`
+          : `Showing ${filtered.length} of ${parsed.length} entries · ${data?.total_lines || 0} total in log file`}
       </p>
+    </div>
+  );
+}
+
+/* ────────────────────── Group Row (By Group view) ────────────────────── */
+
+function GroupRow({
+  group,
+  accounts,
+}: {
+  group: {
+    name: string; groupId?: string;
+    byAccount: Record<string, { type: LogType; time?: string; wait?: string }>;
+    sent: Set<string>; flood: Set<string>; failed: Set<string>;
+  };
+  accounts: string[];
+}) {
+  const total = accounts.length || Object.keys(group.byAccount).length;
+  return (
+    <div className="px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <div className="min-w-0">
+          <p className="text-xs sm:text-sm font-medium text-dark-100 truncate">{group.name}</p>
+          {group.groupId && <p className="text-[9px] text-dark-600 font-mono truncate">{group.groupId}</p>}
+        </div>
+        <div className="flex items-center gap-2 shrink-0 text-[10px]">
+          <span className="text-success">{group.sent.size} sent</span>
+          {group.flood.size > 0 && <span className="text-warning">{group.flood.size} skipped</span>}
+          {group.failed.size > 0 && <span className="text-danger">{group.failed.size} failed</span>}
+          <span className="text-dark-500">{group.sent.size}/{total} acc</span>
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {accounts.map((acct, i) => {
+          const rec = group.byAccount[acct];
+          const t = rec?.time ? toLocalTime(rec.time).time : "";
+          const cls = !rec
+            ? "bg-dark-800 text-dark-500"
+            : rec.type === "success"
+            ? "bg-success/10 text-success"
+            : rec.type === "flood"
+            ? "bg-warning/10 text-warning"
+            : "bg-danger/10 text-danger";
+          const label = !rec ? "no post" : rec.type === "success" ? "sent" : rec.type === "flood" ? `skip ${rec.wait ? rec.wait + "s" : ""}`.trim() : "failed";
+          return (
+            <span key={acct} className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[9px] ${cls}`} title={rec?.time ? toLocalTime(rec.time).full : "never posted"}>
+              <span className="font-medium">Acc {i + 1}</span>
+              <span className="opacity-70">{label}</span>
+              {t && <span className="opacity-50">{t}</span>}
+            </span>
+          );
+        })}
+      </div>
     </div>
   );
 }
