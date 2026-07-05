@@ -7,7 +7,7 @@ import { useState } from "react";
 import {
   LayoutDashboard, Bot, HardDrive, FolderOpen,
   CreditCard, Tag, Settings, Megaphone, Shield, X,
-  ChevronDown, HelpCircle, KeyRound,
+  ChevronDown, HelpCircle, KeyRound, ScrollText,
 } from "lucide-react";
 
 const mainNav = [
@@ -15,6 +15,7 @@ const mainNav = [
   { href: "/admin/adbots", label: "AdBots", icon: Bot },
   { href: "/admin/sessions", label: "Sessions", icon: HardDrive },
   { href: "/admin/groups", label: "Groups", icon: FolderOpen },
+  { href: "/admin/logs", label: "Logs", icon: ScrollText },
 ];
 
 const manageNav = [
