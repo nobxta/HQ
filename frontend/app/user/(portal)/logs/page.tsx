@@ -6,7 +6,7 @@ import {
   RotateCw, CheckCircle2, XCircle, Clock,
   Search, MessageSquare,
   ChevronDown, ChevronRight, ChevronLeft, Send,
-  Users, Copy, Check, Download,
+  Users, Copy, Check, Download, Filter,
   ExternalLink, X, Info,
 } from "lucide-react";
 
@@ -461,6 +461,7 @@ export default function UserLogsPage() {
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(20);
   const [acctOpen, setAcctOpen] = useState(false);  // account dropdown
+  const [funnelOpen, setFunnelOpen] = useState(false);  // toolbar filter popover
   // Reset to page 1 whenever the underlying result set changes.
   useEffect(() => { setPage(1); }, [filter, accountFilter, search, range, sort, perPage, view]);
 
@@ -668,7 +669,7 @@ export default function UserLogsPage() {
   const acctLabel = accountFilter === "all" ? "All Accounts" : `Account ${accounts.indexOf(accountFilter) + 1}`;
 
   return (
-    <div className="animate-fade-in" onClick={() => setAcctOpen(false)}>
+    <div className="animate-fade-in" onClick={() => { setAcctOpen(false); setFunnelOpen(false); }}>
       {/* ── Header ── */}
       <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
         <div>
@@ -715,11 +716,11 @@ export default function UserLogsPage() {
 
       {/* ── Stat cards ── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-3 mb-4">
-        <StatCard icon={Send} label="Total Sent" value={stats.total} tint="accent" bar={stats.total > 0 ? 100 : 0} />
-        <StatCard icon={CheckCircle2} label="Successful" value={stats.success} tint="success" percent={pct(stats.success)} bar={pct(stats.success)} />
-        <StatCard icon={XCircle} label="Failed" value={stats.failure} tint="danger" percent={pct(stats.failure)} bar={pct(stats.failure)} />
-        <StatCard icon={Clock} label="Waiting" value={stats.flood} tint="warning" percent={pct(stats.flood)} bar={pct(stats.flood)} />
-        <StatCard icon={Users} label="Active Accounts" value={accounts.length} tint="info" />
+        <StatCard icon={Send} label="Total Sent" value={stats.total} tint="accent" sub="All attempts" />
+        <StatCard icon={CheckCircle2} label="Successful" value={stats.success} tint="success" sub={`${pct(stats.success)}% success rate`} subTint="success" />
+        <StatCard icon={XCircle} label="Failed" value={stats.failure} tint="danger" sub={`${pct(stats.failure)}% failure rate`} subTint="danger" />
+        <StatCard icon={Clock} label="Waiting" value={stats.flood} tint="warning" sub="In queue" subTint="warning" />
+        <StatCard icon={Users} label="Active Accounts" value={accounts.length} tint="info" sub="Active sessions" />
       </div>
       {stats.usingLifetime && (
         <p className="text-[11px] text-dark-600 -mt-2 mb-3">Showing lifetime totals (match the Dashboard) · pick a range to see recent activity.</p>
@@ -815,6 +816,40 @@ export default function UserLogsPage() {
               <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-dark-500" />
             </div>
           )}
+          {/* Filter funnel */}
+          <div className="relative" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => setFunnelOpen((v) => !v)}
+              className={`flex items-center justify-center h-[38px] w-[38px] rounded-xl border transition-colors ${filter !== "all" || accountFilter !== "all" ? "border-accent/40 bg-accent/10 text-accent" : "border-dark-700 bg-dark-950 text-dark-400 hover:text-dark-200 hover:border-dark-600"}`}
+              aria-label="Filters"
+            >
+              <Filter className="h-4 w-4" />
+            </button>
+            {funnelOpen && (
+              <div className="absolute right-0 top-[calc(100%+8px)] z-30 w-60 rounded-2xl border border-dark-700 bg-dark-850 p-3 shadow-2xl animate-scale-in">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-2">Status</p>
+                <div className="flex flex-col gap-1 mb-3">
+                  {filterOptions.map((o) => (
+                    <button key={o.key} onClick={() => setFilter(o.key)} className={`flex items-center justify-between rounded-lg px-2.5 py-2 text-[13px] transition-colors ${filter === o.key ? "bg-accent/15 text-accent font-semibold" : "text-dark-300 hover:bg-dark-800"}`}>
+                      {o.label}<span className="text-xs font-bold tabular-nums opacity-70">{o.count}</span>
+                    </button>
+                  ))}
+                </div>
+                {accounts.length > 1 && (
+                  <>
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-2">Account</p>
+                    <select value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)} className="w-full rounded-lg border border-dark-700 bg-dark-900 px-2.5 py-2 text-[13px] text-dark-200 outline-none focus:border-accent/60">
+                      <option value="all">All accounts</option>
+                      {accounts.map((a, i) => <option key={a} value={a}>Account {i + 1}</option>)}
+                    </select>
+                  </>
+                )}
+                {(filter !== "all" || accountFilter !== "all") && (
+                  <button onClick={() => { setFilter("all"); setAccountFilter("all"); }} className="mt-3 w-full rounded-lg border border-dark-700 py-2 text-xs font-semibold text-dark-400 hover:text-dark-200 hover:border-dark-600 transition-colors">Clear filters</button>
+                )}
+              </div>
+            )}
+          </div>
           <button
             onClick={exportLogs}
             className="flex items-center justify-center h-[38px] w-[38px] rounded-xl border border-dark-700 bg-dark-950 text-dark-400 hover:text-dark-200 hover:border-dark-600 transition-colors"
@@ -948,38 +983,29 @@ function statusMeta(type: LogType): { label: string; dot: string; text: string; 
 
 /* ────────────────────── Stat card ────────────────────── */
 
-function StatCard({ icon: Icon, label, value, tint, percent, bar }: {
-  icon: any; label: string; value: number; tint: "accent" | "success" | "danger" | "warning" | "info"; percent?: number; bar?: number;
+function StatCard({ icon: Icon, label, value, tint, sub, subTint }: {
+  icon: any; label: string; value: number; tint: "accent" | "success" | "danger" | "warning" | "info";
+  sub?: string; subTint?: "success" | "danger" | "warning" | "muted";
 }) {
-  const t: Record<string, { text: string; bg: string; ring: string; barBg: string }> = {
-    accent: { text: "text-accent", bg: "bg-accent/10", ring: "ring-accent/20", barBg: "bg-accent" },
-    success: { text: "text-success", bg: "bg-success/10", ring: "ring-success/20", barBg: "bg-success" },
-    danger: { text: "text-danger", bg: "bg-danger/10", ring: "ring-danger/20", barBg: "bg-danger" },
-    warning: { text: "text-warning", bg: "bg-warning/10", ring: "ring-warning/20", barBg: "bg-warning" },
-    info: { text: "text-blue-400", bg: "bg-blue-500/10", ring: "ring-blue-500/20", barBg: "bg-blue-500" },
+  const t: Record<string, { text: string; bg: string; ring: string }> = {
+    accent: { text: "text-accent", bg: "bg-accent/10", ring: "ring-accent/20" },
+    success: { text: "text-success", bg: "bg-success/10", ring: "ring-success/20" },
+    danger: { text: "text-danger", bg: "bg-danger/10", ring: "ring-danger/20" },
+    warning: { text: "text-warning", bg: "bg-warning/10", ring: "ring-warning/20" },
+    info: { text: "text-blue-400", bg: "bg-blue-500/10", ring: "ring-blue-500/20" },
   };
   const c = t[tint];
+  const subColor = subTint === "success" ? "text-success" : subTint === "danger" ? "text-danger" : subTint === "warning" ? "text-warning" : "text-dark-500";
   return (
-    <div className="rounded-2xl border border-dark-700/50 bg-dark-900 p-3 sm:p-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-dark-600">
+    <div className="rounded-2xl border border-dark-700/50 bg-dark-900 p-3.5 sm:p-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-dark-600">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-dark-500 truncate">{label}</span>
-        <span className={`flex items-center justify-center h-7 w-7 rounded-lg shrink-0 ring-1 ${c.bg} ${c.ring}`}>
-          <Icon className={`h-3.5 w-3.5 ${c.text}`} />
+        <span className="text-[13px] font-medium text-dark-400 truncate">{label}</span>
+        <span className={`flex items-center justify-center h-8 w-8 rounded-lg shrink-0 ring-1 ${c.bg} ${c.ring}`}>
+          <Icon className={`h-4 w-4 ${c.text}`} />
         </span>
       </div>
-      <p className="mt-2 text-2xl font-bold tracking-tight tabular-nums text-dark-100">{value.toLocaleString()}</p>
-      {percent != null ? (
-        <div className="mt-2">
-          <span className={`text-xs font-semibold ${c.text}`}>{percent}%</span>
-          <div className="mt-1 h-1 rounded-full bg-dark-800 overflow-hidden">
-            <div className={`h-full rounded-full ${c.barBg} transition-all duration-500`} style={{ width: `${Math.min(100, bar ?? 0)}%` }} />
-          </div>
-        </div>
-      ) : bar != null ? (
-        <div className="mt-3 h-1 rounded-full bg-dark-800 overflow-hidden">
-          <div className={`h-full rounded-full ${c.barBg} transition-all duration-500`} style={{ width: `${Math.min(100, bar)}%` }} />
-        </div>
-      ) : null}
+      <p className="mt-2.5 text-[26px] sm:text-[28px] font-bold leading-none tracking-tight tabular-nums text-dark-100">{value.toLocaleString()}</p>
+      {sub && <p className={`mt-2 text-xs font-medium ${subColor}`}>{sub}</p>}
     </div>
   );
 }
