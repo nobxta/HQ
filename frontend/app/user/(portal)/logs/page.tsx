@@ -662,7 +662,18 @@ export default function UserLogsPage() {
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl sm:text-[28px] font-bold tracking-tight text-dark-100">Live Activity</h1>
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-2xl sm:text-[28px] font-bold tracking-tight text-dark-100">Live Activity</h1>
+            {bot?.running && (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-success/10 px-2.5 py-1 text-[11px] font-semibold text-success ring-1 ring-success/20">
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75" />
+                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-success" />
+                </span>
+                Live
+              </span>
+            )}
+          </div>
           <p className="text-sm text-dark-500 mt-1">See everything your accounts are doing in real time.</p>
         </div>
         <div className="flex items-center gap-2.5">
@@ -751,16 +762,31 @@ export default function UserLogsPage() {
         <div className="flex flex-wrap gap-2">
           {filterChips.map((f) => {
             const active = filter === f.key;
+            // Colour the active chip by meaning: green/red/amber for the outcome filters.
+            const activeTint: Record<string, string> = {
+              success: "bg-success/15 text-success ring-1 ring-success/30",
+              failure: "bg-danger/15 text-danger ring-1 ring-danger/30",
+              flood: "bg-warning/15 text-warning ring-1 ring-warning/30",
+              all: "bg-accent/15 text-accent ring-1 ring-accent/30",
+              system: "bg-dark-700 text-dark-100 ring-1 ring-dark-500",
+            };
+            const activeBadge: Record<string, string> = {
+              success: "bg-success/20 text-success",
+              failure: "bg-danger/20 text-danger",
+              flood: "bg-warning/20 text-warning",
+              all: "bg-accent/20 text-accent",
+              system: "bg-dark-600 text-dark-100",
+            };
             return (
               <button
                 key={f.key}
                 onClick={() => setFilter(f.key)}
-                className={`flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold transition-all ${
-                  active ? "bg-dark-700 text-dark-100 ring-1 ring-dark-500" : "bg-dark-900 text-dark-400 border border-dark-700/50 hover:text-dark-200 hover:border-dark-600"
+                className={`flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold transition-all duration-200 ${
+                  active ? `${activeTint[f.key]} scale-[1.02]` : "bg-dark-900 text-dark-400 border border-dark-700/50 hover:text-dark-200 hover:border-dark-600"
                 }`}
               >
                 {f.label}
-                <span className={`text-xs font-bold rounded-full px-2 py-0.5 ${active ? "bg-dark-600 text-dark-100" : "bg-dark-800 text-dark-500"}`}>{f.count}</span>
+                <span className={`text-xs font-bold rounded-full px-2 py-0.5 tabular-nums ${active ? activeBadge[f.key] : "bg-dark-800 text-dark-500"}`}>{f.count}</span>
               </button>
             );
           })}
@@ -960,22 +986,25 @@ function HealthCard({
   label: string;
   tint: "success" | "accent" | "danger" | "warning" | "info";
 }) {
-  const tintClasses: Record<string, { bg: string; text: string }> = {
-    success: { bg: "bg-success/10", text: "text-success" },
-    accent: { bg: "bg-accent/10", text: "text-accent" },
-    danger: { bg: "bg-danger/10", text: "text-danger" },
-    warning: { bg: "bg-warning/10", text: "text-warning" },
-    info: { bg: "bg-blue-500/10", text: "text-blue-400" },
+  const tintClasses: Record<string, { bg: string; text: string; ring: string; glow: string }> = {
+    success: { bg: "bg-success/10", text: "text-success", ring: "ring-success/20", glow: "from-success/[0.07]" },
+    accent: { bg: "bg-accent/10", text: "text-accent", ring: "ring-accent/20", glow: "from-accent/[0.07]" },
+    danger: { bg: "bg-danger/10", text: "text-danger", ring: "ring-danger/20", glow: "from-danger/[0.07]" },
+    warning: { bg: "bg-warning/10", text: "text-warning", ring: "ring-warning/20", glow: "from-warning/[0.07]" },
+    info: { bg: "bg-blue-500/10", text: "text-blue-400", ring: "ring-blue-500/20", glow: "from-blue-500/[0.07]" },
   };
   const c = tintClasses[tint];
+  // Emphasise a problem/pending metric by colouring the number when it's non-zero.
+  const emphasize = (tint === "danger" || tint === "warning") && value > 0;
   return (
-    <div className="rounded-2xl border border-dark-700/50 bg-dark-900 px-4 py-3.5 flex items-center gap-3.5 transition-transform hover:-translate-y-0.5">
-      <div className={`h-9 w-9 rounded-xl flex items-center justify-center shrink-0 ${c.bg}`}>
+    <div className={`group relative overflow-hidden rounded-2xl border border-dark-700/50 bg-dark-900 px-4 py-3.5 flex items-center gap-3.5 transition-all duration-200 hover:-translate-y-0.5 hover:border-dark-600 hover:shadow-lg hover:shadow-black/20`}>
+      <div className={`pointer-events-none absolute inset-0 bg-gradient-to-br ${c.glow} to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300`} />
+      <div className={`relative h-9 w-9 rounded-xl flex items-center justify-center shrink-0 ring-1 ${c.bg} ${c.ring}`}>
         <Icon className={`h-4 w-4 ${c.text}`} />
       </div>
-      <div className="min-w-0">
-        <p className="text-lg font-bold text-dark-100 leading-tight">{value}</p>
-        <p className="text-xs text-dark-500 mt-0.5 truncate">{label}</p>
+      <div className="relative min-w-0">
+        <p className={`text-xl font-bold leading-none tracking-tight tabular-nums ${emphasize ? c.text : "text-dark-100"}`}>{value.toLocaleString()}</p>
+        <p className="text-[11px] text-dark-500 mt-1 truncate">{label}</p>
       </div>
     </div>
   );
@@ -1145,15 +1174,15 @@ function friendlyCopy(entry: ParsedLog, accountIndex?: number): { title: string;
   }
 }
 
-function typeMeta(type: LogType): { icon: any; tint: string; glyphBg: string } {
+function typeMeta(type: LogType): { icon: any; tint: string; glyphBg: string; ring: string; strip: string; pill?: { label: string; cls: string } } {
   switch (type) {
-    case "success": return { icon: CheckCircle2, tint: "text-success", glyphBg: "bg-success/10" };
-    case "failure": return { icon: XCircle, tint: "text-danger", glyphBg: "bg-danger/10" };
-    case "flood": return { icon: Timer, tint: "text-warning", glyphBg: "bg-warning/10" };
-    case "connect": return { icon: Wifi, tint: "text-blue-400", glyphBg: "bg-blue-500/10" };
-    case "cycle_start": return { icon: Activity, tint: "text-accent", glyphBg: "bg-accent/10" };
-    case "cycle_end": return { icon: Zap, tint: "text-dark-400", glyphBg: "bg-dark-800" };
-    default: return { icon: Radio, tint: "text-dark-400", glyphBg: "bg-dark-800" };
+    case "success": return { icon: CheckCircle2, tint: "text-success", glyphBg: "bg-success/10", ring: "ring-success/20", strip: "bg-success", pill: { label: "Sent", cls: "bg-success/10 text-success" } };
+    case "failure": return { icon: XCircle, tint: "text-danger", glyphBg: "bg-danger/10", ring: "ring-danger/20", strip: "bg-danger", pill: { label: "Failed", cls: "bg-danger/10 text-danger" } };
+    case "flood": return { icon: Timer, tint: "text-warning", glyphBg: "bg-warning/10", ring: "ring-warning/20", strip: "bg-warning", pill: { label: "Waiting", cls: "bg-warning/10 text-warning" } };
+    case "connect": return { icon: Wifi, tint: "text-blue-400", glyphBg: "bg-blue-500/10", ring: "ring-blue-500/20", strip: "bg-blue-500/50" };
+    case "cycle_start": return { icon: Activity, tint: "text-accent", glyphBg: "bg-accent/10", ring: "ring-accent/20", strip: "bg-accent/50" };
+    case "cycle_end": return { icon: Zap, tint: "text-dark-400", glyphBg: "bg-dark-800", ring: "ring-dark-700", strip: "bg-dark-600" };
+    default: return { icon: Radio, tint: "text-dark-400", glyphBg: "bg-dark-800", ring: "ring-dark-700", strip: "bg-dark-600" };
   }
 }
 
@@ -1180,13 +1209,16 @@ function LogRow({
     navigator.clipboard.writeText(entry.raw).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
   };
 
+  const tintedBg = entry.type === "failure" ? "bg-danger/[0.03]" : entry.type === "flood" ? "bg-warning/[0.03]" : "bg-dark-900";
   return (
     <div
       onClick={onToggle}
-      className={`rounded-2xl border bg-dark-900 px-4 sm:px-5 py-4 cursor-pointer transition-all hover:-translate-y-0.5 hover:border-dark-600 ${expanded ? "border-dark-600 shadow-lg shadow-black/20" : "border-dark-700/50"}`}
+      className={`group relative overflow-hidden rounded-2xl border pl-5 pr-4 sm:pr-5 py-4 cursor-pointer transition-all duration-200 hover:-translate-y-0.5 hover:border-dark-600 hover:shadow-lg hover:shadow-black/20 ${tintedBg} ${expanded ? "border-dark-600 shadow-lg shadow-black/20" : "border-dark-700/50"}`}
     >
+      {/* Status accent strip */}
+      <span className={`absolute left-0 top-0 bottom-0 w-1 ${meta.strip} opacity-70 group-hover:opacity-100 transition-opacity`} />
       <div className="flex gap-3.5 items-start flex-wrap sm:flex-nowrap">
-        <div className={`h-9 w-9 rounded-full flex items-center justify-center shrink-0 ${meta.glyphBg}`}>
+        <div className={`h-9 w-9 rounded-full flex items-center justify-center shrink-0 ring-1 ${meta.glyphBg} ${meta.ring}`}>
           <Icon className={`h-4 w-4 ${meta.tint}`} />
         </div>
         <div className="flex-1 min-w-[180px]">
@@ -1197,12 +1229,17 @@ function LogRow({
           {copy.subtitle && <p className="text-xs text-dark-500 mt-0.5 truncate">{copy.subtitle}</p>}
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-auto">
+          {meta.pill && (
+            <span className={`hidden sm:inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${meta.pill.cls}`}>
+              {entry.type === "flood" && entry.waitSeconds ? `${entry.waitSeconds}s` : meta.pill.label}
+            </span>
+          )}
           {showAccount && accountIndex && accountIndex > 0 && (
             <span className="rounded-full bg-dark-800 border border-dark-700 px-2.5 py-1 text-[11px] font-semibold text-dark-400">
               Acc {accountIndex}
             </span>
           )}
-          <ChevronRight className={`h-4 w-4 text-dark-600 transition-transform ${expanded ? "rotate-90" : ""}`} />
+          <ChevronRight className={`h-4 w-4 text-dark-600 transition-transform group-hover:text-dark-400 ${expanded ? "rotate-90" : ""}`} />
         </div>
       </div>
 
