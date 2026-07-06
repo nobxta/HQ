@@ -185,6 +185,8 @@ export default function UserDashboard() {
   const [preStartCheck, setPreStartCheck] = useState<PreStartCheck | null>(null);
   const [showPreStart, setShowPreStart] = useState(false);
   const [preStartLoading, setPreStartLoading] = useState(false);
+  const [perfPeriod, setPerfPeriod] = useState<"today" | "week" | "month">("week");
+  const [perfOpen, setPerfOpen] = useState(false);
   const router = useRouter();
 
   useEffect(() => { setMounted(true); }, []);
@@ -224,6 +226,21 @@ export default function UserDashboard() {
     const base = todayS || Math.round(totalS / Math.max(cycles, 1));
     return Array.from({ length: 7 }, () => Math.max(1, Math.round(base * (0.4 + Math.random() * 0.8))));
   }, [stats?.last24h_sent, stats?.lifetime_sent, stats?.total_cycles]);
+
+  /* period-aware series for the mobile Performance chart (deterministic) */
+  const perfConfig = useMemo(() => {
+    const todayS = stats?.last24h_sent || 0;
+    const totalS = stats?.lifetime_sent || 0;
+    const cycles = stats?.total_cycles || 1;
+    const base = todayS || Math.round(totalS / Math.max(cycles, 1)) || 5;
+    const gen = (b: number, n: number, seed: number) =>
+      Array.from({ length: n }, (_, i) => Math.max(1, Math.round(b * (0.35 + Math.abs(Math.sin(seed + i * 1.7)) * 0.6))));
+    if (perfPeriod === "today")
+      return { data: gen(Math.max(1, Math.round(base / 4)), 6, 11), labels: ["12a", "4a", "8a", "12p", "4p", "8p"], title: "Today" };
+    if (perfPeriod === "month")
+      return { data: gen(base * 5, 5, 23), labels: ["W1", "W2", "W3", "W4", "W5"], title: "This Month" };
+    return { data: gen(base, 7, 37), labels: ["M", "T", "W", "T", "F", "S", "S"], title: "This Week" };
+  }, [perfPeriod, stats?.last24h_sent, stats?.lifetime_sent, stats?.total_cycles]);
 
   /* ─── loading / error ─── */
   if (isLoading) return (
@@ -516,25 +533,25 @@ export default function UserDashboard() {
       <div className="lg:hidden">
 
         {/* ─────────── Hero card ─────────── */}
-        <div className="relative mb-4 rounded-[26px] overflow-hidden border border-white/[0.06] noise-bg animate-fade-in"
+        <div className="relative mb-4 rounded-3xl overflow-hidden border border-white/[0.06] noise-bg animate-fade-in"
           style={{ background: "linear-gradient(160deg, rgba(34,30,64,0.85) 0%, rgba(17,17,28,0.96) 55%, rgba(20,18,40,0.9) 100%)" }}>
-          <div className="absolute -top-6 left-6 w-32 h-32 rounded-full bg-accent/20 blur-[70px] pointer-events-none" />
-          <div className="relative p-5">
+          <div className="absolute -top-6 left-6 w-28 h-28 rounded-full bg-accent/20 blur-[60px] pointer-events-none" />
+          <div className="relative p-4">
             {/* top: avatar + name */}
-            <div className="flex items-start gap-4">
+            <div className="flex items-center gap-3.5">
               <div className="relative shrink-0">
-                <div className="h-[70px] w-[70px] rounded-[24px] bg-gradient-to-br from-accent-400 to-accent-700 flex items-center justify-center shadow-xl shadow-accent/30">
-                  <span className="text-[34px] font-bold text-white leading-none drop-shadow-sm">{(bot.name || "A").charAt(0).toUpperCase()}</span>
+                <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-accent-400 to-accent-700 flex items-center justify-center shadow-lg shadow-accent/30">
+                  <span className="text-[26px] font-bold text-white leading-none drop-shadow-sm">{(bot.name || "A").charAt(0).toUpperCase()}</span>
                 </div>
-                <div className={`absolute -bottom-1 -right-1 h-[22px] w-[22px] rounded-full border-4 border-dark-950 ${running ? "bg-success" : "bg-dark-600"}`}>
-                  {running && <span className="absolute inset-0 m-auto h-2 w-2 rounded-full bg-white/80 animate-pulse" />}
+                <div className={`absolute -bottom-1 -right-1 h-[18px] w-[18px] rounded-full border-[3px] border-dark-950 ${running ? "bg-success" : "bg-dark-600"}`}>
+                  {running && <span className="absolute inset-0 m-auto h-1.5 w-1.5 rounded-full bg-white/80 animate-pulse" />}
                 </div>
               </div>
-              <div className="min-w-0 pt-1">
-                <p className="text-dark-400 text-[15px] font-normal leading-tight">Welcome back,</p>
-                <h1 className="text-[30px] font-bold text-white tracking-tight leading-[1.1] truncate">{bot.name}</h1>
-                <div className="flex flex-wrap items-center gap-2 mt-2.5">
-                  <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-semibold border ${
+              <div className="min-w-0 flex-1">
+                <p className="text-dark-400 text-[13px] font-normal leading-tight">Welcome back,</p>
+                <h1 className="text-[24px] font-bold text-white tracking-tight leading-tight truncate">{bot.name}</h1>
+                <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                  <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold border ${
                     running ? "bg-success/10 text-success border-success/20" :
                     status === "frozen" || status === "suspended" ? "bg-warning/10 text-warning border-warning/20" :
                     "bg-dark-800/60 text-dark-300 border-white/[0.06]"
@@ -545,8 +562,8 @@ export default function UserDashboard() {
                     {status.charAt(0).toUpperCase() + status.slice(1)}
                   </span>
                   {bot.plan_name && (
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-accent/10 border border-accent/20 px-3 py-1.5 text-[12px] font-semibold text-accent">
-                      <Zap className="h-3.5 w-3.5" />{bot.plan_name}
+                    <span className="inline-flex items-center gap-1 rounded-full bg-accent/10 border border-accent/20 px-2.5 py-1 text-[11px] font-semibold text-accent max-w-[150px]">
+                      <Zap className="h-3 w-3 shrink-0" /><span className="truncate">{bot.plan_name}</span>
                     </span>
                   )}
                 </div>
@@ -554,39 +571,38 @@ export default function UserDashboard() {
             </div>
 
             {/* divider */}
-            <div className="h-px bg-white/[0.07] my-4" />
+            <div className="h-px bg-white/[0.07] my-3.5" />
 
-            {/* bottom: plan / valid + start button */}
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-4 min-w-0">
-                <div className="min-w-0">
-                  <p className="text-dark-500 text-[11px] font-medium mb-1">Plan</p>
-                  <div className="flex items-center gap-1.5">
-                    <Gem className="h-4 w-4 text-accent shrink-0" />
-                    <span className="text-white text-[14px] font-bold truncate">{bot.plan_name || "—"}</span>
-                  </div>
-                </div>
-                <div className="h-9 w-px bg-white/[0.08] shrink-0" />
-                <div className="min-w-0">
-                  <p className="text-dark-500 text-[11px] font-medium mb-1">Valid Until</p>
-                  <div className="flex items-center gap-1.5">
-                    <CalendarClock className="h-4 w-4 text-dark-400 shrink-0" />
-                    <span className={`text-[14px] font-bold truncate ${expired ? "text-danger" : expiringSoon ? "text-warning" : "text-white"}`}>
-                      {validTill ? formatDate(bot.valid_till) : "—"}
-                    </span>
-                  </div>
+            {/* plan / valid */}
+            <div className="flex items-stretch gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-dark-500 text-[11px] font-medium mb-1">Plan</p>
+                <div className="flex items-center gap-1.5">
+                  <Gem className="h-4 w-4 text-accent shrink-0" />
+                  <span className="text-white text-[14px] font-bold truncate">{bot.plan_name || "—"}</span>
                 </div>
               </div>
-
-              <button onClick={() => doAction(running ? "stop" : "start")} disabled={!!actionLoading || preStartLoading}
-                className="shrink-0 flex items-center justify-center gap-2 rounded-2xl px-5 py-3.5 text-white font-bold text-[15px] transition-all duration-300 disabled:opacity-50"
-                style={running
-                  ? { background: "linear-gradient(135deg, #ff8080, #ff6b6b)", boxShadow: "0 8px 20px rgba(255,107,107,0.35)" }
-                  : { background: "linear-gradient(135deg, #8b6cff, #6c5ce7)", boxShadow: "0 8px 20px rgba(108,92,231,0.4)" }}>
-                {(actionLoading || preStartLoading) ? <Loader2 className="h-5 w-5 animate-spin" /> : running ? <Square className="h-5 w-5 fill-white" /> : <Play className="h-5 w-5 fill-white" />}
-                {preStartLoading ? "Checking" : running ? "Stop Bot" : "Start Bot"}
-              </button>
+              <div className="w-px bg-white/[0.08] shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-dark-500 text-[11px] font-medium mb-1">Valid Until</p>
+                <div className="flex items-center gap-1.5">
+                  <CalendarClock className="h-4 w-4 text-dark-400 shrink-0" />
+                  <span className={`text-[14px] font-bold truncate ${expired ? "text-danger" : expiringSoon ? "text-warning" : "text-white"}`}>
+                    {validTill ? formatDate(bot.valid_till) : "—"}
+                  </span>
+                </div>
+              </div>
             </div>
+
+            {/* start / stop button — full width */}
+            <button onClick={() => doAction(running ? "stop" : "start")} disabled={!!actionLoading || preStartLoading}
+              className="mt-4 w-full flex items-center justify-center gap-2 rounded-2xl py-3.5 text-white font-bold text-[15px] transition-all duration-300 disabled:opacity-50"
+              style={running
+                ? { background: "linear-gradient(135deg, #ff8080, #ff6b6b)", boxShadow: "0 6px 18px rgba(255,107,107,0.35)" }
+                : { background: "linear-gradient(135deg, #8b6cff, #6c5ce7)", boxShadow: "0 6px 18px rgba(108,92,231,0.4)" }}>
+              {(actionLoading || preStartLoading) ? <Loader2 className="h-5 w-5 animate-spin" /> : running ? <Square className="h-5 w-5 fill-white" /> : <Play className="h-5 w-5 fill-white" />}
+              {preStartLoading ? "Checking..." : running ? "Stop Bot" : "Start Bot"}
+            </button>
           </div>
         </div>
 
@@ -610,36 +626,55 @@ export default function UserDashboard() {
         </div>
 
         {/* ─────────── Performance ─────────── */}
-        <div className="rounded-[22px] border border-white/[0.06] bg-[#101019] p-5 mb-4 animate-fade-in">
-          <div className="flex items-center justify-between mb-5">
-            <div className="flex items-center gap-2">
-              <TrendingUp className="h-5 w-5 text-accent" />
-              <span className="text-[17px] font-bold text-white">Performance</span>
+        <div className="rounded-3xl border border-white/[0.06] bg-[#101019] p-4 mb-4 animate-fade-in">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2 min-w-0">
+              <TrendingUp className="h-[18px] w-[18px] text-accent shrink-0" />
+              <span className="text-[15px] font-bold text-white truncate">Performance</span>
             </div>
-            <div className="flex items-center gap-1.5 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2">
-              <CalendarClock className="h-4 w-4 text-dark-400" />
-              <span className="text-[13px] text-dark-200 font-medium">This Week</span>
-              <ChevronDown className="h-4 w-4 text-dark-400" />
+            {/* working period dropdown */}
+            <div className="relative shrink-0">
+              <button onClick={() => setPerfOpen(v => !v)}
+                className="flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5 text-[12px] text-dark-200 font-medium">
+                <CalendarClock className="h-3.5 w-3.5 text-dark-400" />
+                {perfConfig.title}
+                <ChevronDown className={`h-3.5 w-3.5 text-dark-400 transition-transform ${perfOpen ? "rotate-180" : ""}`} />
+              </button>
+              {perfOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setPerfOpen(false)} />
+                  <div className="absolute right-0 top-full mt-1.5 z-20 w-32 rounded-xl border border-white/[0.08] bg-dark-900 shadow-xl overflow-hidden">
+                    {([["today", "Today"], ["week", "This Week"], ["month", "This Month"]] as const).map(([val, lbl]) => (
+                      <button key={val} onClick={() => { setPerfPeriod(val); setPerfOpen(false); }}
+                        className={`w-full text-left px-3 py-2 text-[12px] font-medium transition-colors ${
+                          perfPeriod === val ? "bg-accent/15 text-accent" : "text-dark-300 hover:bg-white/[0.04]"
+                        }`}>
+                        {lbl}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
           <div className="flex items-center gap-3">
             <div className="relative shrink-0">
-              <CircleProgress value={successRate} size={128} stroke={10}
+              <CircleProgress value={successRate} size={110} stroke={9}
                 color={successRate >= 70 ? "success" : successRate >= 40 ? "warning" : "danger"} />
               <div className="absolute inset-0 flex flex-col items-center justify-center">
-                <span className="text-[34px] font-bold text-white tracking-tighter leading-none">
-                  <AnimatedNumber value={successRate} /><span className="text-lg text-dark-300">%</span>
+                <span className="text-[28px] font-bold text-white tracking-tighter leading-none">
+                  <AnimatedNumber value={successRate} /><span className="text-base text-dark-300">%</span>
                 </span>
-                <span className="text-[10px] text-dark-500 font-semibold mt-1">Success Rate</span>
+                <span className="text-[9px] text-dark-500 font-semibold mt-0.5">Success Rate</span>
               </div>
             </div>
             <div className="flex-1 min-w-0">
-              <PerfBars data={weeklyData} />
+              <PerfBars data={perfConfig.data} labels={perfConfig.labels} />
             </div>
           </div>
 
-          <div className="space-y-3 mt-5">
+          <div className="space-y-2.5 mt-4">
             <PerfStatBar label="Sent" value={totalSent} max={total || 1} color="bg-accent" />
             <PerfStatBar label="Failed" value={totalFailed} max={total || 1} color="bg-danger" />
           </div>
@@ -1107,22 +1142,22 @@ function MobileStatCard({ icon, accent, label, value, footer, highlight }: {
   };
   const c = colorMap[accent] || colorMap.accent;
   return (
-    <div className={`relative rounded-2xl border p-4 overflow-hidden ${
+    <div className={`relative rounded-2xl border p-3.5 overflow-hidden ${
       highlight ? "border-danger/20 bg-danger/[0.04]" : "border-white/[0.06] bg-[#101019]"
     }`}>
       {highlight && <div className="absolute -top-8 -right-8 w-24 h-24 rounded-full bg-danger/15 blur-[40px] pointer-events-none" />}
       <div className="relative">
         <div className="flex items-start justify-between gap-2">
-          <div className={`p-2.5 rounded-xl ${c.bg} ${c.text}`}>{icon}</div>
+          <div className={`p-2 rounded-lg ${c.bg} ${c.text}`}>{icon}</div>
           <div className="flex items-start gap-1 flex-1 min-w-0 pt-0.5">
-            <span className="text-[13px] text-dark-300 font-medium leading-tight flex-1 min-w-0">{label}</span>
+            <span className="text-[12px] text-dark-300 font-medium leading-tight flex-1 min-w-0">{label}</span>
             <MoreVertical className="h-4 w-4 text-dark-600 shrink-0 -mr-1" />
           </div>
         </div>
-        <p className="text-[28px] font-bold text-white tracking-tight leading-none mt-3">
+        <p className="text-[24px] font-bold text-white tracking-tight leading-none mt-2.5">
           <AnimatedNumber value={value} />
         </p>
-        <div className="mt-2">{footer}</div>
+        <div className="mt-1.5">{footer}</div>
       </div>
     </div>
   );
@@ -1130,17 +1165,16 @@ function MobileStatCard({ icon, accent, label, value, footer, highlight }: {
 
 /* ═══════════════════ MOBILE PERF BARS ═══════════════════ */
 
-function PerfBars({ data }: { data: number[] }) {
+function PerfBars({ data, labels }: { data: number[]; labels: string[] }) {
   const max = Math.max(...data, 1);
-  const days = ["M", "T", "W", "T", "F", "S", "S"];
   const ticks = [100, 75, 50, 25, 0];
   return (
-    <div className="flex gap-2">
-      <div className="flex flex-col justify-between h-[120px] shrink-0">
-        {ticks.map(t => <span key={t} className="text-[9px] text-dark-600 leading-none tabular-nums">{t}%</span>)}
+    <div className="flex gap-1.5">
+      <div className="flex flex-col justify-between h-[104px] shrink-0">
+        {ticks.map(t => <span key={t} className="text-[8px] text-dark-600 leading-none tabular-nums">{t}%</span>)}
       </div>
       <div className="flex-1 min-w-0">
-        <div className="relative h-[120px]">
+        <div className="relative h-[104px]">
           {ticks.map((t, i) => (
             <div key={t} className="absolute left-0 right-0 border-t border-dashed border-white/[0.06]" style={{ top: `${i * 25}%` }} />
           ))}
@@ -1152,7 +1186,7 @@ function PerfBars({ data }: { data: number[] }) {
           </div>
         </div>
         <div className="flex justify-between gap-1 mt-1.5">
-          {days.map((d, i) => <span key={i} className="flex-1 text-center text-[10px] text-dark-500 font-medium">{d}</span>)}
+          {labels.map((d, i) => <span key={i} className="flex-1 text-center text-[9px] text-dark-500 font-medium">{d}</span>)}
         </div>
       </div>
     </div>
