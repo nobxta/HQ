@@ -11,6 +11,7 @@ import {
   AlertOctagon, ExternalLink, RefreshCw, Activity,
   Target, TrendingUp, ArrowUpRight, ArrowDownRight,
   Users, BarChart3, Gauge, Sparkles, Timer,
+  MoreVertical, Power, ChevronDown, Gem, Shield,
 } from "lucide-react";
 import { formatDate, parseFlexibleDate } from "@/lib/utils";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
@@ -334,6 +335,45 @@ export default function UserDashboard() {
   const sessions: Array<any> = bot.sessions || [];
   const healthySessions = sessions.filter((s: any) => !failingFiles.has(typeof s === "string" ? s : s.file)).length;
 
+  /* ─── shared: control progress toast (used by mobile + desktop) ─── */
+  const controlToast = controlSteps.length > 0 ? (
+    <div className={`rounded-2xl border p-3.5 mb-4 animate-slide-up backdrop-blur-sm ${
+      controlDone ? "border-success/20 bg-success/[0.05]" : controlFailed ? "border-danger/20 bg-danger/[0.05]" : "border-accent/20 bg-accent/[0.05]"
+    }`}>
+      <div className="flex items-center gap-2.5">
+        {controlInProgress && <Loader2 className="h-4 w-4 text-accent animate-spin" />}
+        {controlDone && <CheckCircle className="h-4 w-4 text-success" />}
+        {controlFailed && <XCircle className="h-4 w-4 text-danger" />}
+        <span className={`text-sm font-semibold ${controlDone ? "text-success" : controlFailed ? "text-danger" : "text-accent"}`}>
+          {lastStep?.message}
+        </span>
+        {(controlDone || controlFailed) && (
+          <button onClick={() => { setControlSteps([]); setControlAction(""); }} className="ml-auto text-xs text-dark-500 hover:text-dark-300 transition-colors">Dismiss</button>
+        )}
+      </div>
+    </div>
+  ) : null;
+
+  /* ─── shared: alert rows (used by mobile + desktop) ─── */
+  const alertsBlock = (
+    <>
+      {failingCount > 0 && !showPopup && (
+        <button onClick={() => setShowPopup(true)} className="w-full text-left mb-4 group animate-fade-in">
+          <div className="flex items-center gap-2.5 rounded-2xl border border-danger/15 bg-danger/[0.04] hover:bg-danger/[0.08] px-4 py-3 transition-all duration-300">
+            <div className="p-1.5 rounded-lg bg-danger/15"><AlertOctagon className="h-4 w-4 text-danger" /></div>
+            <span className="text-xs font-semibold text-danger flex-1">{failingCount} session{failingCount !== 1 ? "s" : ""} failing &mdash; tap to replace</span>
+            <ChevronRight className="h-4 w-4 text-danger/40 group-hover:text-danger/70 group-hover:translate-x-0.5 transition-all" />
+          </div>
+        </button>
+      )}
+      {(expired || expiringSoon) && (
+        <div className={`flex items-center gap-2.5 rounded-2xl px-4 py-3 text-xs font-semibold mb-4 border animate-fade-in ${
+          expired ? "bg-danger/[0.04] text-danger border-danger/15" : "bg-warning/[0.04] text-warning border-warning/15"
+        }`}><AlertTriangle className="h-4 w-4 shrink-0" />{expired ? "Plan expired. Renew to continue." : `Expires in ${daysLeft}d. Renew soon.`}</div>
+      )}
+    </>
+  );
+
   return (
     <div className={`h-full transition-opacity duration-500 ${mounted ? "opacity-100" : "opacity-0"}`}>
 
@@ -469,6 +509,160 @@ export default function UserDashboard() {
           </div>
         </div>
       </Modal>
+
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {/* ═══════════════════════  MOBILE VIEW  ════════════════════════ */}
+      {/* ══════════════════════════════════════════════════════════════ */}
+      <div className="lg:hidden">
+
+        {/* ─────────── Hero card ─────────── */}
+        <div className="relative mb-4 rounded-[26px] overflow-hidden border border-white/[0.06] noise-bg animate-fade-in"
+          style={{ background: "linear-gradient(160deg, rgba(34,30,64,0.85) 0%, rgba(17,17,28,0.96) 55%, rgba(20,18,40,0.9) 100%)" }}>
+          <div className="absolute -top-6 left-6 w-32 h-32 rounded-full bg-accent/20 blur-[70px] pointer-events-none" />
+          <div className="relative p-5">
+            {/* top: avatar + name */}
+            <div className="flex items-start gap-4">
+              <div className="relative shrink-0">
+                <div className="h-[70px] w-[70px] rounded-[24px] bg-gradient-to-br from-accent-400 to-accent-700 flex items-center justify-center shadow-xl shadow-accent/30">
+                  <span className="text-[34px] font-bold text-white leading-none drop-shadow-sm">{(bot.name || "A").charAt(0).toUpperCase()}</span>
+                </div>
+                <div className={`absolute -bottom-1 -right-1 h-[22px] w-[22px] rounded-full border-4 border-dark-950 ${running ? "bg-success" : "bg-dark-600"}`}>
+                  {running && <span className="absolute inset-0 m-auto h-2 w-2 rounded-full bg-white/80 animate-pulse" />}
+                </div>
+              </div>
+              <div className="min-w-0 pt-1">
+                <p className="text-dark-400 text-[15px] font-normal leading-tight">Welcome back,</p>
+                <h1 className="text-[30px] font-bold text-white tracking-tight leading-[1.1] truncate">{bot.name}</h1>
+                <div className="flex flex-wrap items-center gap-2 mt-2.5">
+                  <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-semibold border ${
+                    running ? "bg-success/10 text-success border-success/20" :
+                    status === "frozen" || status === "suspended" ? "bg-warning/10 text-warning border-warning/20" :
+                    "bg-dark-800/60 text-dark-300 border-white/[0.06]"
+                  }`}>
+                    {running
+                      ? <span className="relative flex h-1.5 w-1.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75" /><span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-success" /></span>
+                      : <span className={`h-1.5 w-1.5 rounded-full ${status === "frozen" || status === "suspended" ? "bg-warning" : "bg-dark-500"}`} />}
+                    {status.charAt(0).toUpperCase() + status.slice(1)}
+                  </span>
+                  {bot.plan_name && (
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-accent/10 border border-accent/20 px-3 py-1.5 text-[12px] font-semibold text-accent">
+                      <Zap className="h-3.5 w-3.5" />{bot.plan_name}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* divider */}
+            <div className="h-px bg-white/[0.07] my-4" />
+
+            {/* bottom: plan / valid + start button */}
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-4 min-w-0">
+                <div className="min-w-0">
+                  <p className="text-dark-500 text-[11px] font-medium mb-1">Plan</p>
+                  <div className="flex items-center gap-1.5">
+                    <Gem className="h-4 w-4 text-accent shrink-0" />
+                    <span className="text-white text-[14px] font-bold truncate">{bot.plan_name || "—"}</span>
+                  </div>
+                </div>
+                <div className="h-9 w-px bg-white/[0.08] shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-dark-500 text-[11px] font-medium mb-1">Valid Until</p>
+                  <div className="flex items-center gap-1.5">
+                    <CalendarClock className="h-4 w-4 text-dark-400 shrink-0" />
+                    <span className={`text-[14px] font-bold truncate ${expired ? "text-danger" : expiringSoon ? "text-warning" : "text-white"}`}>
+                      {validTill ? formatDate(bot.valid_till) : "—"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <button onClick={() => doAction(running ? "stop" : "start")} disabled={!!actionLoading || preStartLoading}
+                className="shrink-0 flex items-center justify-center gap-2 rounded-2xl px-5 py-3.5 text-white font-bold text-[15px] transition-all duration-300 disabled:opacity-50"
+                style={running
+                  ? { background: "linear-gradient(135deg, #ff8080, #ff6b6b)", boxShadow: "0 8px 20px rgba(255,107,107,0.35)" }
+                  : { background: "linear-gradient(135deg, #8b6cff, #6c5ce7)", boxShadow: "0 8px 20px rgba(108,92,231,0.4)" }}>
+                {(actionLoading || preStartLoading) ? <Loader2 className="h-5 w-5 animate-spin" /> : running ? <Square className="h-5 w-5 fill-white" /> : <Play className="h-5 w-5 fill-white" />}
+                {preStartLoading ? "Checking" : running ? "Stop Bot" : "Start Bot"}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {controlToast}
+        {alertsBlock}
+
+        {/* ─────────── Stat cards (2×2) ─────────── */}
+        <div className="grid grid-cols-2 gap-3 mb-4 stagger-children">
+          <MobileStatCard icon={<Send className="h-5 w-5" />} accent="accent" label="Messages Sent"
+            value={totalSent}
+            footer={<span className="flex items-center gap-1 text-[12px] font-medium text-success"><ArrowUpRight className="h-3.5 w-3.5" />{todaySent > 0 ? `+${todaySent}` : "0"} today</span>} />
+          <MobileStatCard icon={<XCircle className="h-5 w-5" />} accent="danger" label="Failed" highlight
+            value={totalFailed}
+            footer={<span className={`flex items-center gap-1 text-[12px] font-medium ${todayFailed > 0 ? "text-danger" : "text-dark-400"}`}><ArrowUpRight className="h-3.5 w-3.5" />{todayFailed > 0 ? `+${todayFailed}` : "0"} today</span>} />
+          <MobileStatCard icon={<Users className="h-5 w-5" />} accent="accent" label="Accounts"
+            value={sessions.length}
+            footer={<span className="flex items-center gap-1.5 text-[12px] font-medium text-success"><span className="h-1.5 w-1.5 rounded-full bg-success" />{healthySessions} healthy</span>} />
+          <MobileStatCard icon={<RefreshCw className="h-5 w-5" />} accent="accent" label="Cycles"
+            value={stats?.total_cycles || 0}
+            footer={<span className="flex items-center gap-1.5 text-[12px] font-medium text-dark-400"><Clock className="h-3.5 w-3.5" />{stats?.last_cycle_ts ? fmtAgo(stats.last_cycle_ts) : "no cycles"}</span>} />
+        </div>
+
+        {/* ─────────── Performance ─────────── */}
+        <div className="rounded-[22px] border border-white/[0.06] bg-[#101019] p-5 mb-4 animate-fade-in">
+          <div className="flex items-center justify-between mb-5">
+            <div className="flex items-center gap-2">
+              <TrendingUp className="h-5 w-5 text-accent" />
+              <span className="text-[17px] font-bold text-white">Performance</span>
+            </div>
+            <div className="flex items-center gap-1.5 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2">
+              <CalendarClock className="h-4 w-4 text-dark-400" />
+              <span className="text-[13px] text-dark-200 font-medium">This Week</span>
+              <ChevronDown className="h-4 w-4 text-dark-400" />
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="relative shrink-0">
+              <CircleProgress value={successRate} size={128} stroke={10}
+                color={successRate >= 70 ? "success" : successRate >= 40 ? "warning" : "danger"} />
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-[34px] font-bold text-white tracking-tighter leading-none">
+                  <AnimatedNumber value={successRate} /><span className="text-lg text-dark-300">%</span>
+                </span>
+                <span className="text-[10px] text-dark-500 font-semibold mt-1">Success Rate</span>
+              </div>
+            </div>
+            <div className="flex-1 min-w-0">
+              <PerfBars data={weeklyData} />
+            </div>
+          </div>
+
+          <div className="space-y-3 mt-5">
+            <PerfStatBar label="Sent" value={totalSent} max={total || 1} color="bg-accent" />
+            <PerfStatBar label="Failed" value={totalFailed} max={total || 1} color="bg-danger" />
+          </div>
+        </div>
+
+        {/* ─────────── Bottom status strip ─────────── */}
+        <div className="rounded-[22px] border border-white/[0.06] bg-[#101019] px-3 py-4 mb-2 grid grid-cols-4">
+          <StatusCol icon={<Power className="h-4 w-4" />} iconColor="text-success" label="Bot Status"
+            value={running ? "Running" : "Stopped"} sub={running ? "Tap to stop" : "Tap to start"} />
+          <StatusCol icon={<Clock className="h-4 w-4" />} iconColor="text-info" label="Last Activity" divider
+            value={stats?.last_cycle_ts ? fmtAgo(stats.last_cycle_ts) : "—"}
+            sub={stats?.last_cycle_ts ? new Date(stats.last_cycle_ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "no activity"} />
+          <StatusCol icon={<Gem className="h-4 w-4" />} iconColor="text-accent" label="Plan" divider
+            value={bot.plan_name || "—"} sub={expired ? "Expired" : "Active"} />
+          <StatusCol icon={<Shield className="h-4 w-4" />} iconColor="text-info" label="Uptime" divider
+            value={`${successRate}%`} sub={failingCount > 0 ? `${failingCount} failing` : "No interruptions"} />
+        </div>
+      </div>
+
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {/* ═══════════════════════  DESKTOP VIEW  ═══════════════════════ */}
+      {/* ══════════════════════════════════════════════════════════════ */}
+      <div className="hidden lg:block">
 
       {/* ═══════════ HERO WELCOME BANNER ═══════════ */}
       <div className="relative mb-5 rounded-[20px] overflow-hidden animate-fade-in noise-bg"
@@ -846,6 +1040,7 @@ export default function UserDashboard() {
           </div>
         </div>
       </div>
+      </div>{/* end desktop view */}
     </div>
   );
 }
@@ -894,6 +1089,104 @@ function GlassStatCard({ icon, accent, label, value, todayValue, todayLabel, sub
 
         {sub && <p className="text-[11px] text-dark-400 font-medium mt-2">{sub}</p>}
       </div>
+    </div>
+  );
+}
+
+/* ═══════════════════ MOBILE STAT CARD ═══════════════════ */
+
+function MobileStatCard({ icon, accent, label, value, footer, highlight }: {
+  icon: React.ReactNode; accent: string; label: string; value: number;
+  footer: React.ReactNode; highlight?: boolean;
+}) {
+  const colorMap: Record<string, { bg: string; text: string }> = {
+    accent:  { bg: "bg-accent/12", text: "text-accent" },
+    success: { bg: "bg-success/12", text: "text-success" },
+    danger:  { bg: "bg-danger/12", text: "text-danger" },
+    warning: { bg: "bg-warning/12", text: "text-warning" },
+  };
+  const c = colorMap[accent] || colorMap.accent;
+  return (
+    <div className={`relative rounded-2xl border p-4 overflow-hidden ${
+      highlight ? "border-danger/20 bg-danger/[0.04]" : "border-white/[0.06] bg-[#101019]"
+    }`}>
+      {highlight && <div className="absolute -top-8 -right-8 w-24 h-24 rounded-full bg-danger/15 blur-[40px] pointer-events-none" />}
+      <div className="relative">
+        <div className="flex items-start justify-between gap-2">
+          <div className={`p-2.5 rounded-xl ${c.bg} ${c.text}`}>{icon}</div>
+          <div className="flex items-start gap-1 flex-1 min-w-0 pt-0.5">
+            <span className="text-[13px] text-dark-300 font-medium leading-tight flex-1 min-w-0">{label}</span>
+            <MoreVertical className="h-4 w-4 text-dark-600 shrink-0 -mr-1" />
+          </div>
+        </div>
+        <p className="text-[28px] font-bold text-white tracking-tight leading-none mt-3">
+          <AnimatedNumber value={value} />
+        </p>
+        <div className="mt-2">{footer}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════ MOBILE PERF BARS ═══════════════════ */
+
+function PerfBars({ data }: { data: number[] }) {
+  const max = Math.max(...data, 1);
+  const days = ["M", "T", "W", "T", "F", "S", "S"];
+  const ticks = [100, 75, 50, 25, 0];
+  return (
+    <div className="flex gap-2">
+      <div className="flex flex-col justify-between h-[120px] shrink-0">
+        {ticks.map(t => <span key={t} className="text-[9px] text-dark-600 leading-none tabular-nums">{t}%</span>)}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="relative h-[120px]">
+          {ticks.map((t, i) => (
+            <div key={t} className="absolute left-0 right-0 border-t border-dashed border-white/[0.06]" style={{ top: `${i * 25}%` }} />
+          ))}
+          <div className="absolute inset-0 flex items-end justify-between gap-1">
+            {data.map((v, i) => (
+              <div key={i} className="flex-1 rounded-t-[3px] bg-gradient-to-t from-accent-600 to-accent-400 transition-all duration-700 ease-out"
+                style={{ height: `${Math.max((v / max) * 100, 4)}%`, transitionDelay: `${i * 50}ms` }} />
+            ))}
+          </div>
+        </div>
+        <div className="flex justify-between gap-1 mt-1.5">
+          {days.map((d, i) => <span key={i} className="flex-1 text-center text-[10px] text-dark-500 font-medium">{d}</span>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════ MOBILE PERF STAT BAR ═══════════════════ */
+
+function PerfStatBar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
+  const pct = max > 0 ? Math.round((value / max) * 100) : 0;
+  return (
+    <div className="flex items-center gap-3">
+      <span className="text-[13px] text-dark-400 font-medium w-12 shrink-0">{label}</span>
+      <div className="flex-1 h-2.5 rounded-full bg-white/[0.05] overflow-hidden">
+        <div className={`h-full rounded-full ${color} progress-bar-animated`} style={{ width: `${Math.max(pct, 3)}%` }} />
+      </div>
+      <span className="text-[15px] font-bold text-white w-12 text-right shrink-0 tabular-nums">{value.toLocaleString()}</span>
+    </div>
+  );
+}
+
+/* ═══════════════════ MOBILE STATUS COLUMN ═══════════════════ */
+
+function StatusCol({ icon, iconColor, label, value, sub, divider }: {
+  icon: React.ReactNode; iconColor: string; label: string; value: string; sub: string; divider?: boolean;
+}) {
+  return (
+    <div className={`px-2.5 ${divider ? "border-l border-white/[0.06]" : ""}`}>
+      <div className="flex items-center gap-1.5 mb-1.5">
+        <span className={iconColor}>{icon}</span>
+        <span className="text-[10px] text-dark-400 font-medium leading-tight">{label}</span>
+      </div>
+      <p className="text-[13px] font-bold text-white leading-tight truncate">{value}</p>
+      <p className="text-[9px] text-dark-500 mt-0.5 leading-tight">{sub}</p>
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { getPortalSession } from "@/lib/portal-api";
 import PortalSidebar from "@/components/portal/PortalSidebar";
 import NotificationBell from "@/components/portal/NotificationBell";
+import MobileBottomNav from "@/components/portal/MobileBottomNav";
 import { Menu } from "lucide-react";
 
 export default function PortalLayout({ children }: { children: React.ReactNode }) {
@@ -32,8 +33,9 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
           {/* Notification bell — always visible */}
           <NotificationBell />
         </header>
-        <main className="p-4 sm:p-6">{children}</main>
+        <main className="p-4 sm:p-6 pb-28 lg:pb-6">{children}</main>
       </div>
+      <MobileBottomNav />
     </div>
   );
 }
