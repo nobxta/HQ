@@ -478,21 +478,19 @@ export default function UserLogsPage() {
     return key ? (acctIndexByKey.get(key) ?? 0) : 0;
   };
 
-  // Anchor "now" to the newest log line (robust to client/server clock skew); fall back to real now.
-  const nowRef = useMemo(() => {
-    let mx = 0;
-    for (const p of parsed) { const t = entryMs(p); if (!isNaN(t) && t > mx) mx = t; }
-    return mx || Date.now();
-  }, [parsed]);
   const rangeMs = TIME_RANGES.find((r) => r.key === range)?.ms ?? Infinity;
 
-  // Entries within the selected time window. Everything below (stats, list, groups) works off this,
-  // so the time-range dropdown drives the whole page while the "rows" cap only limits how many render.
+  // Entries within the selected time window, measured from the ACTUAL current time — so "Last hour"
+  // means the hour up to right now, not the last hour of whenever the newest log happened to be.
+  // (Previously this anchored to the newest log line, so a bot idle for a day still showed a full
+  // "last hour" of day-old posts. Timestamps are UTC and Date.now() is UTC epoch, so this is a
+  // correct comparison; a re-render each poll keeps it fresh.) Re-evaluated whenever data changes.
   const inRange = useMemo(() => {
     if (rangeMs === Infinity) return parsed;
-    const cutoff = nowRef - rangeMs;
+    const cutoff = Date.now() - rangeMs;
     return parsed.filter((p) => { const t = entryMs(p); return !isNaN(t) && t >= cutoff; });
-  }, [parsed, nowRef, rangeMs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parsed, rangeMs, data]);
 
   // Per-account stats (within the selected time window)
   const accountStats = useMemo(() => {
@@ -601,12 +599,14 @@ export default function UserLogsPage() {
     [accountStats]
   );
 
+  // Last successful post is an absolute "when did we last post" fact — always from full history,
+  // not the selected window, so it stays useful even when the current range has no activity.
   const lastSuccessTime = useMemo(() => {
-    for (let i = inRange.length - 1; i >= 0; i--) {
-      if (inRange[i].type === "success") return inRange[i].timestamp;
+    for (let i = parsed.length - 1; i >= 0; i--) {
+      if (parsed[i].type === "success") return parsed[i].timestamp;
     }
     return undefined;
-  }, [inRange]);
+  }, [parsed]);
 
   const topActiveGroups = useMemo(
     () => [...groupAgg].sort((a, b) => b.sent.size - a.sent.size).filter((g) => g.sent.size > 0).slice(0, 5),
@@ -853,9 +853,16 @@ export default function UserLogsPage() {
               </div>
             ) : filtered.length === 0 ? (
               lines.length === 0 ? (
-                <EmptyState label="No logs yet — start the bot to see output" icon="🎉" title="Everything looks good." />
+                <EmptyState label="Start the bot to see output here." icon="🎉" title="No logs yet." />
+              ) : search ? (
+                <EmptyState label={`Nothing matches “${search}”.`} title="No results." />
+              ) : range !== "all" ? (
+                <EmptyState
+                  label={`Nothing was posted in the ${(TIME_RANGES.find((r) => r.key === range)?.label || "").toLowerCase()}. Try a longer range or “All time”.`}
+                  title="No recent activity."
+                />
               ) : (
-                <EmptyState label="No activity found for this time period." title="Nothing matches yet." />
+                <EmptyState label="No activity found for this filter." title="Nothing here." />
               )
             ) : (
               <div className="grid gap-2.5">
