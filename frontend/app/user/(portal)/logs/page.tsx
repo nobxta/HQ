@@ -1,12 +1,13 @@
 "use client";
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { usePortalBot, usePortalLogs, usePortalStats, usePortalSessionValid } from "@/lib/hooks/usePortal";
 import Button from "@/components/ui/Button";
 import {
   RotateCw, CheckCircle2, XCircle, Clock,
-  Radio, Search, Zap, Hash, MessageSquare, Play,
-  Timer, ChevronDown, ChevronRight, Send, Wifi,
-  Activity, Users, Copy, Check,
+  Search, MessageSquare,
+  ChevronDown, ChevronRight, ChevronLeft, Send,
+  Users, Copy, Check, SlidersHorizontal, Download,
+  ExternalLink, X,
 } from "lucide-react";
 
 /* ────────────────────── Types ────────────────────── */
@@ -368,15 +369,14 @@ function cleanError(err: string): string {
 
 type FilterType = "all" | "success" | "failure" | "flood" | "system";
 
-// Time ranges for the top stats + list window. ms = Infinity means "all time".
-const TIME_RANGES: { key: string; label: string; ms: number }[] = [
-  { key: "all", label: "All time", ms: Infinity },
-  { key: "1h", label: "Last hour", ms: 3600e3 },
-  { key: "6h", label: "Last 6 hours", ms: 6 * 3600e3 },
-  { key: "24h", label: "Last 24 hours", ms: 24 * 3600e3 },
-  { key: "48h", label: "Last 48 hours", ms: 48 * 3600e3 },
-  { key: "7d", label: "Last 7 days", ms: 7 * 24 * 3600e3 },
-  { key: "30d", label: "Last 30 days", ms: 30 * 24 * 3600e3 },
+// Time ranges shown as the segmented control. `seg` marks the ones in the top segmented control;
+// `label` is the short segment label, `long` the descriptive form used in captions/empty states.
+const TIME_RANGES: { key: string; label: string; long: string; ms: number }[] = [
+  { key: "all", label: "All Time", long: "all time", ms: Infinity },
+  { key: "1h", label: "1H", long: "last hour", ms: 3600e3 },
+  { key: "6h", label: "6H", long: "last 6 hours", ms: 6 * 3600e3 },
+  { key: "12h", label: "12H", long: "last 12 hours", ms: 12 * 3600e3 },
+  { key: "24h", label: "24H", long: "last 24 hours", ms: 24 * 3600e3 },
 ];
 
 // Parse an entry's UTC timestamp string to epoch ms (NaN if missing/unparseable).
@@ -427,12 +427,15 @@ export default function UserLogsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState<FilterType>("all");
   const [accountFilter, setAccountFilter] = useState<string>("all");
-  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const [selected, setSelected] = useState<ParsedLog | null>(null);   // row open in the details drawer
   const [search, setSearch] = useState("");        // free-text search (account, group, status, reason)
-  const [view, setView] = useState<"timeline" | "groups">("timeline");  // timeline vs per-group insights
   const [range, setRange] = useState("all");        // time window for stats + list (All time default)
-  const [rangeOpen, setRangeOpen] = useState(false);
-  const [acctOpen, setAcctOpen] = useState(false);
+  const [sort, setSort] = useState<"newest" | "oldest">("newest");
+  const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useState(20);
+  const [filtersOpen, setFiltersOpen] = useState(false);  // status/account filter popover
+  // Reset to page 1 whenever the underlying result set changes.
+  useEffect(() => { setPage(1); }, [filter, accountFilter, search, range, sort, perPage]);
 
   const lines: string[] = data?.lines || [];
 
@@ -516,50 +519,26 @@ export default function UserLogsPage() {
     return map;
   }, [inRange]);
 
-  // Total matches before we cap to displayCount (so the footer can say "showing 1000 of N")
-  const [filtered, matchTotal] = useMemo(() => {
+  // Full matching set (sorted), then a page slice for the table. inRange is oldest→newest.
+  const sortedAll = useMemo(() => {
     let result = inRange;
-    // Type filter
     if (filter === "success") result = result.filter((p) => p.type === "success");
     else if (filter === "failure") result = result.filter((p) => p.type === "failure");
     else if (filter === "flood") result = result.filter((p) => p.type === "flood");
     else if (filter === "system") result = result.filter((p) => ["system", "cycle_start", "cycle_end", "connect"].includes(p.type));
-    // Account filter
     if (accountFilter !== "all") result = result.filter((p) => p.account === accountFilter);
-    // Free-text search (account / group / status / reason / raw)
     const q = search.trim().toLowerCase();
     if (q) result = result.filter((p) => matchesSearch(p, q));
-    const reversed = [...result].reverse();  // newest first
-    const capped = displayCount >= fetchLines ? reversed : reversed.slice(0, displayCount);
-    return [capped, reversed.length] as const;
-  }, [inRange, filter, accountFilter, search, displayCount, fetchLines]);
+    return sort === "newest" ? [...result].reverse() : [...result];
+  }, [inRange, filter, accountFilter, search, sort]);
 
-  // Per-group aggregation: for every group, which accounts posted / were rate-limited / failed, and when.
-  const groupAgg = useMemo(() => {
-    const map: Record<string, {
-      name: string; groupId?: string;
-      byAccount: Record<string, { type: LogType; time?: string; wait?: string }>;
-      sent: Set<string>; flood: Set<string>; failed: Set<string>;
-      lastTime?: string;
-    }> = {};
-    for (const p of inRange) {
-      if (!p.groupName || !p.account) continue;
-      if (p.type !== "success" && p.type !== "failure" && p.type !== "flood") continue;
-      const key = p.groupName;
-      if (!map[key]) map[key] = { name: p.groupName, groupId: p.groupId, byAccount: {}, sent: new Set(), flood: new Set(), failed: new Set() };
-      const g = map[key];
-      if (!g.groupId && p.groupId) g.groupId = p.groupId;
-      // Keep the most recent status per account (inRange is oldest→newest, so overwrite is fine)
-      g.byAccount[p.account] = { type: p.type, time: p.timestamp, wait: p.waitSeconds };
-      if (p.timestamp) g.lastTime = p.timestamp;
-      (p.type === "success" ? g.sent : p.type === "flood" ? g.flood : g.failed).add(p.account);
-    }
-    let list = Object.values(map);
-    const q = search.trim().toLowerCase();
-    if (q) list = list.filter((g) => g.name.toLowerCase().includes(q) || (g.groupId || "").toLowerCase().includes(q));
-    // Sort: groups with problems (failed/flood) first, then by name
-    return list.sort((a, b) => (b.failed.size + b.flood.size) - (a.failed.size + a.flood.size) || a.name.localeCompare(b.name));
-  }, [inRange, search]);
+  const matchTotal = sortedAll.length;
+  const totalPages = Math.max(1, Math.ceil(matchTotal / perPage));
+  const safePage = Math.min(page, totalPages);
+  const pageRows = useMemo(
+    () => sortedAll.slice((safePage - 1) * perPage, safePage * perPage),
+    [sortedAll, safePage, perPage]
+  );
 
   // Top stats. On "All time" with no account filter, Sent/Failed show the bot's persisted lifetime
   // counters — the same numbers the Dashboard reads — so the two pages agree. For any OTHER time
@@ -593,52 +572,31 @@ export default function UserLogsPage() {
     [inRange]
   );
 
-  // Accounts currently sitting in a flood/waiting state (their most recent post-event was a flood).
-  const waitingAccounts = useMemo(
-    () => Object.values(accountStats).filter((s) => s.lastEventType === "flood").length,
-    [accountStats]
-  );
-
-  // Last successful post is an absolute "when did we last post" fact — always from full history,
-  // not the selected window, so it stays useful even when the current range has no activity.
-  const lastSuccessTime = useMemo(() => {
-    for (let i = parsed.length - 1; i >= 0; i--) {
-      if (parsed[i].type === "success") return parsed[i].timestamp;
-    }
-    return undefined;
-  }, [parsed]);
-
-  const topActiveGroups = useMemo(
-    () => [...groupAgg].sort((a, b) => b.sent.size - a.sent.size).filter((g) => g.sent.size > 0).slice(0, 5),
-    [groupAgg]
-  );
-  const topWaitingGroups = useMemo(
-    () => [...groupAgg].sort((a, b) => b.flood.size - a.flood.size).filter((g) => g.flood.size > 0).slice(0, 4),
-    [groupAgg]
-  );
-
-  // Overall health verdict, used by the System Status card + sidebar pill.
-  const health = stats.total === 0 ? "quiet" : stats.failure / Math.max(1, stats.total) > 0.15 ? "critical" : stats.failure > 0 || waitingAccounts > 0 ? "attention" : "healthy";
-  const healthCopy: Record<string, { label: string; color: string }> = {
-    quiet: { label: "No activity yet", color: "text-dark-500" },
-    healthy: { label: "Healthy", color: "text-success" },
-    attention: { label: "Needs attention", color: "text-warning" },
-    critical: { label: "Critical", color: "text-danger" },
-  };
-
   const refresh = () => {
     setRefreshing(true);
     mutate();
     setTimeout(() => setRefreshing(false), 700);
   };
 
-  const filterChips: { key: FilterType; label: string; count: number }[] = [
+  // Download the currently-filtered logs as a text file.
+  const exportLogs = () => {
+    const text = sortedAll.map((p) => p.raw).join("\n");
+    const blob = new Blob([text], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `logs-${bot?.name || "bot"}-${new Date().toISOString().slice(0, 10)}.txt`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const filterOptions: { key: FilterType; label: string; count: number }[] = [
     { key: "all", label: "All Activity", count: stats.total },
     { key: "success", label: "Successful", count: stats.success },
     { key: "failure", label: "Problems", count: stats.failure },
     { key: "flood", label: "Waiting", count: stats.flood },
     { key: "system", label: "System Events", count: systemCount },
   ];
+
+  const pct = (n: number) => (stats.total > 0 ? Math.round((n / stats.total) * 100) : 0);
 
   if (mounted && !sessionValid) {
     return (
@@ -655,17 +613,17 @@ export default function UserLogsPage() {
     );
   }
 
-  const closeMenus = () => { setRangeOpen(false); setAcctOpen(false); };
+  const selIndex = selected ? resolveAcctIndex(selected) : 0;
 
   return (
-    <div className="space-y-4 sm:space-y-5 animate-fade-in" onClick={closeMenus}>
-      {/* Header */}
-      <div className="flex flex-wrap items-end justify-between gap-4">
+    <div className="animate-fade-in" onClick={() => setFiltersOpen(false)}>
+      {/* ── Header ── */}
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
         <div>
           <div className="flex items-center gap-2.5">
-            <h1 className="text-2xl sm:text-[28px] font-bold tracking-tight text-dark-100">Live Activity</h1>
+            <h1 className="text-2xl font-bold tracking-tight text-dark-100">Live Logs</h1>
             {bot?.running && (
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-success/10 px-2.5 py-1 text-[11px] font-semibold text-success ring-1 ring-success/20">
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-success">
                 <span className="relative flex h-1.5 w-1.5">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75" />
                   <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-success" />
@@ -674,619 +632,451 @@ export default function UserLogsPage() {
               </span>
             )}
           </div>
-          <p className="text-sm text-dark-500 mt-1">See everything your accounts are doing in real time.</p>
-        </div>
-        <div className="flex items-center gap-2.5">
-          <button
-            onClick={(e) => { e.stopPropagation(); refresh(); }}
-            className="flex items-center gap-2 rounded-xl border border-dark-700 bg-dark-900 px-3.5 py-2.5 text-sm font-semibold text-dark-300 hover:bg-dark-800 hover:border-dark-600 transition-colors"
-          >
-            <RotateCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} /> Refresh
-          </button>
-
-          {/* Time-range dropdown */}
-          <div className="relative" onClick={(e) => e.stopPropagation()}>
-            <button
-              onClick={() => { setRangeOpen((v) => !v); setAcctOpen(false); }}
-              className="flex items-center gap-2.5 rounded-xl border border-dark-700 bg-dark-900 px-3.5 py-2.5 text-sm text-dark-100 hover:bg-dark-800 hover:border-dark-600 transition-colors"
-            >
-              <span className="text-dark-500 font-medium hidden sm:inline">Showing Data From</span>
-              <span className="font-bold">{TIME_RANGES.find((r) => r.key === range)?.label}</span>
-              <ChevronDown className="h-3 w-3 text-dark-500" />
-            </button>
-            {rangeOpen && (
-              <div className="absolute right-0 top-[calc(100%+8px)] z-30 min-w-[200px] rounded-2xl border border-dark-700 bg-dark-850 p-1.5 shadow-2xl animate-scale-in">
-                {TIME_RANGES.map((r) => {
-                  const active = range === r.key;
-                  return (
-                    <button
-                      key={r.key}
-                      onClick={() => { setRange(r.key); setRangeOpen(false); }}
-                      className={`flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-sm transition-colors ${active ? "text-dark-100 font-bold bg-dark-800" : "text-dark-400 font-medium hover:bg-dark-800/60"}`}
-                    >
-                      <span className="w-4 text-accent">{active ? "✓" : ""}</span>
-                      {r.label}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Health overview cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 sm:gap-3">
-        <HealthCard icon={CheckCircle2} value={stats.success} label="Posts Sent" tint="success" />
-        <HealthCard icon={Send} value={stats.total} label="Total Posts" tint="accent" />
-        <HealthCard icon={XCircle} value={stats.failure} label="Failed Posts" tint="danger" />
-        <HealthCard icon={Timer} value={stats.flood} label="Waiting" tint="warning" />
-        <HealthCard icon={Users} value={accounts.length} label="Active Accounts" tint="info" />
-        <div className="rounded-xl sm:rounded-2xl border border-dark-700/50 bg-gradient-to-br from-dark-900 to-dark-850 px-3 py-2.5 sm:px-4 sm:py-3.5 flex items-center gap-2.5 sm:gap-3.5">
-          <div className="h-8 w-8 sm:h-9 sm:w-9 rounded-lg sm:rounded-xl bg-success/10 flex items-center justify-center shrink-0">
-            <span className="relative flex h-2.5 w-2.5">
-              {health === "healthy" && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75" />}
-              <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${health === "healthy" ? "bg-success" : health === "attention" ? "bg-warning" : health === "critical" ? "bg-danger" : "bg-dark-600"}`} />
-            </span>
-          </div>
-          <div className="min-w-0">
-            <p className={`text-base sm:text-lg font-bold leading-tight truncate ${healthCopy[health].color}`}>{healthCopy[health].label}</p>
-            <p className="text-xs text-dark-500 mt-0.5 truncate">System Status</p>
-          </div>
-        </div>
-      </div>
-      <p className="text-[11px] text-dark-600 -mt-3">
-        {stats.usingLifetime
-          ? "Showing lifetime totals (match the Dashboard) · pick a shorter range to see recent activity only"
-          : `Counts for ${(TIME_RANGES.find((r) => r.key === range)?.label || "").toLowerCase()}${accountFilter !== "all" ? ` · Acc ${accounts.indexOf(accountFilter) + 1} only` : ""}`}
-      </p>
-
-      {/* Search */}
-      <div className="relative">
-        <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-dark-500" />
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder={view === "groups" ? "Search a group…" : "Search groups, accounts, messages…"}
-          className="w-full rounded-xl sm:rounded-2xl border border-dark-700 bg-dark-900 pl-11 pr-11 py-3 sm:py-3.5 text-sm text-dark-100 placeholder:text-dark-500 focus:outline-none focus:border-accent/60 focus:ring-4 focus:ring-accent/10 transition-all"
-        />
-        {search && (
-          <button onClick={() => setSearch("")} className="absolute right-4 top-1/2 -translate-y-1/2 text-dark-500 hover:text-dark-300">
-            <XCircle className="h-4 w-4" />
-          </button>
-        )}
-      </div>
-
-      {/* Filter chips + account dropdown + view toggle */}
-      <div className="flex flex-col lg:flex-row lg:flex-wrap lg:items-center lg:justify-between gap-3">
-        {/* Chips: single horizontal-scroll row on mobile so they never stack into 3 rows */}
-        <div className="flex gap-2 overflow-x-auto lg:flex-wrap lg:overflow-visible -mx-4 px-4 lg:mx-0 lg:px-0 pb-1 lg:pb-0 no-scrollbar">
-          {filterChips.map((f) => {
-            const active = filter === f.key;
-            // Colour the active chip by meaning: green/red/amber for the outcome filters.
-            const activeTint: Record<string, string> = {
-              success: "bg-success/15 text-success ring-1 ring-success/30",
-              failure: "bg-danger/15 text-danger ring-1 ring-danger/30",
-              flood: "bg-warning/15 text-warning ring-1 ring-warning/30",
-              all: "bg-accent/15 text-accent ring-1 ring-accent/30",
-              system: "bg-dark-700 text-dark-100 ring-1 ring-dark-500",
-            };
-            const activeBadge: Record<string, string> = {
-              success: "bg-success/20 text-success",
-              failure: "bg-danger/20 text-danger",
-              flood: "bg-warning/20 text-warning",
-              all: "bg-accent/20 text-accent",
-              system: "bg-dark-600 text-dark-100",
-            };
-            return (
-              <button
-                key={f.key}
-                onClick={() => setFilter(f.key)}
-                className={`flex items-center gap-1.5 shrink-0 whitespace-nowrap rounded-full px-3 py-2 sm:px-4 sm:py-2.5 text-[13px] sm:text-sm font-semibold transition-all duration-200 ${
-                  active ? `${activeTint[f.key]} scale-[1.02]` : "bg-dark-900 text-dark-400 border border-dark-700/50 hover:text-dark-200 hover:border-dark-600"
-                }`}
-              >
-                {f.label}
-                <span className={`text-[11px] sm:text-xs font-bold rounded-full px-1.5 py-0.5 tabular-nums ${active ? activeBadge[f.key] : "bg-dark-800 text-dark-500"}`}>{f.count}</span>
-              </button>
-            );
-          })}
+          <p className="text-sm text-dark-500 mt-1">Real-time activity from all your accounts</p>
         </div>
 
         <div className="flex items-center gap-2">
-          <div className="flex items-center rounded-xl border border-dark-700 bg-dark-900 overflow-hidden">
-            <button
-              onClick={() => setView("timeline")}
-              className={`px-3 py-2.5 text-xs font-semibold transition-colors ${view === "timeline" ? "bg-dark-700 text-dark-100" : "text-dark-500 hover:text-dark-300"}`}
-            >
-              Timeline
-            </button>
-            <button
-              onClick={() => setView("groups")}
-              className={`px-3 py-2.5 text-xs font-semibold transition-colors ${view === "groups" ? "bg-dark-700 text-dark-100" : "text-dark-500 hover:text-dark-300"}`}
-            >
-              By Group
-            </button>
+          {/* Segmented time range */}
+          <div className="flex items-center rounded-xl border border-dark-700 bg-dark-900 p-1">
+            {TIME_RANGES.map((r) => {
+              const active = range === r.key;
+              return (
+                <button
+                  key={r.key}
+                  onClick={() => setRange(r.key)}
+                  className={`rounded-lg px-2.5 sm:px-3 py-1.5 text-xs font-semibold transition-colors ${active ? "bg-accent text-white shadow-sm" : "text-dark-400 hover:text-dark-200"}`}
+                >
+                  {r.label}
+                </button>
+              );
+            })}
           </div>
 
-          {/* Account dropdown */}
-          {accounts.length > 1 && (
-            <div className="relative" onClick={(e) => e.stopPropagation()}>
-              <button
-                onClick={() => { setAcctOpen((v) => !v); setRangeOpen(false); }}
-                className="flex items-center gap-2.5 rounded-xl border border-dark-700 bg-dark-900 px-3.5 py-2.5 text-sm text-dark-100 hover:bg-dark-800 hover:border-dark-600 transition-colors"
-              >
-                <span className="text-dark-500 font-medium hidden sm:inline">Showing Accounts</span>
-                <span className="font-bold">{accountFilter === "all" ? "All Accounts" : `Acc ${accounts.indexOf(accountFilter) + 1}`}</span>
-                <ChevronDown className="h-3 w-3 text-dark-500" />
-              </button>
-              {acctOpen && (
-                <div className="absolute right-0 top-[calc(100%+8px)] z-30 min-w-[260px] rounded-2xl border border-dark-700 bg-dark-850 p-1.5 shadow-2xl animate-scale-in">
-                  <button
-                    onClick={() => { setAccountFilter("all"); setAcctOpen(false); }}
-                    className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm transition-colors ${accountFilter === "all" ? "bg-dark-800 text-dark-100 font-bold" : "text-dark-400 font-medium hover:bg-dark-800/60"}`}
-                  >
-                    <span className="w-4 text-accent">{accountFilter === "all" ? "✓" : ""}</span>
-                    <span className="flex-1 text-left">All Accounts</span>
-                  </button>
-                  {accounts.map((acct, i) => {
-                    const active = accountFilter === acct;
-                    const as = accountStats[acct];
-                    return (
-                      <button
-                        key={acct}
-                        onClick={() => { setAccountFilter(acct); setAcctOpen(false); }}
-                        className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm transition-colors ${active ? "bg-dark-800 text-dark-100 font-bold" : "text-dark-400 font-medium hover:bg-dark-800/60"}`}
-                      >
-                        <span className="w-4 text-accent">{active ? "✓" : ""}</span>
-                        <span className="flex-1 text-left">Acc {i + 1}</span>
-                        <span className={`h-1.5 w-1.5 rounded-full ${as?.lastEventType === "flood" ? "bg-warning" : "bg-success"}`} />
-                        <span className="text-xs text-dark-500">{as ? `${as.sent}/${as.sent + as.failed}` : "—"}</span>
-                      </button>
-                    );
-                  })}
+          {/* Filter popover */}
+          <div className="relative" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => setFiltersOpen((v) => !v)}
+              className={`flex items-center justify-center h-9 w-9 rounded-xl border transition-colors ${filter !== "all" || accountFilter !== "all" ? "border-accent/40 bg-accent/10 text-accent" : "border-dark-700 bg-dark-900 text-dark-400 hover:text-dark-200 hover:border-dark-600"}`}
+              aria-label="Filters"
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+            </button>
+            {filtersOpen && (
+              <div className="absolute right-0 top-[calc(100%+8px)] z-30 w-64 rounded-2xl border border-dark-700 bg-dark-850 p-3 shadow-2xl animate-scale-in">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-2">Status</p>
+                <div className="flex flex-col gap-1 mb-3">
+                  {filterOptions.map((o) => (
+                    <button
+                      key={o.key}
+                      onClick={() => setFilter(o.key)}
+                      className={`flex items-center justify-between rounded-lg px-2.5 py-2 text-[13px] transition-colors ${filter === o.key ? "bg-accent/15 text-accent font-semibold" : "text-dark-300 hover:bg-dark-800"}`}
+                    >
+                      {o.label}
+                      <span className="text-xs font-bold tabular-nums opacity-70">{o.count}</span>
+                    </button>
+                  ))}
                 </div>
-              )}
-            </div>
-          )}
+                {accounts.length > 1 && (
+                  <>
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-2">Account</p>
+                    <select
+                      value={accountFilter}
+                      onChange={(e) => setAccountFilter(e.target.value)}
+                      className="w-full rounded-lg border border-dark-700 bg-dark-900 px-2.5 py-2 text-[13px] text-dark-200 outline-none focus:border-accent/60"
+                    >
+                      <option value="all">All accounts</option>
+                      {accounts.map((a, i) => <option key={a} value={a}>Account {i + 1}</option>)}
+                    </select>
+                  </>
+                )}
+                {(filter !== "all" || accountFilter !== "all") && (
+                  <button
+                    onClick={() => { setFilter("all"); setAccountFilter("all"); }}
+                    className="mt-3 w-full rounded-lg border border-dark-700 py-2 text-xs font-semibold text-dark-400 hover:text-dark-200 hover:border-dark-600 transition-colors"
+                  >
+                    Clear filters
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={(e) => { e.stopPropagation(); refresh(); }}
+            className="flex items-center justify-center h-9 w-9 rounded-xl border border-dark-700 bg-dark-900 text-dark-400 hover:text-dark-200 hover:border-dark-600 transition-colors"
+            aria-label="Refresh"
+          >
+            <RotateCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+          </button>
         </div>
       </div>
 
-      {/* Log list + sidebar — flex is more robust than an arbitrary grid template
-          (which previously failed to generate, letting the log column overlap the sidebar). */}
-      <div className="flex flex-col lg:flex-row gap-5 items-start">
-          {/* LOG LIST */}
-          <div className="min-w-0 w-full flex-1">
-            {view === "groups" ? (
-              groupAgg.length === 0 ? (
-                <EmptyState label={search ? "No group matches your search" : "No group activity yet"} />
-              ) : (
-                <div className="grid gap-2.5">
-                  {groupAgg.map((g) => (
-                    <GroupRow key={g.name} group={g} accounts={accounts} />
-                  ))}
-                </div>
-              )
-            ) : logsError ? (
-              <div className="rounded-2xl border border-dark-700/50 bg-dark-900 py-16 flex flex-col items-center justify-center gap-2 text-dark-500">
-                <XCircle className="h-7 w-7 text-danger/60" />
-                <p className="text-sm text-danger/80">Couldn't load logs — retrying every few seconds</p>
-                <p className="text-[11px] text-dark-600">{(logsError as any)?.message || "Connection issue"}</p>
-              </div>
-            ) : logsLoading && lines.length === 0 ? (
-              <div className="rounded-2xl border border-dark-700/50 bg-dark-900 py-16 flex flex-col items-center justify-center gap-2 text-dark-500">
-                <RotateCw className="h-6 w-6 animate-spin opacity-50" />
-                <p className="text-sm">Loading logs…</p>
-              </div>
-            ) : filtered.length === 0 ? (
-              lines.length === 0 ? (
-                <EmptyState label="Start the bot to see output here." icon="🎉" title="No logs yet." />
-              ) : search ? (
-                <EmptyState label={`Nothing matches “${search}”.`} title="No results." />
-              ) : range !== "all" ? (
-                <EmptyState
-                  label={`Nothing was posted in the ${(TIME_RANGES.find((r) => r.key === range)?.label || "").toLowerCase()}. Try a longer range or “All time”.`}
-                  title="No recent activity."
-                />
-              ) : (
-                <EmptyState label="No activity found for this filter." title="Nothing here." />
-              )
-            ) : (
-              <div className="grid gap-2.5">
-                {filtered.map((entry, i) => (
-                  <LogRow
-                    key={i}
-                    entry={entry}
-                    expanded={expandedIdx === i}
-                    onToggle={() => setExpandedIdx(expandedIdx === i ? null : i)}
-                    showAccount={accountFilter === "all" && accounts.length > 1}
-                    accountIndex={resolveAcctIndex(entry)}
-                  />
-                ))}
-              </div>
+      {/* ── Stat cards ── */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-3 mb-5">
+        <StatCard icon={Send} label="Total Sent" value={stats.total} tint="accent" bar={stats.total > 0 ? 100 : 0} />
+        <StatCard icon={CheckCircle2} label="Successful" value={stats.success} tint="success" percent={pct(stats.success)} bar={pct(stats.success)} />
+        <StatCard icon={XCircle} label="Failed" value={stats.failure} tint="danger" percent={pct(stats.failure)} bar={pct(stats.failure)} />
+        <StatCard icon={Clock} label="Waiting" value={stats.flood} tint="warning" percent={pct(stats.flood)} bar={pct(stats.flood)} />
+        <StatCard icon={Users} label="Active Accounts" value={accounts.length} tint="info" />
+      </div>
+      {stats.usingLifetime && (
+        <p className="text-[11px] text-dark-600 -mt-3 mb-4">Showing lifetime totals (match the Dashboard) · pick a range to see recent activity.</p>
+      )}
+
+      {/* ── Table card ── */}
+      <div className="rounded-2xl border border-dark-700/50 bg-dark-900 overflow-hidden">
+        {/* Toolbar */}
+        <div className="flex flex-wrap items-center gap-2.5 p-3 sm:p-4 border-b border-dark-800">
+          <div className="relative flex-1 min-w-[180px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-dark-500" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search group or account…"
+              className="w-full rounded-xl border border-dark-700 bg-dark-950 pl-10 pr-9 py-2.5 text-sm text-dark-100 placeholder:text-dark-500 outline-none focus:border-accent/60 focus:ring-4 focus:ring-accent/10 transition-all"
+            />
+            {search && (
+              <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-dark-500 hover:text-dark-300">
+                <X className="h-3.5 w-3.5" />
+              </button>
             )}
-
-            <p className="text-[11px] text-dark-600 text-right mt-3">
-              {view === "groups"
-                ? `${groupAgg.length} groups · ${accounts.length} accounts · ${TIME_RANGES.find((r) => r.key === range)?.label} · ${data?.total_lines || 0} total log lines`
-                : `Showing ${filtered.length} of ${matchTotal} matches · ${TIME_RANGES.find((r) => r.key === range)?.label} · ${data?.total_lines || 0} total in log file`}
-            </p>
           </div>
+          <div className="relative">
+            <select
+              value={sort}
+              onChange={(e) => setSort(e.target.value as "newest" | "oldest")}
+              className="appearance-none rounded-xl border border-dark-700 bg-dark-950 pl-3 pr-8 py-2.5 text-sm text-dark-200 outline-none focus:border-accent/60"
+            >
+              <option value="newest">Newest First</option>
+              <option value="oldest">Oldest First</option>
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-dark-500" />
+          </div>
+          <button
+            onClick={exportLogs}
+            className="flex items-center justify-center h-[42px] w-[42px] rounded-xl border border-dark-700 bg-dark-950 text-dark-400 hover:text-dark-200 hover:border-dark-600 transition-colors"
+            aria-label="Export logs"
+          >
+            <Download className="h-4 w-4" />
+          </button>
+        </div>
 
-          {/* SIDEBAR */}
-          <div className="hidden lg:grid gap-4 sticky top-4 w-[300px] shrink-0">
-            <div className="rounded-2xl border border-dark-700/50 bg-dark-900 p-5">
-              <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-4">Current Status</p>
-              <div className={`flex items-center gap-2.5 rounded-xl px-3.5 py-3 mb-5 border ${
-                health === "healthy" ? "bg-success/10 border-success/25" : health === "attention" ? "bg-warning/10 border-warning/25" : health === "critical" ? "bg-danger/10 border-danger/25" : "bg-dark-800 border-dark-700"
-              }`}>
-                <span className="relative flex h-2.5 w-2.5">
-                  {health === "healthy" && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75" />}
-                  <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${health === "healthy" ? "bg-success" : health === "attention" ? "bg-warning" : health === "critical" ? "bg-danger" : "bg-dark-600"}`} />
-                </span>
-                <span className={`text-sm font-bold ${healthCopy[health].color}`}>
-                  {health === "healthy" ? "All Systems Working" : healthCopy[health].label}
-                </span>
-              </div>
-              <div className="grid gap-3.5">
-                <SidebarStat label="Accounts posting" value={`${Object.values(accountStats).filter((s) => s.sent > 0).length} of ${accounts.length || 0}`} />
-                <SidebarStat label="Last successful post" value={lastSuccessTime ? relTime(lastSuccessTime) : "—"} />
-                <SidebarStat label="Accounts waiting" value={String(waitingAccounts)} tint={waitingAccounts > 0 ? "warning" : undefined} />
-                <SidebarStat label="Recent problems" value={String(stats.failure)} tint={stats.failure > 0 ? "danger" : undefined} />
+        {/* Header row (desktop) */}
+        <div className="hidden md:grid grid-cols-[110px_120px_1fr_140px_32px] gap-3 px-4 py-2.5 border-b border-dark-800 text-[10px] font-bold uppercase tracking-wider text-dark-500">
+          <span>Time</span>
+          <span>Status</span>
+          <span>Group / Channel</span>
+          <span>Account</span>
+          <span />
+        </div>
+
+        {/* Rows */}
+        {logsError ? (
+          <EmptyState title="Couldn't load logs" label="Retrying every few seconds…" />
+        ) : logsLoading && lines.length === 0 ? (
+          <div className="py-16 flex flex-col items-center justify-center gap-2 text-dark-500">
+            <RotateCw className="h-6 w-6 animate-spin opacity-50" />
+            <p className="text-sm">Loading logs…</p>
+          </div>
+        ) : pageRows.length === 0 ? (
+          lines.length === 0 ? (
+            <EmptyState title="No logs yet" label="Start the bot to see output here." />
+          ) : search ? (
+            <EmptyState title="No results" label={`Nothing matches "${search}".`} />
+          ) : range !== "all" ? (
+            <EmptyState title="No recent activity" label={`Nothing in the ${(TIME_RANGES.find((r) => r.key === range)?.long || "")}. Try a longer range or All Time.`} />
+          ) : (
+            <EmptyState title="Nothing here" label="No activity for this filter." />
+          )
+        ) : (
+          <div className="divide-y divide-dark-800/60">
+            {pageRows.map((entry, i) => (
+              <LogTableRow
+                key={i}
+                entry={entry}
+                accountIndex={resolveAcctIndex(entry)}
+                selected={selected === entry}
+                onClick={() => setSelected(selected === entry ? null : entry)}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Pagination */}
+        {matchTotal > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-t border-dark-800">
+            <p className="text-xs text-dark-500">
+              Showing {(safePage - 1) * perPage + 1} to {Math.min(safePage * perPage, matchTotal)} of {matchTotal.toLocaleString()} logs
+            </p>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={safePage <= 1}
+                className="flex items-center justify-center h-8 w-8 rounded-lg border border-dark-700 text-dark-400 hover:text-dark-200 hover:border-dark-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              {pageNumbers(safePage, totalPages).map((n, idx) =>
+                n === "…" ? (
+                  <span key={`e${idx}`} className="px-1.5 text-dark-600 text-sm">…</span>
+                ) : (
+                  <button
+                    key={n}
+                    onClick={() => setPage(n as number)}
+                    className={`h-8 min-w-8 px-2 rounded-lg text-sm font-semibold transition-colors ${n === safePage ? "bg-accent text-white" : "border border-dark-700 text-dark-400 hover:text-dark-200 hover:border-dark-600"}`}
+                  >
+                    {n}
+                  </button>
+                )
+              )}
+              <button
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={safePage >= totalPages}
+                className="flex items-center justify-center h-8 w-8 rounded-lg border border-dark-700 text-dark-400 hover:text-dark-200 hover:border-dark-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
+              <div className="relative ml-1">
+                <select
+                  value={perPage}
+                  onChange={(e) => setPerPage(Number(e.target.value))}
+                  className="appearance-none rounded-lg border border-dark-700 bg-dark-950 pl-2.5 pr-7 py-1.5 text-xs text-dark-300 outline-none focus:border-accent/60"
+                >
+                  {[10, 20, 50, 100].map((n) => <option key={n} value={n}>{n} per page</option>)}
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-dark-500" />
               </div>
             </div>
-
-            {topActiveGroups.length > 0 && (
-              <div className="rounded-2xl border border-dark-700/50 bg-dark-900 p-5">
-                <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-4">Top Active Groups</p>
-                <div className="grid gap-3">
-                  {topActiveGroups.map((g) => (
-                    <div key={g.name} className="flex items-center justify-between gap-2">
-                      <span className="text-sm text-dark-200 font-medium truncate">{g.name}</span>
-                      <span className="text-xs font-bold text-success shrink-0">{g.sent.size} posts</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {topWaitingGroups.length > 0 && (
-              <div className="rounded-2xl border border-dark-700/50 bg-dark-900 p-5">
-                <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-4">Top Waiting Groups</p>
-                <div className="grid gap-3">
-                  {topWaitingGroups.map((g) => (
-                    <div key={g.name} className="flex items-center justify-between gap-2">
-                      <span className="text-sm text-dark-200 font-medium truncate">{g.name}</span>
-                      <span className="text-xs font-bold text-warning shrink-0">{g.flood.size}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
+        )}
       </div>
+
+      {/* ── Details drawer ── */}
+      {selected && (
+        <DetailsPanel entry={selected} accountIndex={selIndex} botName={bot?.name} onClose={() => setSelected(null)} />
+      )}
 
       <style jsx global>{`
         @keyframes scaleInSm { from { opacity: 0; transform: translateY(-6px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
         .animate-scale-in { animation: scaleInSm 150ms cubic-bezier(0.16,1,0.3,1); }
-        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-        .no-scrollbar::-webkit-scrollbar { display: none; }
+        @keyframes slideUpPanel { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-slide-up-panel { animation: slideUpPanel 220ms cubic-bezier(0.16,1,0.3,1); }
       `}</style>
     </div>
   );
 }
 
-/* ────────────────────── Health card ────────────────────── */
+/* ────────────────────── Pagination helper ────────────────────── */
 
-function HealthCard({
-  icon: Icon,
-  value,
-  label,
-  tint,
-}: {
-  icon: any;
-  value: number;
-  label: string;
-  tint: "success" | "accent" | "danger" | "warning" | "info";
+function pageNumbers(current: number, total: number): (number | "…")[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const out: (number | "…")[] = [1];
+  const start = Math.max(2, current - 1);
+  const end = Math.min(total - 1, current + 1);
+  if (start > 2) out.push("…");
+  for (let i = start; i <= end; i++) out.push(i);
+  if (end < total - 1) out.push("…");
+  out.push(total);
+  return out;
+}
+
+/* ────────────────────── Status meta ────────────────────── */
+
+function statusMeta(type: LogType): { label: string; dot: string; text: string; action: string } {
+  switch (type) {
+    case "success": return { label: "Sent", dot: "bg-success", text: "text-success", action: "Message Sent" };
+    case "failure": return { label: "Failed", dot: "bg-danger", text: "text-danger", action: "Send Failed" };
+    case "flood": return { label: "Waiting", dot: "bg-warning", text: "text-warning", action: "Rate Limited (FloodWait)" };
+    case "connect": return { label: "Connected", dot: "bg-blue-400", text: "text-blue-400", action: "Account Connected" };
+    case "cycle_start":
+    case "cycle_end": return { label: "Cycle", dot: "bg-accent", text: "text-accent", action: "Scheduler" };
+    default: return { label: "System", dot: "bg-dark-500", text: "text-dark-400", action: "System Event" };
+  }
+}
+
+/* ────────────────────── Stat card ────────────────────── */
+
+function StatCard({ icon: Icon, label, value, tint, percent, bar }: {
+  icon: any; label: string; value: number; tint: "accent" | "success" | "danger" | "warning" | "info"; percent?: number; bar?: number;
 }) {
-  const tintClasses: Record<string, { bg: string; text: string; ring: string; glow: string }> = {
-    success: { bg: "bg-success/10", text: "text-success", ring: "ring-success/20", glow: "from-success/[0.07]" },
-    accent: { bg: "bg-accent/10", text: "text-accent", ring: "ring-accent/20", glow: "from-accent/[0.07]" },
-    danger: { bg: "bg-danger/10", text: "text-danger", ring: "ring-danger/20", glow: "from-danger/[0.07]" },
-    warning: { bg: "bg-warning/10", text: "text-warning", ring: "ring-warning/20", glow: "from-warning/[0.07]" },
-    info: { bg: "bg-blue-500/10", text: "text-blue-400", ring: "ring-blue-500/20", glow: "from-blue-500/[0.07]" },
+  const t: Record<string, { text: string; bg: string; ring: string; barBg: string }> = {
+    accent: { text: "text-accent", bg: "bg-accent/10", ring: "ring-accent/20", barBg: "bg-accent" },
+    success: { text: "text-success", bg: "bg-success/10", ring: "ring-success/20", barBg: "bg-success" },
+    danger: { text: "text-danger", bg: "bg-danger/10", ring: "ring-danger/20", barBg: "bg-danger" },
+    warning: { text: "text-warning", bg: "bg-warning/10", ring: "ring-warning/20", barBg: "bg-warning" },
+    info: { text: "text-blue-400", bg: "bg-blue-500/10", ring: "ring-blue-500/20", barBg: "bg-blue-500" },
   };
-  const c = tintClasses[tint];
-  // Emphasise a problem/pending metric by colouring the number when it's non-zero.
-  const emphasize = (tint === "danger" || tint === "warning") && value > 0;
+  const c = t[tint];
   return (
-    <div className={`group relative overflow-hidden rounded-xl sm:rounded-2xl border border-dark-700/50 bg-dark-900 px-3 py-2.5 sm:px-4 sm:py-3.5 flex items-center gap-2.5 sm:gap-3.5 transition-all duration-200 hover:-translate-y-0.5 hover:border-dark-600 hover:shadow-lg hover:shadow-black/20`}>
-      <div className={`pointer-events-none absolute inset-0 bg-gradient-to-br ${c.glow} to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300`} />
-      <div className={`relative h-8 w-8 sm:h-9 sm:w-9 rounded-lg sm:rounded-xl flex items-center justify-center shrink-0 ring-1 ${c.bg} ${c.ring}`}>
-        <Icon className={`h-4 w-4 ${c.text}`} />
+    <div className="rounded-2xl border border-dark-700/50 bg-dark-900 p-3 sm:p-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-dark-600">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-dark-500 truncate">{label}</span>
+        <span className={`flex items-center justify-center h-7 w-7 rounded-lg shrink-0 ring-1 ${c.bg} ${c.ring}`}>
+          <Icon className={`h-3.5 w-3.5 ${c.text}`} />
+        </span>
       </div>
-      <div className="relative min-w-0">
-        <p className={`text-lg sm:text-xl font-bold leading-none tracking-tight tabular-nums ${emphasize ? c.text : "text-dark-100"}`}>{value.toLocaleString()}</p>
-        <p className="text-[11px] text-dark-500 mt-0.5 sm:mt-1 truncate">{label}</p>
-      </div>
+      <p className="mt-2 text-2xl font-bold tracking-tight tabular-nums text-dark-100">{value.toLocaleString()}</p>
+      {percent != null ? (
+        <div className="mt-2">
+          <span className={`text-xs font-semibold ${c.text}`}>{percent}%</span>
+          <div className="mt-1 h-1 rounded-full bg-dark-800 overflow-hidden">
+            <div className={`h-full rounded-full ${c.barBg} transition-all duration-500`} style={{ width: `${Math.min(100, bar ?? 0)}%` }} />
+          </div>
+        </div>
+      ) : bar != null ? (
+        <div className="mt-3 h-1 rounded-full bg-dark-800 overflow-hidden">
+          <div className={`h-full rounded-full ${c.barBg} transition-all duration-500`} style={{ width: `${Math.min(100, bar)}%` }} />
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function SidebarStat({ label, value, tint }: { label: string; value: string; tint?: "warning" | "danger" }) {
-  return (
-    <div className="flex items-baseline justify-between gap-2">
-      <span className="text-sm text-dark-500">{label}</span>
-      <span className={`text-sm font-bold ${tint === "warning" ? "text-warning" : tint === "danger" ? "text-danger" : "text-dark-100"}`}>{value}</span>
-    </div>
-  );
-}
+/* ────────────────────── Table row ────────────────────── */
 
-/* ────────────────────── Group Row (By Group view) ────────────────────── */
-
-function GroupRow({
-  group,
-  accounts,
-}: {
-  group: {
-    name: string; groupId?: string;
-    byAccount: Record<string, { type: LogType; time?: string; wait?: string }>;
-    sent: Set<string>; flood: Set<string>; failed: Set<string>;
-  };
-  accounts: string[];
+function LogTableRow({ entry, accountIndex, selected, onClick }: {
+  entry: ParsedLog; accountIndex: number; selected: boolean; onClick: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const total = accounts.length || Object.keys(group.byAccount).length;
-
-  // Per-account detail rows (newest activity first), each naming the session number + when it posted.
-  const detailRows = accounts
-    .map((acct, i) => ({ acct, i, rec: group.byAccount[acct] }))
-    .filter((r) => r.rec)
-    .sort((a, b) => (entryMs({ timestamp: b.rec!.time } as ParsedLog) || 0) - (entryMs({ timestamp: a.rec!.time } as ParsedLog) || 0));
+  const s = statusMeta(entry.type);
+  const groupPrimary = entry.groupName || entry.message || "System event";
+  const groupSecondary = entry.groupId ? entry.groupId : entry.type === "flood" && entry.waitSeconds ? `wait ${entry.waitSeconds}s` : "";
+  const timeShort = entry.timestamp ? toLocalTime(entry.timestamp).time : "—";
+  const statusLabel = entry.type === "flood" && entry.waitSeconds ? `${entry.waitSeconds}s` : s.label;
 
   return (
     <div
-      onClick={() => setOpen((v) => !v)}
-      className={`rounded-2xl border bg-dark-900 px-4 py-3.5 cursor-pointer transition-all hover:-translate-y-0.5 hover:border-dark-600 ${open ? "border-dark-600 shadow-lg shadow-black/20" : "border-dark-700/50"}`}
+      onClick={onClick}
+      className={`relative grid grid-cols-[1fr_auto] md:grid-cols-[110px_120px_1fr_140px_32px] items-center gap-2 md:gap-3 px-4 py-3 cursor-pointer transition-colors ${selected ? "bg-accent/[0.06]" : "hover:bg-white/[0.02]"}`}
     >
-      <div className="flex items-center justify-between gap-2 mb-2">
-        <div className="min-w-0 flex items-center gap-2">
-          <ChevronRight className={`h-4 w-4 text-dark-600 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
-          <div className="min-w-0">
-            <p className="text-sm font-semibold text-dark-100 truncate">{group.name}</p>
-            <p className="text-[10px] text-dark-600 font-mono truncate">{group.groupId ? `ID ${group.groupId}` : "ID unknown"}</p>
-          </div>
+      {selected && <span className="absolute left-0 top-0 bottom-0 w-0.5 bg-accent" />}
+
+      {/* Time (desktop) */}
+      <span className="hidden md:block text-[13px] font-mono text-dark-400 tabular-nums">{timeShort}</span>
+
+      {/* Status (desktop) */}
+      <span className="hidden md:flex items-center gap-1.5">
+        <span className={`h-2 w-2 rounded-full ${s.dot}`} />
+        <span className={`text-[13px] font-medium ${s.text}`}>{statusLabel}</span>
+      </span>
+
+      {/* Group / channel */}
+      <div className="min-w-0">
+        <div className="flex items-center gap-2 md:hidden mb-0.5">
+          <span className={`h-2 w-2 rounded-full ${s.dot}`} />
+          <span className={`text-[11px] font-medium ${s.text}`}>{statusLabel}</span>
+          <span className="text-[11px] font-mono text-dark-600 tabular-nums">{timeShort}</span>
         </div>
-        <div className="flex items-center gap-2 shrink-0 text-xs">
-          <span className="text-success font-semibold">{group.sent.size} sent</span>
-          {group.flood.size > 0 && <span className="text-warning font-semibold">{group.flood.size} waiting</span>}
-          {group.failed.size > 0 && <span className="text-danger font-semibold">{group.failed.size} failed</span>}
-          <span className="text-dark-500">{group.sent.size}/{total} acc</span>
-        </div>
-      </div>
-      <div className="flex flex-wrap gap-1.5 pl-6">
-        {accounts.map((acct, i) => {
-          const rec = group.byAccount[acct];
-          const t = rec?.time ? toLocalTime(rec.time).time : "";
-          const cls = !rec
-            ? "bg-dark-800 text-dark-500"
-            : rec.type === "success"
-            ? "bg-success/10 text-success"
-            : rec.type === "flood"
-            ? "bg-warning/10 text-warning"
-            : "bg-danger/10 text-danger";
-          const label = !rec ? "no post" : rec.type === "success" ? "sent" : rec.type === "flood" ? `wait ${rec.wait ? rec.wait + "s" : ""}`.trim() : "failed";
-          return (
-            <span key={acct} className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] ${cls}`} title={rec?.time ? toLocalTime(rec.time).full : "never posted"}>
-              <span className="font-medium">Acc {i + 1}</span>
-              <span className="opacity-70">{label}</span>
-              {t && <span className="opacity-50">{t}</span>}
-            </span>
-          );
-        })}
+        <p className="text-sm font-semibold text-dark-100 truncate">{groupPrimary}</p>
+        {groupSecondary && <p className="text-[11px] text-dark-600 font-mono truncate">{groupSecondary}</p>}
       </div>
 
-      {open && (
-        <div className="mt-3 ml-6 rounded-xl bg-dark-950 border border-dark-700/50 p-3 animate-scale-in" onClick={(e) => e.stopPropagation()}>
-          {group.groupId && (
-            <div className="flex items-center gap-2 pb-2.5 mb-2.5 border-b border-dark-800">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-dark-600">Group ID</span>
-              <span className="text-xs font-mono text-dark-300">{group.groupId}</span>
-            </div>
-          )}
-          {detailRows.length === 0 ? (
-            <p className="text-xs text-dark-500">No account has posted to this group in the selected range.</p>
-          ) : (
-            <div className="grid gap-1.5">
-              {detailRows.map(({ acct, i, rec }) => {
-                const tone = rec!.type === "success" ? "text-success" : rec!.type === "flood" ? "text-warning" : "text-danger";
-                const verb = rec!.type === "success" ? "posted" : rec!.type === "flood" ? `waiting ${rec!.wait ? rec!.wait + "s" : ""}`.trim() : "failed";
-                return (
-                  <div key={acct} className="flex items-center gap-2 text-xs">
-                    <span className="rounded bg-dark-800 px-1.5 py-0.5 text-[10px] font-semibold text-dark-300 shrink-0">Acc {i + 1}</span>
-                    <span className="font-mono text-dark-500 shrink-0">{acct}.session</span>
-                    <span className={`font-semibold shrink-0 ${tone}`}>{verb}</span>
-                    <span className="text-dark-500 ml-auto shrink-0">{rec!.time ? toLocalTime(rec!.time).full : "—"}</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
+      {/* Account (desktop) */}
+      <span className="hidden md:block text-[13px] text-dark-400 truncate">
+        {accountIndex > 0 ? `Account ${accountIndex}` : "—"}
+      </span>
+
+      {/* Chevron */}
+      <ChevronRight className={`h-4 w-4 shrink-0 justify-self-end transition-colors ${selected ? "text-accent" : "text-dark-600"}`} />
     </div>
   );
 }
 
-/* ────────────────────── Log Row (Timeline view) ────────────────────── */
+/* ────────────────────── Details drawer ────────────────────── */
 
-// Friendly, plain-language copy for the expand panel — mirrors the reference design's
-// "What happened" / "Do you need to do anything?" framing instead of dumping raw fields.
-function friendlyCopy(entry: ParsedLog, accountIndex?: number): { title: string; subtitle: string; what: string; action: string } {
-  const group = entry.groupName || entry.groupId || "";
-  const accName = accountIndex && accountIndex > 0 ? `Account ${accountIndex}` : (entry.account || "");
-  switch (entry.type) {
-    case "success":
-      return {
-        title: "Successfully posted",
-        subtitle: group ? `${group}${entry.account ? ` · Using ${entry.account}` : ""}` : entry.account || "",
-        what: `Your post was delivered${group ? ` to the ${group} group` : ""} without any issues.`,
-        action: "No — everything worked as expected.",
-      };
-    case "failure":
-      return {
-        title: "Couldn't send post",
-        subtitle: [group, entry.error].filter(Boolean).join(" · "),
-        what: `Telegram returned an error while sending this post${group ? ` to ${group}` : ""}.${entry.error ? ` Reason: ${entry.error}.` : ""}`,
-        action: "Usually not — we'll retry automatically. If this keeps happening for days, consider checking this group.",
-      };
-    case "flood": {
-      const mins = entry.waitSeconds ? Math.round(Number(entry.waitSeconds) / 60) : null;
-      const waitLabel = mins ? `about ${mins} minute${mins === 1 ? "" : "s"}` : entry.waitSeconds ? `${entry.waitSeconds} seconds` : "a short while";
-      return {
-        title: `Waiting ${waitLabel}`,
-        subtitle: entry.message || (group ? `${group} · Telegram asked this account to slow down` : "Telegram asked this account to slow down"),
-        what: `Telegram asked this account to wait ${waitLabel} before posting again${group ? ` in ${group}` : ""}. This is normal and happens when an account posts frequently.`,
-        action: "Nothing — posting will resume automatically once the wait is over.",
-      };
-    }
-    case "connect":
-      return {
-        title: `${accName || "Account"} connected successfully`,
-        subtitle: [accName, "Ready to post"].filter(Boolean).join(" · "),
-        what: `${accName || "The account"} connected successfully and is ready to post.`,
-        action: "No — this is just a confirmation.",
-      };
-    case "cycle_start":
-    case "cycle_end":
-      return {
-        title: entry.message || "Scheduler update",
-        subtitle: [accName, "Scheduled automatically"].filter(Boolean).join(" · "),
-        what: entry.message?.includes("no groups assigned")
-          ? `${accName || "This account"} has no groups assigned right now, so its posting cycle completed without sending anything.`
-          : `The posting scheduler moved to its next step for ${accName || "this account"} automatically.`,
-        action: "No — this is background activity.",
-      };
-    default:
-      return {
-        title: entry.message || "System event",
-        subtitle: "",
-        what: entry.message || entry.raw,
-        action: "No — this is background activity.",
-      };
-  }
+function DetailsPanel({ entry, accountIndex, botName, onClose }: {
+  entry: ParsedLog; accountIndex: number; botName?: string; onClose: () => void;
+}) {
+  const s = statusMeta(entry.type);
+  const accLabel = accountIndex > 0 ? `Account ${accountIndex}` : entry.account || "—";
+  const response = entry.type === "success" ? "Message delivered successfully"
+    : entry.type === "failure" ? (entry.error || "Send failed")
+    : entry.type === "flood" ? `Rate limited — waiting ${entry.waitSeconds || "?"}s`
+    : entry.message || "—";
+  const session = entry.account ? `${entry.account}.session` : "—";
+
+  return (
+    <div className="mt-4 rounded-2xl border border-dark-700/50 bg-dark-900 overflow-hidden animate-slide-up-panel">
+      <div className="flex items-center justify-between gap-2 px-4 sm:px-5 py-3.5 border-b border-dark-800">
+        <div className="flex items-center gap-2.5">
+          <h3 className="text-base font-bold text-dark-100">Log Details</h3>
+          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${s.text} bg-white/[0.04]`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${s.dot}`} />{s.label}
+          </span>
+        </div>
+        <button onClick={onClose} className="flex items-center justify-center h-8 w-8 rounded-lg text-dark-500 hover:text-dark-200 hover:bg-dark-800 transition-colors">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-x-8 gap-y-5 p-4 sm:p-5">
+        {/* Left: fields */}
+        <div className="grid gap-3">
+          <Field label="Time" value={entry.timestamp ? toLocalTime(entry.timestamp).full : "—"} />
+          <Field label="Account" value={accLabel} copy={entry.account} />
+          <Field label="Group / Channel" value={entry.groupName || "—"} sub={entry.groupId} link={entry.groupLink} />
+          <Field label="Action" value={s.action} />
+          <Field label="Status" value={s.label} valueClass={s.text} />
+          <Field label="Response" value={response} valueClass={entry.type === "failure" ? "text-danger" : undefined} />
+          <Field label="Device / Session" value={session} mono />
+          {botName && <Field label="Bot" value={botName} />}
+        </div>
+
+        {/* Right: raw response */}
+        <div className="min-w-0">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-2">Raw Log</p>
+          <RawBlock text={entry.raw} />
+        </div>
+      </div>
+    </div>
+  );
 }
 
-function typeMeta(type: LogType): { icon: any; tint: string; glyphBg: string; ring: string; strip: string; pill?: { label: string; cls: string } } {
-  switch (type) {
-    case "success": return { icon: CheckCircle2, tint: "text-success", glyphBg: "bg-success/10", ring: "ring-success/20", strip: "bg-success", pill: { label: "Sent", cls: "bg-success/10 text-success" } };
-    case "failure": return { icon: XCircle, tint: "text-danger", glyphBg: "bg-danger/10", ring: "ring-danger/20", strip: "bg-danger", pill: { label: "Failed", cls: "bg-danger/10 text-danger" } };
-    case "flood": return { icon: Timer, tint: "text-warning", glyphBg: "bg-warning/10", ring: "ring-warning/20", strip: "bg-warning", pill: { label: "Waiting", cls: "bg-warning/10 text-warning" } };
-    case "connect": return { icon: Wifi, tint: "text-blue-400", glyphBg: "bg-blue-500/10", ring: "ring-blue-500/20", strip: "bg-blue-500/50" };
-    case "cycle_start": return { icon: Activity, tint: "text-accent", glyphBg: "bg-accent/10", ring: "ring-accent/20", strip: "bg-accent/50" };
-    case "cycle_end": return { icon: Zap, tint: "text-dark-400", glyphBg: "bg-dark-800", ring: "ring-dark-700", strip: "bg-dark-600" };
-    default: return { icon: Radio, tint: "text-dark-400", glyphBg: "bg-dark-800", ring: "ring-dark-700", strip: "bg-dark-600" };
-  }
-}
-
-function LogRow({
-  entry,
-  expanded,
-  onToggle,
-  showAccount,
-  accountIndex,
-}: {
-  entry: ParsedLog;
-  expanded: boolean;
-  onToggle: () => void;
-  showAccount?: boolean;
-  accountIndex?: number;
+function Field({ label, value, sub, copy, link, mono, valueClass }: {
+  label: string; value: string; sub?: string; copy?: string; link?: string; mono?: boolean; valueClass?: string;
 }) {
   const [copied, setCopied] = useState(false);
-  const copy = friendlyCopy(entry, accountIndex);
-  const meta = typeMeta(entry.type);
-  const Icon = meta.icon;
-
-  const copyRaw = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    navigator.clipboard.writeText(entry.raw).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
-  };
-
-  const tintedBg = entry.type === "failure" ? "bg-danger/[0.03]" : entry.type === "flood" ? "bg-warning/[0.03]" : "bg-dark-900";
+  const doCopy = () => { if (copy) navigator.clipboard.writeText(copy).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200); }); };
   return (
-    <div
-      onClick={onToggle}
-      className={`group relative overflow-hidden rounded-2xl border pl-5 pr-4 sm:pr-5 py-4 cursor-pointer transition-all duration-200 hover:-translate-y-0.5 hover:border-dark-600 hover:shadow-lg hover:shadow-black/20 ${tintedBg} ${expanded ? "border-dark-600 shadow-lg shadow-black/20" : "border-dark-700/50"}`}
-    >
-      {/* Status accent strip */}
-      <span className={`absolute left-0 top-0 bottom-0 w-1 ${meta.strip} opacity-70 group-hover:opacity-100 transition-opacity`} />
-      <div className="flex gap-3.5 items-start flex-wrap sm:flex-nowrap">
-        <div className={`h-9 w-9 rounded-full flex items-center justify-center shrink-0 ring-1 ${meta.glyphBg} ${meta.ring}`}>
-          <Icon className={`h-4 w-4 ${meta.tint}`} />
-        </div>
-        <div className="flex-1 min-w-[180px]">
-          <p className="text-[11px] font-semibold text-dark-500 mb-0.5">
-            {entry.timestamp ? relTime(entry.timestamp) : ""}
-          </p>
-          <p className="text-sm font-bold text-dark-100">{copy.title}</p>
-          {copy.subtitle && <p className="text-xs text-dark-500 mt-0.5 truncate">{copy.subtitle}</p>}
-        </div>
-        <div className="flex items-center gap-2 shrink-0 ml-auto">
-          {meta.pill && (
-            <span className={`hidden sm:inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${meta.pill.cls}`}>
-              {entry.type === "flood" && entry.waitSeconds ? `${entry.waitSeconds}s` : meta.pill.label}
-            </span>
+    <div className="grid grid-cols-[130px_1fr] gap-3 items-start">
+      <span className="text-[13px] text-dark-500 pt-px">{label}</span>
+      <div className="min-w-0 flex items-center gap-2">
+        <div className="min-w-0">
+          {link ? (
+            <a href={link} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 text-[13px] font-medium text-accent hover:underline break-words">
+              {value}<ExternalLink className="h-3 w-3 shrink-0 opacity-70" />
+            </a>
+          ) : (
+            <span className={`text-[13px] font-medium break-words ${mono ? "font-mono" : ""} ${valueClass || "text-dark-200"}`}>{value}</span>
           )}
-          {showAccount && accountIndex && accountIndex > 0 && (
-            <span className="rounded-full bg-dark-800 border border-dark-700 px-2.5 py-1 text-[11px] font-semibold text-dark-400">
-              Acc {accountIndex}
-            </span>
-          )}
-          <ChevronRight className={`h-4 w-4 text-dark-600 transition-transform group-hover:text-dark-400 ${expanded ? "rotate-90" : ""}`} />
+          {sub && <span className="block text-[11px] text-dark-600 font-mono truncate">{sub}</span>}
         </div>
+        {copy && (
+          <button onClick={doCopy} className="shrink-0 text-dark-600 hover:text-dark-300 transition-colors" aria-label="Copy">
+            {copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
+          </button>
+        )}
       </div>
-
-      {expanded && (
-        <div className="mt-4 ml-0 sm:ml-[52px] rounded-xl bg-dark-950 border border-dark-700/50 p-4 sm:p-5 grid gap-3.5 animate-scale-in">
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pb-3.5 border-b border-dark-800">
-            <ExpandField label="Posted at" value={entry.timestamp ? toLocalTime(entry.timestamp).full : "—"} />
-            <ExpandField label="Account" value={entry.account || "—"} />
-            <ExpandField label="Group" value={entry.groupName || entry.groupId || "—"} />
-          </div>
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-dark-500 mb-1">What happened</p>
-            <p className="text-sm text-dark-300 leading-relaxed">{copy.what}</p>
-          </div>
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-dark-500 mb-1">Do you need to do anything?</p>
-            <p className="text-sm text-dark-300 leading-relaxed">{copy.action}</p>
-          </div>
-          <div className="pt-3 border-t border-dark-800 relative">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-dark-600 mb-1">Log detail</p>
-            <p className="text-[11px] font-mono text-dark-600 break-all leading-relaxed pr-8">{entry.raw}</p>
-            <button onClick={copyRaw} className="absolute right-0 top-2.5 flex items-center justify-center h-6 w-6 rounded-md text-dark-500 hover:text-dark-200 hover:bg-dark-800 transition-colors" title="Copy raw log">
-              {copied ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
-function ExpandField({ label, value }: { label: string; value: string }) {
+function RawBlock({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200); });
   return (
-    <div>
-      <span className="text-[10px] font-bold uppercase tracking-wider text-dark-600 block mb-0.5">{label}</span>
-      <span className="text-sm font-semibold text-dark-200 break-words">{value}</span>
+    <div className="relative rounded-xl bg-dark-950 border border-dark-800 p-3.5">
+      <p className="font-mono text-[11px] leading-relaxed text-dark-400 break-all whitespace-pre-wrap pr-8">{text}</p>
+      <button onClick={copy} className="absolute right-2.5 top-2.5 flex items-center justify-center h-6 w-6 rounded-md text-dark-500 hover:text-dark-200 hover:bg-dark-800 transition-colors" aria-label="Copy raw log">
+        {copied ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
+      </button>
     </div>
   );
 }
 
-function EmptyState({ label, title, icon }: { label: string; title?: string; icon?: string }) {
+function EmptyState({ label, title }: { label: string; title?: string }) {
   return (
-    <div className="rounded-2xl border border-dark-700/50 bg-dark-900 py-16 px-6 text-center">
-      <div className="text-4xl mb-3">{icon || <MessageSquare className="h-9 w-9 mx-auto opacity-30" />}</div>
+    <div className="py-16 px-6 text-center">
+      <MessageSquare className="h-8 w-8 mx-auto opacity-25 mb-3" />
       {title && <p className="text-base font-bold text-dark-200 mb-1">{title}</p>}
       <p className="text-sm text-dark-500">{label}</p>
     </div>
