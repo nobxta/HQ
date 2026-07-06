@@ -658,7 +658,7 @@ export default function UserLogsPage() {
   const closeMenus = () => { setRangeOpen(false); setAcctOpen(false); };
 
   return (
-    <div className="space-y-5 animate-fade-in" onClick={closeMenus}>
+    <div className="space-y-4 sm:space-y-5 animate-fade-in" onClick={closeMenus}>
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
@@ -716,14 +716,14 @@ export default function UserLogsPage() {
       </div>
 
       {/* Health overview cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 sm:gap-3">
         <HealthCard icon={CheckCircle2} value={stats.success} label="Posts Sent" tint="success" />
         <HealthCard icon={Send} value={stats.total} label="Total Posts" tint="accent" />
         <HealthCard icon={XCircle} value={stats.failure} label="Failed Posts" tint="danger" />
         <HealthCard icon={Timer} value={stats.flood} label="Waiting" tint="warning" />
         <HealthCard icon={Users} value={accounts.length} label="Active Accounts" tint="info" />
-        <div className="rounded-2xl border border-dark-700/50 bg-gradient-to-br from-dark-900 to-dark-850 px-4 py-3.5 flex items-center gap-3.5">
-          <div className="h-9 w-9 rounded-xl bg-success/10 flex items-center justify-center shrink-0">
+        <div className="rounded-xl sm:rounded-2xl border border-dark-700/50 bg-gradient-to-br from-dark-900 to-dark-850 px-3 py-2.5 sm:px-4 sm:py-3.5 flex items-center gap-2.5 sm:gap-3.5">
+          <div className="h-8 w-8 sm:h-9 sm:w-9 rounded-lg sm:rounded-xl bg-success/10 flex items-center justify-center shrink-0">
             <span className="relative flex h-2.5 w-2.5">
               {health === "healthy" && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75" />}
               <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${health === "healthy" ? "bg-success" : health === "attention" ? "bg-warning" : health === "critical" ? "bg-danger" : "bg-dark-600"}`} />
@@ -747,8 +747,8 @@ export default function UserLogsPage() {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder={view === "groups" ? "Search a group by name…" : "Search group names, accounts, or messages…"}
-          className="w-full rounded-2xl border border-dark-700 bg-dark-900 pl-11 pr-11 py-3.5 text-sm text-dark-100 placeholder:text-dark-500 focus:outline-none focus:border-accent/60 focus:ring-4 focus:ring-accent/10 transition-all"
+          placeholder={view === "groups" ? "Search a group…" : "Search groups, accounts, messages…"}
+          className="w-full rounded-xl sm:rounded-2xl border border-dark-700 bg-dark-900 pl-11 pr-11 py-3 sm:py-3.5 text-sm text-dark-100 placeholder:text-dark-500 focus:outline-none focus:border-accent/60 focus:ring-4 focus:ring-accent/10 transition-all"
         />
         {search && (
           <button onClick={() => setSearch("")} className="absolute right-4 top-1/2 -translate-y-1/2 text-dark-500 hover:text-dark-300">
@@ -758,8 +758,9 @@ export default function UserLogsPage() {
       </div>
 
       {/* Filter chips + account dropdown + view toggle */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap gap-2">
+      <div className="flex flex-col lg:flex-row lg:flex-wrap lg:items-center lg:justify-between gap-3">
+        {/* Chips: single horizontal-scroll row on mobile so they never stack into 3 rows */}
+        <div className="flex gap-2 overflow-x-auto lg:flex-wrap lg:overflow-visible -mx-4 px-4 lg:mx-0 lg:px-0 pb-1 lg:pb-0 no-scrollbar">
           {filterChips.map((f) => {
             const active = filter === f.key;
             // Colour the active chip by meaning: green/red/amber for the outcome filters.
@@ -781,12 +782,12 @@ export default function UserLogsPage() {
               <button
                 key={f.key}
                 onClick={() => setFilter(f.key)}
-                className={`flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold transition-all duration-200 ${
+                className={`flex items-center gap-1.5 shrink-0 whitespace-nowrap rounded-full px-3 py-2 sm:px-4 sm:py-2.5 text-[13px] sm:text-sm font-semibold transition-all duration-200 ${
                   active ? `${activeTint[f.key]} scale-[1.02]` : "bg-dark-900 text-dark-400 border border-dark-700/50 hover:text-dark-200 hover:border-dark-600"
                 }`}
               >
                 {f.label}
-                <span className={`text-xs font-bold rounded-full px-2 py-0.5 tabular-nums ${active ? activeBadge[f.key] : "bg-dark-800 text-dark-500"}`}>{f.count}</span>
+                <span className={`text-[11px] sm:text-xs font-bold rounded-full px-1.5 py-0.5 tabular-nums ${active ? activeBadge[f.key] : "bg-dark-800 text-dark-500"}`}>{f.count}</span>
               </button>
             );
           })}
@@ -968,6 +969,8 @@ export default function UserLogsPage() {
       <style jsx global>{`
         @keyframes scaleInSm { from { opacity: 0; transform: translateY(-6px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
         .animate-scale-in { animation: scaleInSm 150ms cubic-bezier(0.16,1,0.3,1); }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
       `}</style>
     </div>
   );
@@ -997,14 +1000,14 @@ function HealthCard({
   // Emphasise a problem/pending metric by colouring the number when it's non-zero.
   const emphasize = (tint === "danger" || tint === "warning") && value > 0;
   return (
-    <div className={`group relative overflow-hidden rounded-2xl border border-dark-700/50 bg-dark-900 px-4 py-3.5 flex items-center gap-3.5 transition-all duration-200 hover:-translate-y-0.5 hover:border-dark-600 hover:shadow-lg hover:shadow-black/20`}>
+    <div className={`group relative overflow-hidden rounded-xl sm:rounded-2xl border border-dark-700/50 bg-dark-900 px-3 py-2.5 sm:px-4 sm:py-3.5 flex items-center gap-2.5 sm:gap-3.5 transition-all duration-200 hover:-translate-y-0.5 hover:border-dark-600 hover:shadow-lg hover:shadow-black/20`}>
       <div className={`pointer-events-none absolute inset-0 bg-gradient-to-br ${c.glow} to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300`} />
-      <div className={`relative h-9 w-9 rounded-xl flex items-center justify-center shrink-0 ring-1 ${c.bg} ${c.ring}`}>
+      <div className={`relative h-8 w-8 sm:h-9 sm:w-9 rounded-lg sm:rounded-xl flex items-center justify-center shrink-0 ring-1 ${c.bg} ${c.ring}`}>
         <Icon className={`h-4 w-4 ${c.text}`} />
       </div>
       <div className="relative min-w-0">
-        <p className={`text-xl font-bold leading-none tracking-tight tabular-nums ${emphasize ? c.text : "text-dark-100"}`}>{value.toLocaleString()}</p>
-        <p className="text-[11px] text-dark-500 mt-1 truncate">{label}</p>
+        <p className={`text-lg sm:text-xl font-bold leading-none tracking-tight tabular-nums ${emphasize ? c.text : "text-dark-100"}`}>{value.toLocaleString()}</p>
+        <p className="text-[11px] text-dark-500 mt-0.5 sm:mt-1 truncate">{label}</p>
       </div>
     </div>
   );
