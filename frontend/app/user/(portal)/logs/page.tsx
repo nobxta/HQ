@@ -44,6 +44,16 @@ function shortAccount(acct: string): string {
   return acct;
 }
 
+// Stable key for matching the SAME physical account across its two log representations:
+// post events carry account=<number>, cycle/connect events carry session=<number>.session.
+// Both are phone numbers, so the last-6 digits identify one account. Falls back to a lowercased
+// string for non-numeric ids like "Account 3".
+function digitsKey(s?: string): string {
+  if (!s) return "";
+  const d = s.replace(/\D/g, "");
+  return d ? d.slice(-6) : s.trim().toLowerCase();
+}
+
 function toLocalTime(ts: string): { time: string; full: string } {
   try {
     let normalized = ts.trim();
@@ -455,6 +465,19 @@ export default function UserLogsPage() {
     return Array.from(set).sort();
   }, [parsed]);
 
+  // Resolve any log entry (post OR cycle/connect/system) to its 1-based account index by matching
+  // last-6 digits — so cycle rows like "Next cycle in 30m" can show the same "Acc N" as post rows,
+  // even though they only carry a session tail (…613368) rather than the full account= id.
+  const acctIndexByKey = useMemo(() => {
+    const m = new Map<string, number>();
+    accounts.forEach((a, i) => m.set(digitsKey(a), i + 1));
+    return m;
+  }, [accounts]);
+  const resolveAcctIndex = (entry: ParsedLog): number => {
+    const key = digitsKey(entry.account || entry.accountShort);
+    return key ? (acctIndexByKey.get(key) ?? 0) : 0;
+  };
+
   // Anchor "now" to the newest log line (robust to client/server clock skew); fall back to real now.
   const nowRef = useMemo(() => {
     let mx = 0;
@@ -540,14 +563,12 @@ export default function UserLogsPage() {
     return list.sort((a, b) => (b.failed.size + b.flood.size) - (a.failed.size + a.flood.size) || a.name.localeCompare(b.name));
   }, [inRange, search]);
 
-  // Top stats. Sent/Failed (with no account filter) always show the bot's persisted lifetime
-  // counters — the same numbers the Dashboard reads — regardless of which time range is selected,
-  // so the two pages never disagree. The fetched log-file window can only ever hold a slice of
-  // history (bounded by fetchLines), so deriving these from the parsed window instead of the
-  // lifetime counter is exactly what caused Logs to undercount vs. Dashboard. Flood has no
-  // persisted lifetime counter server-side, so it stays windowed either way. Picking a specific
-  // account switches back to the windowed per-account count, since lifetime stats aren't broken
-  // down by account here.
+  // Top stats. On "All time" with no account filter, Sent/Failed show the bot's persisted lifetime
+  // counters — the same numbers the Dashboard reads — so the two pages agree. For any OTHER time
+  // range (or a specific account) the numbers are counted purely from the entries inside that
+  // window, so picking "Last hour" / "Today" actually narrows the counts (and shows 0 when there
+  // was no activity in that span) instead of being frozen at the lifetime total. Flood never has a
+  // persisted lifetime counter server-side, so it's always windowed.
   const { data: lifetimeStats } = usePortalStats();
   const stats = useMemo(() => {
     let success = 0, failure = 0, flood = 0;
@@ -557,7 +578,7 @@ export default function UserLogsPage() {
       else if (p.type === "failure") failure++;
       else if (p.type === "flood") flood++;
     }
-    const usingLifetime = accountFilter === "all" && !!lifetimeStats;
+    const usingLifetime = range === "all" && accountFilter === "all" && !!lifetimeStats;
     if (usingLifetime) {
       success = lifetimeStats!.lifetime_sent ?? success;
       failure = lifetimeStats!.lifetime_failed ?? failure;
@@ -566,8 +587,8 @@ export default function UserLogsPage() {
     // Total tracks whichever scale Sent/Failed are on — lifetime when available, otherwise the same
     // windowed count as everything else — so it never mixes a lifetime figure with a windowed one.
     const total = usingLifetime ? success + failure : success + failure + flood;
-    return { success, failure, flood, total };
-  }, [inRange, accountFilter, lifetimeStats]);
+    return { success, failure, flood, total, usingLifetime };
+  }, [inRange, accountFilter, range, lifetimeStats]);
 
   const systemCount = useMemo(
     () => inRange.filter((p) => ["system", "cycle_start", "cycle_end", "connect"].includes(p.type)).length,
@@ -703,11 +724,11 @@ export default function UserLogsPage() {
           </div>
         </div>
       </div>
-      {accountFilter === "all" && lifetimeStats && (
-        <p className="text-[11px] text-dark-600 -mt-3">
-          Sent/Failed/Total are lifetime totals (always match the Dashboard) · Waiting reflects the selected time range only
-        </p>
-      )}
+      <p className="text-[11px] text-dark-600 -mt-3">
+        {stats.usingLifetime
+          ? "Showing lifetime totals (match the Dashboard) · pick a shorter range to see recent activity only"
+          : `Counts for ${(TIME_RANGES.find((r) => r.key === range)?.label || "").toLowerCase()}${accountFilter !== "all" ? ` · Acc ${accounts.indexOf(accountFilter) + 1} only` : ""}`}
+      </p>
 
       {/* Search */}
       <div className="relative">
@@ -845,7 +866,7 @@ export default function UserLogsPage() {
                     expanded={expandedIdx === i}
                     onToggle={() => setExpandedIdx(expandedIdx === i ? null : i)}
                     showAccount={accountFilter === "all" && accounts.length > 1}
-                    accountIndex={accounts.indexOf(entry.account || "") + 1}
+                    accountIndex={resolveAcctIndex(entry)}
                   />
                 ))}
               </div>
@@ -976,13 +997,27 @@ function GroupRow({
   };
   accounts: string[];
 }) {
+  const [open, setOpen] = useState(false);
   const total = accounts.length || Object.keys(group.byAccount).length;
+
+  // Per-account detail rows (newest activity first), each naming the session number + when it posted.
+  const detailRows = accounts
+    .map((acct, i) => ({ acct, i, rec: group.byAccount[acct] }))
+    .filter((r) => r.rec)
+    .sort((a, b) => (entryMs({ timestamp: b.rec!.time } as ParsedLog) || 0) - (entryMs({ timestamp: a.rec!.time } as ParsedLog) || 0));
+
   return (
-    <div className="rounded-2xl border border-dark-700/50 bg-dark-900 px-4 py-3.5">
+    <div
+      onClick={() => setOpen((v) => !v)}
+      className={`rounded-2xl border bg-dark-900 px-4 py-3.5 cursor-pointer transition-all hover:-translate-y-0.5 hover:border-dark-600 ${open ? "border-dark-600 shadow-lg shadow-black/20" : "border-dark-700/50"}`}
+    >
       <div className="flex items-center justify-between gap-2 mb-2">
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-dark-100 truncate">{group.name}</p>
-          {group.groupId && <p className="text-[10px] text-dark-600 font-mono truncate">{group.groupId}</p>}
+        <div className="min-w-0 flex items-center gap-2">
+          <ChevronRight className={`h-4 w-4 text-dark-600 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-dark-100 truncate">{group.name}</p>
+            <p className="text-[10px] text-dark-600 font-mono truncate">{group.groupId ? `ID ${group.groupId}` : "ID unknown"}</p>
+          </div>
         </div>
         <div className="flex items-center gap-2 shrink-0 text-xs">
           <span className="text-success font-semibold">{group.sent.size} sent</span>
@@ -991,7 +1026,7 @@ function GroupRow({
           <span className="text-dark-500">{group.sent.size}/{total} acc</span>
         </div>
       </div>
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap gap-1.5 pl-6">
         {accounts.map((acct, i) => {
           const rec = group.byAccount[acct];
           const t = rec?.time ? toLocalTime(rec.time).time : "";
@@ -1012,6 +1047,35 @@ function GroupRow({
           );
         })}
       </div>
+
+      {open && (
+        <div className="mt-3 ml-6 rounded-xl bg-dark-950 border border-dark-700/50 p-3 animate-scale-in" onClick={(e) => e.stopPropagation()}>
+          {group.groupId && (
+            <div className="flex items-center gap-2 pb-2.5 mb-2.5 border-b border-dark-800">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-dark-600">Group ID</span>
+              <span className="text-xs font-mono text-dark-300">{group.groupId}</span>
+            </div>
+          )}
+          {detailRows.length === 0 ? (
+            <p className="text-xs text-dark-500">No account has posted to this group in the selected range.</p>
+          ) : (
+            <div className="grid gap-1.5">
+              {detailRows.map(({ acct, i, rec }) => {
+                const tone = rec!.type === "success" ? "text-success" : rec!.type === "flood" ? "text-warning" : "text-danger";
+                const verb = rec!.type === "success" ? "posted" : rec!.type === "flood" ? `waiting ${rec!.wait ? rec!.wait + "s" : ""}`.trim() : "failed";
+                return (
+                  <div key={acct} className="flex items-center gap-2 text-xs">
+                    <span className="rounded bg-dark-800 px-1.5 py-0.5 text-[10px] font-semibold text-dark-300 shrink-0">Acc {i + 1}</span>
+                    <span className="font-mono text-dark-500 shrink-0">{acct}.session</span>
+                    <span className={`font-semibold shrink-0 ${tone}`}>{verb}</span>
+                    <span className="text-dark-500 ml-auto shrink-0">{rec!.time ? toLocalTime(rec!.time).full : "—"}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1020,8 +1084,9 @@ function GroupRow({
 
 // Friendly, plain-language copy for the expand panel — mirrors the reference design's
 // "What happened" / "Do you need to do anything?" framing instead of dumping raw fields.
-function friendlyCopy(entry: ParsedLog): { title: string; subtitle: string; what: string; action: string } {
+function friendlyCopy(entry: ParsedLog, accountIndex?: number): { title: string; subtitle: string; what: string; action: string } {
   const group = entry.groupName || entry.groupId || "";
+  const accName = accountIndex && accountIndex > 0 ? `Account ${accountIndex}` : (entry.account || "");
   switch (entry.type) {
     case "success":
       return {
@@ -1049,19 +1114,19 @@ function friendlyCopy(entry: ParsedLog): { title: string; subtitle: string; what
     }
     case "connect":
       return {
-        title: "Account connected successfully",
-        subtitle: "Ready to post",
-        what: "The account connected successfully and is ready to post.",
+        title: `${accName || "Account"} connected successfully`,
+        subtitle: [accName, "Ready to post"].filter(Boolean).join(" · "),
+        what: `${accName || "The account"} connected successfully and is ready to post.`,
         action: "No — this is just a confirmation.",
       };
     case "cycle_start":
     case "cycle_end":
       return {
         title: entry.message || "Scheduler update",
-        subtitle: "Scheduled automatically",
+        subtitle: [accName, "Scheduled automatically"].filter(Boolean).join(" · "),
         what: entry.message?.includes("no groups assigned")
-          ? "This account has no groups assigned right now, so its posting cycle completed without sending anything."
-          : "The posting scheduler moved to its next step for this account automatically.",
+          ? `${accName || "This account"} has no groups assigned right now, so its posting cycle completed without sending anything.`
+          : `The posting scheduler moved to its next step for ${accName || "this account"} automatically.`,
         action: "No — this is background activity.",
       };
     default:
@@ -1100,7 +1165,7 @@ function LogRow({
   accountIndex?: number;
 }) {
   const [copied, setCopied] = useState(false);
-  const copy = friendlyCopy(entry);
+  const copy = friendlyCopy(entry, accountIndex);
   const meta = typeMeta(entry.type);
   const Icon = meta.icon;
 
