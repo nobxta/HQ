@@ -7,7 +7,7 @@ import {
   Search, MessageSquare,
   ChevronDown, ChevronRight, ChevronLeft, Send,
   Users, Copy, Check, Download,
-  ExternalLink, X,
+  ExternalLink, X, Info,
 } from "lucide-react";
 
 /* ────────────────────── Types ────────────────────── */
@@ -89,17 +89,27 @@ function relTime(ts?: string): string {
   return `${Math.floor(h / 24)} day${Math.floor(h / 24) === 1 ? "" : "s"} ago`;
 }
 
-// Best-effort "exact link" for where a post went. Prefers a link already parsed from the line
-// (groupLink), otherwise scrapes any t.me / telegram.me URL out of the raw text, otherwise builds
-// a t.me/c/<id> link from a -100… supergroup id so the user can jump straight to the group.
+// Resolve where a post went. Order of preference:
+//  1. a link already parsed off the line (groupLink) — the exact message permalink when present,
+//  2. any t.me / telegram.me URL sitting in the raw text (human-readable "Posted in X (https://…)"),
+//  3. a link built from the structured group_id, which for supergroups looks like -100<channel>#<thread>
+//     (e.g. -1002359309381#21) → https://t.me/c/<channel>/<thread> so it opens the exact topic.
 function messageLink(entry: ParsedLog): string | undefined {
   if (entry.groupLink) return entry.groupLink;
-  const m = entry.raw.match(/https?:\/\/(?:t\.me|telegram\.me)\/[^\s"'<>]+/i);
+  const m = entry.raw.match(/https?:\/\/(?:t\.me|telegram\.me)\/[^\s"'<>)]+/i);
   if (m) return m[0];
-  const gid = entry.groupId || "";
-  const sup = gid.match(/^-100(\d+)$/);
-  if (sup) return `https://t.me/c/${sup[1]}`;
+  const gid = (entry.groupId || "").trim();
+  const sup = gid.match(/^-100(\d+)(?:[#/](\d+))?$/);
+  if (sup) return sup[2] ? `https://t.me/c/${sup[1]}/${sup[2]}` : `https://t.me/c/${sup[1]}`;
   return undefined;
+}
+
+// Split a trailing "(https://…)" off a human-readable group name so the name stays clean and the
+// URL becomes the link. Handles "Pork Market (https://t.me/c/2359309381/3679132?thread=21)".
+function splitTrailingLink(g: string): { name: string; link?: string } {
+  const m = g.match(/^(.*?)\s*\((https?:\/\/[^\s()]+)\)\s*$/);
+  if (m) return { name: m[1].trim(), link: m[2] };
+  return { name: g.trim() };
 }
 
 function extractGroupNameStructured(s: string): string {
@@ -223,30 +233,33 @@ function parseLine(line: string): ParsedLog {
   const failMatch = trimmed.match(/^Account\s+(\d+)\s*-\s*Failed in\s+(.+?):\s*(.+)$/);
   if (failMatch) {
     const [, acctNum, group, err] = failMatch;
+    const g = splitTrailingLink(group);
     return {
       raw: line, type: "failure",
       account: `Account ${acctNum}`, accountShort: `Acc ${acctNum}`,
-      groupName: group, groupLink: extractedLink, error: cleanError(err),
+      groupName: g.name, groupLink: g.link || extractedLink, error: cleanError(err),
     };
   }
 
-  // ─── Human-readable: "Account N - Posted in GROUP" / "Account N - Sent to GROUP" ───
+  // ─── Human-readable: "Account N - Posted in GROUP (link)" / "Account N - Sent to GROUP" ───
   const successMatch = trimmed.match(/^Account\s+(\d+)\s*-\s*(?:Posted in|Sent to|Success in)\s+(.+)$/);
   if (successMatch) {
+    const g = splitTrailingLink(successMatch[2]);
     return {
       raw: line, type: "success",
       account: `Account ${successMatch[1]}`, accountShort: `Acc ${successMatch[1]}`,
-      groupName: successMatch[2], groupLink: extractedLink,
+      groupName: g.name, groupLink: g.link || extractedLink,
     };
   }
 
   // ─── Human-readable: "Account N - FloodWait Ns in GROUP" ───
   const floodMatch = trimmed.match(/^Account\s+(\d+)\s*-\s*FloodWait\s+(\d+)s?\s+in\s+(.+)$/);
   if (floodMatch) {
+    const g = splitTrailingLink(floodMatch[3]);
     return {
       raw: line, type: "flood",
       account: `Account ${floodMatch[1]}`, accountShort: `Acc ${floodMatch[1]}`,
-      groupName: floodMatch[3], groupLink: extractedLink, waitSeconds: floodMatch[2],
+      groupName: g.name, groupLink: g.link || extractedLink, waitSeconds: floodMatch[2],
     };
   }
 
@@ -982,7 +995,9 @@ function LogTableRow({ entry, accountIndex, expanded, onToggle, botName }: {
   const timeShort = entry.timestamp ? toLocalTime(entry.timestamp).time : "—";
   const statusLabel = entry.type === "flood" && entry.waitSeconds ? `${entry.waitSeconds}s` : s.label;
 
+  const isPost = entry.type === "success" || entry.type === "failure" || entry.type === "flood";
   const accLabel = accountIndex > 0 ? `Account ${accountIndex}` : entry.account || "—";
+  const hasAccount = accountIndex > 0 || !!entry.account;
   const link = messageLink(entry);
   const response = entry.type === "success" ? "Message delivered successfully"
     : entry.type === "failure" ? (entry.error || "Send failed")
@@ -1019,35 +1034,63 @@ function LogTableRow({ entry, accountIndex, expanded, onToggle, botName }: {
       {/* Inline detail tab */}
       {expanded && (
         <div className="px-4 pb-4 animate-scale-in">
-          <div className="rounded-xl border border-dark-700/60 bg-dark-950 p-4 grid lg:grid-cols-2 gap-x-8 gap-y-4">
-            <div className="grid gap-2.5">
-              <Field label="Group / Channel" value={entry.groupName || "—"} />
-              <Field label="Group ID" value={entry.groupId || "—"} copy={entry.groupId} mono />
-              <Field label="Account" value={accLabel} copy={entry.account} />
-              <Field label="Session" value={session} mono />
-              <Field label="Sent" value={entry.timestamp ? toLocalTime(entry.timestamp).full : "—"} />
-              <Field label="Status" value={s.label} valueClass={s.text} />
-              <Field label="Response" value={response} valueClass={entry.type === "failure" ? "text-danger" : undefined} />
-              {botName && <Field label="Bot" value={botName} />}
-            </div>
-            <div className="min-w-0 grid gap-3 content-start">
-              <div>
-                <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-1.5">Message Link</p>
-                {link ? (
-                  <a href={link} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/10 px-3 py-2 text-[13px] font-semibold text-accent hover:bg-accent/20 transition-colors break-all">
-                    Open in Telegram <ExternalLink className="h-3.5 w-3.5 shrink-0" />
-                  </a>
-                ) : (
-                  <p className="text-[13px] text-dark-500">No link found in this log line.</p>
-                )}
-                {link && <p className="mt-1.5 text-[11px] text-dark-600 font-mono break-all">{link}</p>}
+          {isPost ? (
+            /* ── Post event: group + message link ── */
+            <div className="rounded-xl border border-dark-700/60 bg-dark-950 p-4 grid lg:grid-cols-2 gap-x-8 gap-y-4">
+              <div className="grid gap-2.5">
+                <Field label="Group / Channel" value={entry.groupName || "—"} />
+                {entry.groupId && <Field label="Group ID" value={entry.groupId} copy={entry.groupId} mono />}
+                <Field label="Account" value={accLabel} copy={entry.account} />
+                {entry.account && <Field label="Session" value={session} mono />}
+                <Field label="Sent" value={entry.timestamp ? toLocalTime(entry.timestamp).full : "—"} />
+                <Field label="Status" value={statusLabel} valueClass={s.text} />
+                <Field label="Response" value={response} valueClass={entry.type === "failure" ? "text-danger" : undefined} />
+                {botName && <Field label="Bot" value={botName} />}
               </div>
-              <div>
-                <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-1.5">Raw Log</p>
-                <RawBlock text={entry.raw} />
+              <div className="min-w-0 grid gap-3 content-start">
+                <div>
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-1.5">Message Link</p>
+                  {link ? (
+                    <>
+                      <a href={link} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/10 px-3 py-2 text-[13px] font-semibold text-accent hover:bg-accent/20 transition-colors break-all">
+                        Open in Telegram <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                      </a>
+                      <p className="mt-1.5 text-[11px] text-dark-600 font-mono break-all">{link}</p>
+                    </>
+                  ) : (
+                    <p className="text-[13px] text-dark-500">Link not available for this post.</p>
+                  )}
+                </div>
+                <div>
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-1.5">Raw Log</p>
+                  <RawBlock text={entry.raw} />
+                </div>
               </div>
             </div>
-          </div>
+          ) : (
+            /* ── Info / system event: no group, no link — just the event ── */
+            <div className="rounded-xl border border-dark-700/60 bg-dark-950 p-4">
+              <div className="flex items-start gap-3">
+                <span className={`mt-0.5 flex items-center justify-center h-8 w-8 rounded-lg shrink-0 ring-1 ${s.text} bg-white/[0.04] ring-white/10`}>
+                  <Info className="h-4 w-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-dark-500">Information</p>
+                  <p className="text-sm font-semibold text-dark-100 mt-0.5">{entry.message || s.action}</p>
+                  <div className="mt-3 grid sm:grid-cols-2 gap-x-8 gap-y-2.5">
+                    <Field label="Event" value={s.action} />
+                    {hasAccount && <Field label="Account" value={accLabel} copy={entry.account} />}
+                    <Field label="Time" value={entry.timestamp ? toLocalTime(entry.timestamp).full : "—"} />
+                    {botName && <Field label="Bot" value={botName} />}
+                  </div>
+                  <div className="mt-3">
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-1.5">Raw Log</p>
+                    <RawBlock text={entry.raw} />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
