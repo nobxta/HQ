@@ -6,7 +6,7 @@ import {
   RotateCw, CheckCircle2, XCircle, Clock,
   Search, MessageSquare,
   ChevronDown, ChevronRight, ChevronLeft, Send,
-  Users, Copy, Check, SlidersHorizontal, Download,
+  Users, Copy, Check, Download,
   ExternalLink, X,
 } from "lucide-react";
 
@@ -87,6 +87,19 @@ function relTime(ts?: string): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h} hour${h === 1 ? "" : "s"} ago`;
   return `${Math.floor(h / 24)} day${Math.floor(h / 24) === 1 ? "" : "s"} ago`;
+}
+
+// Best-effort "exact link" for where a post went. Prefers a link already parsed from the line
+// (groupLink), otherwise scrapes any t.me / telegram.me URL out of the raw text, otherwise builds
+// a t.me/c/<id> link from a -100… supergroup id so the user can jump straight to the group.
+function messageLink(entry: ParsedLog): string | undefined {
+  if (entry.groupLink) return entry.groupLink;
+  const m = entry.raw.match(/https?:\/\/(?:t\.me|telegram\.me)\/[^\s"'<>]+/i);
+  if (m) return m[0];
+  const gid = entry.groupId || "";
+  const sup = gid.match(/^-100(\d+)$/);
+  if (sup) return `https://t.me/c/${sup[1]}`;
+  return undefined;
 }
 
 function extractGroupNameStructured(s: string): string {
@@ -427,15 +440,16 @@ export default function UserLogsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState<FilterType>("all");
   const [accountFilter, setAccountFilter] = useState<string>("all");
-  const [selected, setSelected] = useState<ParsedLog | null>(null);   // row open in the details drawer
+  const [selected, setSelected] = useState<ParsedLog | null>(null);   // row expanded inline
   const [search, setSearch] = useState("");        // free-text search (account, group, status, reason)
   const [range, setRange] = useState("all");        // time window for stats + list (All time default)
   const [sort, setSort] = useState<"newest" | "oldest">("newest");
+  const [view, setView] = useState<"timeline" | "groups">("timeline");
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(20);
-  const [filtersOpen, setFiltersOpen] = useState(false);  // status/account filter popover
+  const [acctOpen, setAcctOpen] = useState(false);  // account dropdown
   // Reset to page 1 whenever the underlying result set changes.
-  useEffect(() => { setPage(1); }, [filter, accountFilter, search, range, sort, perPage]);
+  useEffect(() => { setPage(1); }, [filter, accountFilter, search, range, sort, perPage, view]);
 
   const lines: string[] = data?.lines || [];
 
@@ -540,6 +554,31 @@ export default function UserLogsPage() {
     [sortedAll, safePage, perPage]
   );
 
+  // Per-group aggregation for the "By Group" view (respects search).
+  const groupAgg = useMemo(() => {
+    const map: Record<string, {
+      name: string; groupId?: string; groupLink?: string;
+      byAccount: Record<string, { type: LogType; time?: string; wait?: string; link?: string }>;
+      sent: Set<string>; flood: Set<string>; failed: Set<string>; lastTime?: string;
+    }> = {};
+    for (const p of inRange) {
+      if (!p.groupName || !p.account) continue;
+      if (p.type !== "success" && p.type !== "failure" && p.type !== "flood") continue;
+      const key = p.groupName;
+      if (!map[key]) map[key] = { name: p.groupName, groupId: p.groupId, groupLink: p.groupLink, byAccount: {}, sent: new Set(), flood: new Set(), failed: new Set() };
+      const g = map[key];
+      if (!g.groupId && p.groupId) g.groupId = p.groupId;
+      if (!g.groupLink && p.groupLink) g.groupLink = p.groupLink;
+      g.byAccount[p.account] = { type: p.type, time: p.timestamp, wait: p.waitSeconds, link: p.groupLink };
+      if (p.timestamp) g.lastTime = p.timestamp;
+      (p.type === "success" ? g.sent : p.type === "flood" ? g.flood : g.failed).add(p.account);
+    }
+    let list = Object.values(map);
+    const q = search.trim().toLowerCase();
+    if (q) list = list.filter((g) => g.name.toLowerCase().includes(q) || (g.groupId || "").toLowerCase().includes(q));
+    return list.sort((a, b) => (b.failed.size + b.flood.size) - (a.failed.size + a.flood.size) || a.name.localeCompare(b.name));
+  }, [inRange, search]);
+
   // Top stats. On "All time" with no account filter, Sent/Failed show the bot's persisted lifetime
   // counters — the same numbers the Dashboard reads — so the two pages agree. For any OTHER time
   // range (or a specific account) the numbers are counted purely from the entries inside that
@@ -613,10 +652,10 @@ export default function UserLogsPage() {
     );
   }
 
-  const selIndex = selected ? resolveAcctIndex(selected) : 0;
+  const acctLabel = accountFilter === "all" ? "All Accounts" : `Account ${accounts.indexOf(accountFilter) + 1}`;
 
   return (
-    <div className="animate-fade-in" onClick={() => setFiltersOpen(false)}>
+    <div className="animate-fade-in" onClick={() => setAcctOpen(false)}>
       {/* ── Header ── */}
       <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
         <div>
@@ -636,7 +675,7 @@ export default function UserLogsPage() {
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Segmented time range */}
+          {/* Segmented time range (timestamp-wise) */}
           <div className="flex items-center rounded-xl border border-dark-700 bg-dark-900 p-1">
             {TIME_RANGES.map((r) => {
               const active = range === r.key;
@@ -651,56 +690,6 @@ export default function UserLogsPage() {
               );
             })}
           </div>
-
-          {/* Filter popover */}
-          <div className="relative" onClick={(e) => e.stopPropagation()}>
-            <button
-              onClick={() => setFiltersOpen((v) => !v)}
-              className={`flex items-center justify-center h-9 w-9 rounded-xl border transition-colors ${filter !== "all" || accountFilter !== "all" ? "border-accent/40 bg-accent/10 text-accent" : "border-dark-700 bg-dark-900 text-dark-400 hover:text-dark-200 hover:border-dark-600"}`}
-              aria-label="Filters"
-            >
-              <SlidersHorizontal className="h-4 w-4" />
-            </button>
-            {filtersOpen && (
-              <div className="absolute right-0 top-[calc(100%+8px)] z-30 w-64 rounded-2xl border border-dark-700 bg-dark-850 p-3 shadow-2xl animate-scale-in">
-                <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-2">Status</p>
-                <div className="flex flex-col gap-1 mb-3">
-                  {filterOptions.map((o) => (
-                    <button
-                      key={o.key}
-                      onClick={() => setFilter(o.key)}
-                      className={`flex items-center justify-between rounded-lg px-2.5 py-2 text-[13px] transition-colors ${filter === o.key ? "bg-accent/15 text-accent font-semibold" : "text-dark-300 hover:bg-dark-800"}`}
-                    >
-                      {o.label}
-                      <span className="text-xs font-bold tabular-nums opacity-70">{o.count}</span>
-                    </button>
-                  ))}
-                </div>
-                {accounts.length > 1 && (
-                  <>
-                    <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-2">Account</p>
-                    <select
-                      value={accountFilter}
-                      onChange={(e) => setAccountFilter(e.target.value)}
-                      className="w-full rounded-lg border border-dark-700 bg-dark-900 px-2.5 py-2 text-[13px] text-dark-200 outline-none focus:border-accent/60"
-                    >
-                      <option value="all">All accounts</option>
-                      {accounts.map((a, i) => <option key={a} value={a}>Account {i + 1}</option>)}
-                    </select>
-                  </>
-                )}
-                {(filter !== "all" || accountFilter !== "all") && (
-                  <button
-                    onClick={() => { setFilter("all"); setAccountFilter("all"); }}
-                    className="mt-3 w-full rounded-lg border border-dark-700 py-2 text-xs font-semibold text-dark-400 hover:text-dark-200 hover:border-dark-600 transition-colors"
-                  >
-                    Clear filters
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-
           <button
             onClick={(e) => { e.stopPropagation(); refresh(); }}
             className="flex items-center justify-center h-9 w-9 rounded-xl border border-dark-700 bg-dark-900 text-dark-400 hover:text-dark-200 hover:border-dark-600 transition-colors"
@@ -712,7 +701,7 @@ export default function UserLogsPage() {
       </div>
 
       {/* ── Stat cards ── */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-3 mb-5">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-3 mb-4">
         <StatCard icon={Send} label="Total Sent" value={stats.total} tint="accent" bar={stats.total > 0 ? 100 : 0} />
         <StatCard icon={CheckCircle2} label="Successful" value={stats.success} tint="success" percent={pct(stats.success)} bar={pct(stats.success)} />
         <StatCard icon={XCircle} label="Failed" value={stats.failure} tint="danger" percent={pct(stats.failure)} bar={pct(stats.failure)} />
@@ -720,20 +709,79 @@ export default function UserLogsPage() {
         <StatCard icon={Users} label="Active Accounts" value={accounts.length} tint="info" />
       </div>
       {stats.usingLifetime && (
-        <p className="text-[11px] text-dark-600 -mt-3 mb-4">Showing lifetime totals (match the Dashboard) · pick a range to see recent activity.</p>
+        <p className="text-[11px] text-dark-600 -mt-2 mb-3">Showing lifetime totals (match the Dashboard) · pick a range to see recent activity.</p>
       )}
 
-      {/* ── Table card ── */}
+      {/* ── Quick filters: always-visible Sent / Failed / System + view + account ── */}
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        {/* Status filter chips */}
+        <div className="flex gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 py-0.5">
+          {filterOptions.map((o) => {
+            const active = filter === o.key;
+            const tint: Record<string, string> = {
+              all: "bg-accent/15 text-accent ring-1 ring-accent/30",
+              success: "bg-success/15 text-success ring-1 ring-success/30",
+              failure: "bg-danger/15 text-danger ring-1 ring-danger/30",
+              flood: "bg-warning/15 text-warning ring-1 ring-warning/30",
+              system: "bg-dark-700 text-dark-100 ring-1 ring-dark-500",
+            };
+            return (
+              <button
+                key={o.key}
+                onClick={() => setFilter(o.key)}
+                className={`flex items-center gap-1.5 shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-[13px] font-semibold transition-all ${active ? tint[o.key] : "bg-dark-900 text-dark-400 border border-dark-700/50 hover:text-dark-200 hover:border-dark-600"}`}
+              >
+                {o.label}
+                <span className={`text-[11px] font-bold tabular-nums rounded-full px-1.5 py-0.5 ${active ? "bg-white/10" : "bg-dark-800 text-dark-500"}`}>{o.count}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex items-center gap-2 ml-auto">
+          {/* Timeline / By Group */}
+          <div className="flex items-center rounded-xl border border-dark-700 bg-dark-900 overflow-hidden">
+            <button onClick={() => setView("timeline")} className={`px-3 py-2 text-xs font-semibold transition-colors ${view === "timeline" ? "bg-dark-700 text-dark-100" : "text-dark-500 hover:text-dark-300"}`}>Timeline</button>
+            <button onClick={() => setView("groups")} className={`px-3 py-2 text-xs font-semibold transition-colors ${view === "groups" ? "bg-dark-700 text-dark-100" : "text-dark-500 hover:text-dark-300"}`}>By Group</button>
+          </div>
+
+          {/* Account-wise dropdown */}
+          {accounts.length > 1 && (
+            <div className="relative" onClick={(e) => e.stopPropagation()}>
+              <button
+                onClick={() => setAcctOpen((v) => !v)}
+                className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${accountFilter !== "all" ? "border-accent/40 bg-accent/10 text-accent" : "border-dark-700 bg-dark-900 text-dark-300 hover:border-dark-600"}`}
+              >
+                {acctLabel}
+                <ChevronDown className="h-3 w-3 opacity-70" />
+              </button>
+              {acctOpen && (
+                <div className="absolute right-0 top-[calc(100%+6px)] z-30 min-w-[180px] rounded-xl border border-dark-700 bg-dark-850 p-1.5 shadow-2xl animate-scale-in">
+                  <button onClick={() => { setAccountFilter("all"); setAcctOpen(false); }} className={`flex w-full items-center rounded-lg px-2.5 py-2 text-[13px] transition-colors ${accountFilter === "all" ? "bg-dark-800 text-dark-100 font-semibold" : "text-dark-400 hover:bg-dark-800/60"}`}>All Accounts</button>
+                  {accounts.map((a, i) => (
+                    <button key={a} onClick={() => { setAccountFilter(a); setAcctOpen(false); }} className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-[13px] transition-colors ${accountFilter === a ? "bg-dark-800 text-dark-100 font-semibold" : "text-dark-400 hover:bg-dark-800/60"}`}>
+                      Account {i + 1}
+                      <span className="text-[11px] text-dark-500 tabular-nums">{accountStats[a] ? `${accountStats[a].sent}/${accountStats[a].sent + accountStats[a].failed}` : "—"}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Table / group card ── */}
       <div className="rounded-2xl border border-dark-700/50 bg-dark-900 overflow-hidden">
-        {/* Toolbar */}
-        <div className="flex flex-wrap items-center gap-2.5 p-3 sm:p-4 border-b border-dark-800">
-          <div className="relative flex-1 min-w-[180px]">
+        {/* Toolbar: search + sort + export */}
+        <div className="flex flex-wrap items-center gap-2 p-2.5 sm:p-3 border-b border-dark-800">
+          <div className="relative flex-1 min-w-[160px]">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-dark-500" />
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search group or account…"
-              className="w-full rounded-xl border border-dark-700 bg-dark-950 pl-10 pr-9 py-2.5 text-sm text-dark-100 placeholder:text-dark-500 outline-none focus:border-accent/60 focus:ring-4 focus:ring-accent/10 transition-all"
+              placeholder={view === "groups" ? "Search a group…" : "Search group or account…"}
+              className="w-full rounded-xl border border-dark-700 bg-dark-950 pl-10 pr-9 py-2 text-sm text-dark-100 placeholder:text-dark-500 outline-none focus:border-accent/60 focus:ring-4 focus:ring-accent/10 transition-all"
             />
             {search && (
               <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-dark-500 hover:text-dark-300">
@@ -741,126 +789,117 @@ export default function UserLogsPage() {
               </button>
             )}
           </div>
-          <div className="relative">
-            <select
-              value={sort}
-              onChange={(e) => setSort(e.target.value as "newest" | "oldest")}
-              className="appearance-none rounded-xl border border-dark-700 bg-dark-950 pl-3 pr-8 py-2.5 text-sm text-dark-200 outline-none focus:border-accent/60"
-            >
-              <option value="newest">Newest First</option>
-              <option value="oldest">Oldest First</option>
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-dark-500" />
-          </div>
+          {view === "timeline" && (
+            <div className="relative">
+              <select
+                value={sort}
+                onChange={(e) => setSort(e.target.value as "newest" | "oldest")}
+                className="appearance-none rounded-xl border border-dark-700 bg-dark-950 pl-3 pr-8 py-2 text-sm text-dark-200 outline-none focus:border-accent/60"
+              >
+                <option value="newest">Newest First</option>
+                <option value="oldest">Oldest First</option>
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-dark-500" />
+            </div>
+          )}
           <button
             onClick={exportLogs}
-            className="flex items-center justify-center h-[42px] w-[42px] rounded-xl border border-dark-700 bg-dark-950 text-dark-400 hover:text-dark-200 hover:border-dark-600 transition-colors"
+            className="flex items-center justify-center h-[38px] w-[38px] rounded-xl border border-dark-700 bg-dark-950 text-dark-400 hover:text-dark-200 hover:border-dark-600 transition-colors"
             aria-label="Export logs"
           >
             <Download className="h-4 w-4" />
           </button>
         </div>
 
-        {/* Header row (desktop) */}
-        <div className="hidden md:grid grid-cols-[110px_120px_1fr_140px_32px] gap-3 px-4 py-2.5 border-b border-dark-800 text-[10px] font-bold uppercase tracking-wider text-dark-500">
-          <span>Time</span>
-          <span>Status</span>
-          <span>Group / Channel</span>
-          <span>Account</span>
-          <span />
-        </div>
-
-        {/* Rows */}
-        {logsError ? (
-          <EmptyState title="Couldn't load logs" label="Retrying every few seconds…" />
-        ) : logsLoading && lines.length === 0 ? (
-          <div className="py-16 flex flex-col items-center justify-center gap-2 text-dark-500">
-            <RotateCw className="h-6 w-6 animate-spin opacity-50" />
-            <p className="text-sm">Loading logs…</p>
-          </div>
-        ) : pageRows.length === 0 ? (
-          lines.length === 0 ? (
-            <EmptyState title="No logs yet" label="Start the bot to see output here." />
-          ) : search ? (
-            <EmptyState title="No results" label={`Nothing matches "${search}".`} />
-          ) : range !== "all" ? (
-            <EmptyState title="No recent activity" label={`Nothing in the ${(TIME_RANGES.find((r) => r.key === range)?.long || "")}. Try a longer range or All Time.`} />
+        {view === "groups" ? (
+          groupAgg.length === 0 ? (
+            <EmptyState title={search ? "No group matches" : "No group activity"} label={search ? `Nothing matches "${search}".` : "No posts in this range yet."} />
           ) : (
-            <EmptyState title="Nothing here" label="No activity for this filter." />
+            <div className="divide-y divide-dark-800/60">
+              {groupAgg.map((g) => <GroupRow key={g.name} group={g} accounts={accounts} />)}
+            </div>
           )
         ) : (
-          <div className="divide-y divide-dark-800/60">
-            {pageRows.map((entry, i) => (
-              <LogTableRow
-                key={i}
-                entry={entry}
-                accountIndex={resolveAcctIndex(entry)}
-                selected={selected === entry}
-                onClick={() => setSelected(selected === entry ? null : entry)}
-              />
-            ))}
-          </div>
-        )}
-
-        {/* Pagination */}
-        {matchTotal > 0 && (
-          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-t border-dark-800">
-            <p className="text-xs text-dark-500">
-              Showing {(safePage - 1) * perPage + 1} to {Math.min(safePage * perPage, matchTotal)} of {matchTotal.toLocaleString()} logs
-            </p>
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={safePage <= 1}
-                className="flex items-center justify-center h-8 w-8 rounded-lg border border-dark-700 text-dark-400 hover:text-dark-200 hover:border-dark-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </button>
-              {pageNumbers(safePage, totalPages).map((n, idx) =>
-                n === "…" ? (
-                  <span key={`e${idx}`} className="px-1.5 text-dark-600 text-sm">…</span>
-                ) : (
-                  <button
-                    key={n}
-                    onClick={() => setPage(n as number)}
-                    className={`h-8 min-w-8 px-2 rounded-lg text-sm font-semibold transition-colors ${n === safePage ? "bg-accent text-white" : "border border-dark-700 text-dark-400 hover:text-dark-200 hover:border-dark-600"}`}
-                  >
-                    {n}
-                  </button>
-                )
-              )}
-              <button
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                disabled={safePage >= totalPages}
-                className="flex items-center justify-center h-8 w-8 rounded-lg border border-dark-700 text-dark-400 hover:text-dark-200 hover:border-dark-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              >
-                <ChevronRight className="h-4 w-4" />
-              </button>
-              <div className="relative ml-1">
-                <select
-                  value={perPage}
-                  onChange={(e) => setPerPage(Number(e.target.value))}
-                  className="appearance-none rounded-lg border border-dark-700 bg-dark-950 pl-2.5 pr-7 py-1.5 text-xs text-dark-300 outline-none focus:border-accent/60"
-                >
-                  {[10, 20, 50, 100].map((n) => <option key={n} value={n}>{n} per page</option>)}
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-dark-500" />
-              </div>
+          <>
+            {/* Header row (desktop) */}
+            <div className="hidden md:grid grid-cols-[96px_112px_1fr_120px_28px] gap-3 px-4 py-2 border-b border-dark-800 text-[10px] font-bold uppercase tracking-wider text-dark-500">
+              <span>Time</span>
+              <span>Status</span>
+              <span>Group / Channel</span>
+              <span>Account</span>
+              <span />
             </div>
-          </div>
+
+            {logsError ? (
+              <EmptyState title="Couldn't load logs" label="Retrying every few seconds…" />
+            ) : logsLoading && lines.length === 0 ? (
+              <div className="py-16 flex flex-col items-center justify-center gap-2 text-dark-500">
+                <RotateCw className="h-6 w-6 animate-spin opacity-50" />
+                <p className="text-sm">Loading logs…</p>
+              </div>
+            ) : pageRows.length === 0 ? (
+              lines.length === 0 ? (
+                <EmptyState title="No logs yet" label="Start the bot to see output here." />
+              ) : search ? (
+                <EmptyState title="No results" label={`Nothing matches "${search}".`} />
+              ) : range !== "all" ? (
+                <EmptyState title="No recent activity" label={`Nothing in the ${(TIME_RANGES.find((r) => r.key === range)?.long || "")}. Try a longer range or All Time.`} />
+              ) : (
+                <EmptyState title="Nothing here" label="No activity for this filter." />
+              )
+            ) : (
+              <div className="divide-y divide-dark-800/60">
+                {pageRows.map((entry, i) => (
+                  <LogTableRow
+                    key={i}
+                    entry={entry}
+                    accountIndex={resolveAcctIndex(entry)}
+                    expanded={selected === entry}
+                    botName={bot?.name}
+                    onToggle={() => setSelected(selected === entry ? null : entry)}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Pagination */}
+            {matchTotal > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-t border-dark-800">
+                <p className="text-xs text-dark-500">
+                  Showing {(safePage - 1) * perPage + 1} to {Math.min(safePage * perPage, matchTotal)} of {matchTotal.toLocaleString()} logs
+                </p>
+                <div className="flex items-center gap-1.5">
+                  <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={safePage <= 1} className="flex items-center justify-center h-8 w-8 rounded-lg border border-dark-700 text-dark-400 hover:text-dark-200 hover:border-dark-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  {pageNumbers(safePage, totalPages).map((n, idx) =>
+                    n === "…" ? (
+                      <span key={`e${idx}`} className="px-1.5 text-dark-600 text-sm">…</span>
+                    ) : (
+                      <button key={n} onClick={() => setPage(n as number)} className={`h-8 min-w-8 px-2 rounded-lg text-sm font-semibold transition-colors ${n === safePage ? "bg-accent text-white" : "border border-dark-700 text-dark-400 hover:text-dark-200 hover:border-dark-600"}`}>{n}</button>
+                    )
+                  )}
+                  <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={safePage >= totalPages} className="flex items-center justify-center h-8 w-8 rounded-lg border border-dark-700 text-dark-400 hover:text-dark-200 hover:border-dark-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                  <div className="relative ml-1">
+                    <select value={perPage} onChange={(e) => setPerPage(Number(e.target.value))} className="appearance-none rounded-lg border border-dark-700 bg-dark-950 pl-2.5 pr-7 py-1.5 text-xs text-dark-300 outline-none focus:border-accent/60">
+                      {[10, 20, 50, 100].map((n) => <option key={n} value={n}>{n} / page</option>)}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-dark-500" />
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
-
-      {/* ── Details drawer ── */}
-      {selected && (
-        <DetailsPanel entry={selected} accountIndex={selIndex} botName={bot?.name} onClose={() => setSelected(null)} />
-      )}
 
       <style jsx global>{`
         @keyframes scaleInSm { from { opacity: 0; transform: translateY(-6px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
         .animate-scale-in { animation: scaleInSm 150ms cubic-bezier(0.16,1,0.3,1); }
-        @keyframes slideUpPanel { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
-        .animate-slide-up-panel { animation: slideUpPanel 220ms cubic-bezier(0.16,1,0.3,1); }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
       `}</style>
     </div>
   );
@@ -932,10 +971,10 @@ function StatCard({ icon: Icon, label, value, tint, percent, bar }: {
   );
 }
 
-/* ────────────────────── Table row ────────────────────── */
+/* ────────────────────── Table row (with inline expand) ────────────────────── */
 
-function LogTableRow({ entry, accountIndex, selected, onClick }: {
-  entry: ParsedLog; accountIndex: number; selected: boolean; onClick: () => void;
+function LogTableRow({ entry, accountIndex, expanded, onToggle, botName }: {
+  entry: ParsedLog; accountIndex: number; expanded: boolean; onToggle: () => void; botName?: string;
 }) {
   const s = statusMeta(entry.type);
   const groupPrimary = entry.groupName || entry.message || "System event";
@@ -943,51 +982,8 @@ function LogTableRow({ entry, accountIndex, selected, onClick }: {
   const timeShort = entry.timestamp ? toLocalTime(entry.timestamp).time : "—";
   const statusLabel = entry.type === "flood" && entry.waitSeconds ? `${entry.waitSeconds}s` : s.label;
 
-  return (
-    <div
-      onClick={onClick}
-      className={`relative grid grid-cols-[1fr_auto] md:grid-cols-[110px_120px_1fr_140px_32px] items-center gap-2 md:gap-3 px-4 py-3 cursor-pointer transition-colors ${selected ? "bg-accent/[0.06]" : "hover:bg-white/[0.02]"}`}
-    >
-      {selected && <span className="absolute left-0 top-0 bottom-0 w-0.5 bg-accent" />}
-
-      {/* Time (desktop) */}
-      <span className="hidden md:block text-[13px] font-mono text-dark-400 tabular-nums">{timeShort}</span>
-
-      {/* Status (desktop) */}
-      <span className="hidden md:flex items-center gap-1.5">
-        <span className={`h-2 w-2 rounded-full ${s.dot}`} />
-        <span className={`text-[13px] font-medium ${s.text}`}>{statusLabel}</span>
-      </span>
-
-      {/* Group / channel */}
-      <div className="min-w-0">
-        <div className="flex items-center gap-2 md:hidden mb-0.5">
-          <span className={`h-2 w-2 rounded-full ${s.dot}`} />
-          <span className={`text-[11px] font-medium ${s.text}`}>{statusLabel}</span>
-          <span className="text-[11px] font-mono text-dark-600 tabular-nums">{timeShort}</span>
-        </div>
-        <p className="text-sm font-semibold text-dark-100 truncate">{groupPrimary}</p>
-        {groupSecondary && <p className="text-[11px] text-dark-600 font-mono truncate">{groupSecondary}</p>}
-      </div>
-
-      {/* Account (desktop) */}
-      <span className="hidden md:block text-[13px] text-dark-400 truncate">
-        {accountIndex > 0 ? `Account ${accountIndex}` : "—"}
-      </span>
-
-      {/* Chevron */}
-      <ChevronRight className={`h-4 w-4 shrink-0 justify-self-end transition-colors ${selected ? "text-accent" : "text-dark-600"}`} />
-    </div>
-  );
-}
-
-/* ────────────────────── Details drawer ────────────────────── */
-
-function DetailsPanel({ entry, accountIndex, botName, onClose }: {
-  entry: ParsedLog; accountIndex: number; botName?: string; onClose: () => void;
-}) {
-  const s = statusMeta(entry.type);
   const accLabel = accountIndex > 0 ? `Account ${accountIndex}` : entry.account || "—";
+  const link = messageLink(entry);
   const response = entry.type === "success" ? "Message delivered successfully"
     : entry.type === "failure" ? (entry.error || "Send failed")
     : entry.type === "flood" ? `Rate limited — waiting ${entry.waitSeconds || "?"}s`
@@ -995,38 +991,131 @@ function DetailsPanel({ entry, accountIndex, botName, onClose }: {
   const session = entry.account ? `${entry.account}.session` : "—";
 
   return (
-    <div className="mt-4 rounded-2xl border border-dark-700/50 bg-dark-900 overflow-hidden animate-slide-up-panel">
-      <div className="flex items-center justify-between gap-2 px-4 sm:px-5 py-3.5 border-b border-dark-800">
-        <div className="flex items-center gap-2.5">
-          <h3 className="text-base font-bold text-dark-100">Log Details</h3>
-          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${s.text} bg-white/[0.04]`}>
-            <span className={`h-1.5 w-1.5 rounded-full ${s.dot}`} />{s.label}
-          </span>
-        </div>
-        <button onClick={onClose} className="flex items-center justify-center h-8 w-8 rounded-lg text-dark-500 hover:text-dark-200 hover:bg-dark-800 transition-colors">
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-
-      <div className="grid lg:grid-cols-2 gap-x-8 gap-y-5 p-4 sm:p-5">
-        {/* Left: fields */}
-        <div className="grid gap-3">
-          <Field label="Time" value={entry.timestamp ? toLocalTime(entry.timestamp).full : "—"} />
-          <Field label="Account" value={accLabel} copy={entry.account} />
-          <Field label="Group / Channel" value={entry.groupName || "—"} sub={entry.groupId} link={entry.groupLink} />
-          <Field label="Action" value={s.action} />
-          <Field label="Status" value={s.label} valueClass={s.text} />
-          <Field label="Response" value={response} valueClass={entry.type === "failure" ? "text-danger" : undefined} />
-          <Field label="Device / Session" value={session} mono />
-          {botName && <Field label="Bot" value={botName} />}
-        </div>
-
-        {/* Right: raw response */}
+    <div className={`relative ${expanded ? "bg-accent/[0.05]" : ""}`}>
+      {expanded && <span className="absolute left-0 top-0 bottom-0 w-0.5 bg-accent" />}
+      {/* Row (denser: py-2.5) */}
+      <div
+        onClick={onToggle}
+        className={`grid grid-cols-[1fr_auto] md:grid-cols-[96px_112px_1fr_120px_28px] items-center gap-2 md:gap-3 px-4 py-2.5 cursor-pointer transition-colors ${expanded ? "" : "hover:bg-white/[0.02]"}`}
+      >
+        <span className="hidden md:block text-[13px] font-mono text-dark-400 tabular-nums">{timeShort}</span>
+        <span className="hidden md:flex items-center gap-1.5">
+          <span className={`h-2 w-2 rounded-full ${s.dot}`} />
+          <span className={`text-[13px] font-medium ${s.text}`}>{statusLabel}</span>
+        </span>
         <div className="min-w-0">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-2">Raw Log</p>
-          <RawBlock text={entry.raw} />
+          <div className="flex items-center gap-2 md:hidden mb-0.5">
+            <span className={`h-2 w-2 rounded-full ${s.dot}`} />
+            <span className={`text-[11px] font-medium ${s.text}`}>{statusLabel}</span>
+            <span className="text-[11px] font-mono text-dark-600 tabular-nums">{timeShort}</span>
+          </div>
+          <p className="text-sm font-semibold text-dark-100 truncate">{groupPrimary}</p>
+          {groupSecondary && <p className="text-[11px] text-dark-600 font-mono truncate">{groupSecondary}</p>}
+        </div>
+        <span className="hidden md:block text-[13px] text-dark-400 truncate">{accountIndex > 0 ? `Account ${accountIndex}` : "—"}</span>
+        <ChevronRight className={`h-4 w-4 shrink-0 justify-self-end transition-transform ${expanded ? "rotate-90 text-accent" : "text-dark-600"}`} />
+      </div>
+
+      {/* Inline detail tab */}
+      {expanded && (
+        <div className="px-4 pb-4 animate-scale-in">
+          <div className="rounded-xl border border-dark-700/60 bg-dark-950 p-4 grid lg:grid-cols-2 gap-x-8 gap-y-4">
+            <div className="grid gap-2.5">
+              <Field label="Group / Channel" value={entry.groupName || "—"} />
+              <Field label="Group ID" value={entry.groupId || "—"} copy={entry.groupId} mono />
+              <Field label="Account" value={accLabel} copy={entry.account} />
+              <Field label="Session" value={session} mono />
+              <Field label="Sent" value={entry.timestamp ? toLocalTime(entry.timestamp).full : "—"} />
+              <Field label="Status" value={s.label} valueClass={s.text} />
+              <Field label="Response" value={response} valueClass={entry.type === "failure" ? "text-danger" : undefined} />
+              {botName && <Field label="Bot" value={botName} />}
+            </div>
+            <div className="min-w-0 grid gap-3 content-start">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-1.5">Message Link</p>
+                {link ? (
+                  <a href={link} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/10 px-3 py-2 text-[13px] font-semibold text-accent hover:bg-accent/20 transition-colors break-all">
+                    Open in Telegram <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                  </a>
+                ) : (
+                  <p className="text-[13px] text-dark-500">No link found in this log line.</p>
+                )}
+                {link && <p className="mt-1.5 text-[11px] text-dark-600 font-mono break-all">{link}</p>}
+              </div>
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-1.5">Raw Log</p>
+                <RawBlock text={entry.raw} />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ────────────────────── Group row (By Group, expandable) ────────────────────── */
+
+function GroupRow({ group, accounts }: {
+  group: {
+    name: string; groupId?: string; groupLink?: string;
+    byAccount: Record<string, { type: LogType; time?: string; wait?: string; link?: string }>;
+    sent: Set<string>; flood: Set<string>; failed: Set<string>;
+  };
+  accounts: string[];
+}) {
+  const [open, setOpen] = useState(false);
+  const rows = accounts
+    .map((acct, i) => ({ acct, i, rec: group.byAccount[acct] }))
+    .filter((r) => r.rec)
+    .sort((a, b) => (entryMs({ timestamp: b.rec!.time } as ParsedLog) || 0) - (entryMs({ timestamp: a.rec!.time } as ParsedLog) || 0));
+
+  return (
+    <div className={`relative ${open ? "bg-accent/[0.05]" : ""}`}>
+      {open && <span className="absolute left-0 top-0 bottom-0 w-0.5 bg-accent" />}
+      <div onClick={() => setOpen((v) => !v)} className={`flex items-center gap-3 px-4 py-2.5 cursor-pointer transition-colors ${open ? "" : "hover:bg-white/[0.02]"}`}>
+        <ChevronRight className={`h-4 w-4 shrink-0 transition-transform ${open ? "rotate-90 text-accent" : "text-dark-600"}`} />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-dark-100 truncate">{group.name}</p>
+          <p className="text-[11px] text-dark-600 font-mono truncate">{group.groupId ? `ID ${group.groupId}` : "ID unknown"}</p>
+        </div>
+        <div className="flex items-center gap-2.5 shrink-0 text-xs">
+          <span className="text-success font-semibold">{group.sent.size} sent</span>
+          {group.flood.size > 0 && <span className="text-warning font-semibold">{group.flood.size} waiting</span>}
+          {group.failed.size > 0 && <span className="text-danger font-semibold">{group.failed.size} failed</span>}
         </div>
       </div>
+      {open && (
+        <div className="px-4 pb-4 pl-11 animate-scale-in">
+          <div className="rounded-xl border border-dark-700/60 bg-dark-950 p-3">
+            {group.groupId && (
+              <div className="flex items-center gap-2 pb-2.5 mb-2.5 border-b border-dark-800">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-dark-600">Group ID</span>
+                <span className="text-xs font-mono text-dark-300">{group.groupId}</span>
+                {group.groupLink && (
+                  <a href={group.groupLink} target="_blank" rel="noopener noreferrer" className="ml-auto inline-flex items-center gap-1 text-[11px] font-semibold text-accent hover:underline">
+                    Open <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
+              </div>
+            )}
+            <div className="grid gap-1.5">
+              {rows.map(({ acct, i, rec }) => {
+                const tone = rec!.type === "success" ? "text-success" : rec!.type === "flood" ? "text-warning" : "text-danger";
+                const verb = rec!.type === "success" ? "posted" : rec!.type === "flood" ? `waiting ${rec!.wait ? rec!.wait + "s" : ""}`.trim() : "failed";
+                return (
+                  <div key={acct} className="flex items-center gap-2 text-xs">
+                    <span className="rounded bg-dark-800 px-1.5 py-0.5 text-[10px] font-semibold text-dark-300 shrink-0">Acc {i + 1}</span>
+                    <span className="font-mono text-dark-500 shrink-0">{acct}.session</span>
+                    <span className={`font-semibold shrink-0 ${tone}`}>{verb}</span>
+                    <span className="text-dark-500 ml-auto shrink-0">{rec!.time ? toLocalTime(rec!.time).full : "—"}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
