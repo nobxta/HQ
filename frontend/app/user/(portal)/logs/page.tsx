@@ -715,7 +715,7 @@ export default function UserLogsPage() {
       </div>
 
       {/* ── Stat cards ── */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-3 mb-4">
+      <div className="flex sm:grid sm:grid-cols-3 lg:grid-cols-5 gap-2 sm:gap-3 mb-4 overflow-x-auto sm:overflow-visible no-scrollbar -mx-4 px-4 sm:mx-0 sm:px-0">
         <StatCard icon={Send} label="Total Sent" value={stats.total} tint="accent" sub="All attempts" />
         <StatCard icon={CheckCircle2} label="Successful" value={stats.success} tint="success" sub={`${pct(stats.success)}% success rate`} subTint="success" />
         <StatCard icon={XCircle} label="Failed" value={stats.failure} tint="danger" sub={`${pct(stats.failure)}% failure rate`} subTint="danger" />
@@ -997,15 +997,15 @@ function StatCard({ icon: Icon, label, value, tint, sub, subTint }: {
   const c = t[tint];
   const subColor = subTint === "success" ? "text-success" : subTint === "danger" ? "text-danger" : subTint === "warning" ? "text-warning" : "text-dark-500";
   return (
-    <div className="rounded-2xl border border-dark-700/50 bg-dark-900 p-3.5 sm:p-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-dark-600">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[13px] font-medium text-dark-400 truncate">{label}</span>
-        <span className={`flex items-center justify-center h-8 w-8 rounded-lg shrink-0 ring-1 ${c.bg} ${c.ring}`}>
-          <Icon className={`h-4 w-4 ${c.text}`} />
+    <div className="shrink-0 w-[132px] sm:w-auto rounded-xl sm:rounded-2xl border border-dark-700/50 bg-dark-900 p-2.5 sm:p-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-dark-600">
+      <div className="flex items-center gap-2 sm:justify-between">
+        <span className={`flex items-center justify-center h-7 w-7 sm:h-8 sm:w-8 rounded-lg shrink-0 ring-1 sm:order-2 ${c.bg} ${c.ring}`}>
+          <Icon className={`h-3.5 w-3.5 sm:h-4 sm:w-4 ${c.text}`} />
         </span>
+        <span className="text-[11px] sm:text-[13px] font-medium text-dark-400 truncate sm:order-1">{label}</span>
       </div>
-      <p className="mt-2.5 text-[26px] sm:text-[28px] font-bold leading-none tracking-tight tabular-nums text-dark-100">{value.toLocaleString()}</p>
-      {sub && <p className={`mt-2 text-xs font-medium ${subColor}`}>{sub}</p>}
+      <p className="mt-1.5 sm:mt-2.5 text-xl sm:text-[28px] font-bold leading-none tracking-tight tabular-nums text-dark-100">{value.toLocaleString()}</p>
+      {sub && <p className={`mt-1 sm:mt-2 text-[10px] sm:text-xs font-medium truncate ${subColor}`}>{sub}</p>}
     </div>
   );
 }
