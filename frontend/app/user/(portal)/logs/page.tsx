@@ -719,8 +719,8 @@ export default function UserLogsPage() {
             </span>
           </div>
           <div className="min-w-0">
-            <p className={`text-lg font-bold leading-tight ${healthCopy[health].color}`}>{healthCopy[health].label}</p>
-            <p className="text-xs text-dark-500 mt-0.5 whitespace-nowrap">System Status</p>
+            <p className={`text-base sm:text-lg font-bold leading-tight truncate ${healthCopy[health].color}`}>{healthCopy[health].label}</p>
+            <p className="text-xs text-dark-500 mt-0.5 truncate">System Status</p>
           </div>
         </div>
       </div>
@@ -825,11 +825,11 @@ export default function UserLogsPage() {
         </div>
       </div>
 
-      {/* Log list + sidebar */}
-      <div className="grid gap-5" style={{ gridTemplateColumns: "minmax(0,1fr)" }}>
-        <div className="grid lg:grid-cols-[minmax(0,1fr)_300px] gap-5 items-start">
+      {/* Log list + sidebar — flex is more robust than an arbitrary grid template
+          (which previously failed to generate, letting the log column overlap the sidebar). */}
+      <div className="flex flex-col lg:flex-row gap-5 items-start">
           {/* LOG LIST */}
-          <div className="min-w-0">
+          <div className="min-w-0 w-full flex-1">
             {view === "groups" ? (
               groupAgg.length === 0 ? (
                 <EmptyState label={search ? "No group matches your search" : "No group activity yet"} />
@@ -880,7 +880,7 @@ export default function UserLogsPage() {
           </div>
 
           {/* SIDEBAR */}
-          <div className="hidden lg:grid gap-4 sticky top-4">
+          <div className="hidden lg:grid gap-4 sticky top-4 w-[300px] shrink-0">
             <div className="rounded-2xl border border-dark-700/50 bg-dark-900 p-5">
               <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-4">Current Status</p>
               <div className={`flex items-center gap-2.5 rounded-xl px-3.5 py-3 mb-5 border ${
@@ -930,7 +930,6 @@ export default function UserLogsPage() {
               </div>
             )}
           </div>
-        </div>
       </div>
 
       <style jsx global>{`
@@ -969,7 +968,7 @@ function HealthCard({
       </div>
       <div className="min-w-0">
         <p className="text-lg font-bold text-dark-100 leading-tight">{value}</p>
-        <p className="text-xs text-dark-500 mt-0.5 whitespace-nowrap">{label}</p>
+        <p className="text-xs text-dark-500 mt-0.5 truncate">{label}</p>
       </div>
     </div>
   );
