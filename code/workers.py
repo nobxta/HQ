@@ -115,6 +115,19 @@ async def worker_main_async(
             **kwargs,
         })
 
+    def report_cycle_progress(session_file: str, cycle_ts: float, posted_keys: list) -> None:
+        """Mid-cycle checkpoint: which group keys this session already posted in the cycle that
+        started at cycle_ts. Controller persists it (stats file) so a crash/restart mid-cycle can
+        resume the same cycle from where it left off instead of re-posting from the first group."""
+        result_queue.put({
+            "type": "cycle_progress",
+            "bot_token": bot_token,
+            "worker_id": worker_id,
+            "session_file": session_file,
+            "cycle_ts": float(cycle_ts),
+            "posted": list(posted_keys),
+        })
+
     def report_cycle_failed(session_file: str) -> None:
         """Session attempted zero posts this cycle (frozen or no groups assigned). Controller will exclude from next assignment. Only called when attempted_count==0; zero success with attempted>0 does not exclude."""
         result_queue.put({
@@ -390,6 +403,7 @@ async def worker_main_async(
                 stop_event,
                 get_config=get_config,
                 report_cycle_done=report_cycle_done,
+                report_cycle_progress=report_cycle_progress,
                 report_cycle_failed=report_cycle_failed,
                 report_session_died=report_session_died,
                 report_expired=report_expired,

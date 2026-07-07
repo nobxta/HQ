@@ -67,7 +67,11 @@ async def resume_adbots(data: dict) -> None:
         if cfg.get("state") == "running" and _valid_till(cfg):
             try:
                 cleanup_active_sessions_for_bot(bot_token)
-                started = await _start_posting(bot_token)
+                # preserve_cycle_time=True: keep the existing cycle anchor across the restart so the
+                # scheduler resumes the interrupted cycle (skipping already-posted groups) when the
+                # downtime is shorter than one cycle, and only starts a fresh cycle when the downtime
+                # spanned a full cycle boundary. A fresh user "Run" still resets the anchor.
+                started = await _start_posting(bot_token, preserve_cycle_time=True)
                 if started:
                     logger.info("Resume: started posting for %s", cfg.get("name") or bot_token[:20])
                 else:

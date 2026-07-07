@@ -443,6 +443,9 @@ _worker_first_cycle_or_post: set[tuple[str, str]] = set()  # (bot_token, session
 RECENT_EVENTS_WINDOW_SEC = 24 * 3600  # 24 hours rolling window
 STATS_FLUSH_INTERVAL_SEC = 5
 STATS_BATCH_SIZE = 50
+# How often a worker checkpoints mid-cycle posting progress (posted group keys) so a crash/restart
+# can resume the same cycle. A hard crash loses at most this window → those groups re-post once.
+CYCLE_PROGRESS_REPORT_INTERVAL_SEC = 10
 _stats_pending: dict[str, dict] = {}  # bot_token -> {pending_events, lifetime_sent_delta, lifetime_failed_delta, session_deltas, last_flush_ts}
 _stats_flush_task: Optional[asyncio.Task] = None
 HEARTBEAT_LOG_INTERVAL_SEC = 300  # log HEARTBEAT at most every 5 min per worker
@@ -1690,6 +1693,55 @@ def _persist_last_cycle_at(bot_token: str, session_file: str, timestamp: float) 
     _save_bot_config(bot_token, upd)
 
 
+def _persist_cycle_progress(bot_token: str, session_file: str, cycle_ts: float, posted_keys: list) -> None:
+    """Persist a session's mid-cycle posting checkpoint (posted group keys for the cycle at cycle_ts)
+    to the stats file. Kept out of the user JSON to avoid bloat; it is transient and cleared on
+    cycle completion. On restart it is injected into the worker snapshot so the cycle resumes."""
+    name = get_name_by_token(bot_token)
+    if not name:
+        return
+    try:
+        st = load_stats(name)
+        if not isinstance(st, dict):
+            st = _default_stats_data()
+        cp = st.setdefault("cycle_progress", {})
+        if not isinstance(cp, dict):
+            cp = {}
+            st["cycle_progress"] = cp
+        cp[session_file] = {"cycle_ts": float(cycle_ts), "posted": list(dict.fromkeys(str(k) for k in posted_keys if k))}
+        save_stats(name, st)
+    except Exception as e:
+        logger.debug("persist cycle_progress failed bot=%s session=%s: %s", bot_token[:12], session_file, e)
+
+
+def _clear_cycle_progress(bot_token: str, session_file: str) -> None:
+    """Drop a session's resume checkpoint once its cycle finished (or when no longer needed)."""
+    name = get_name_by_token(bot_token)
+    if not name:
+        return
+    try:
+        st = load_stats(name)
+        if isinstance(st, dict) and isinstance(st.get("cycle_progress"), dict):
+            if st["cycle_progress"].pop(session_file, None) is not None:
+                save_stats(name, st)
+    except Exception as e:
+        logger.debug("clear cycle_progress failed bot=%s session=%s: %s", bot_token[:12], session_file, e)
+
+
+def _load_cycle_progress_for_snapshot(bot_token: str | None, cfg: dict) -> dict:
+    """Read persisted cycle_progress (from the stats file) for injection into a worker snapshot,
+    so workers can resume an interrupted cycle after a restart. Returns {} on any problem."""
+    try:
+        name = (cfg.get("name") or "").strip() or (get_name_by_token(bot_token) if bot_token else None)
+        if not name:
+            return {}
+        st = load_stats(name)
+        cp = st.get("cycle_progress") if isinstance(st, dict) else None
+        return dict(cp) if isinstance(cp, dict) else {}
+    except Exception:
+        return {}
+
+
 # Reconnection: max attempts and delay between attempts (per cycle connect)
 SESSION_RECONNECT_MAX_ATTEMPTS = 7
 SESSION_RECONNECT_DELAY_SEC = 10
@@ -1935,6 +1987,7 @@ async def _async_session_loop(
     *,
     get_config: Optional[Callable[[], dict]] = None,
     report_cycle_done: Optional[Callable[[str, float], None]] = None,
+    report_cycle_progress: Optional[Callable[[str, float, list], None]] = None,
     report_cycle_failed: Optional[Callable[[str], None]] = None,
     report_session_died: Optional[Callable[[str, str], None]] = None,
     report_expired: Optional[Callable[[], None]] = None,
@@ -2000,6 +2053,7 @@ async def _async_session_loop(
         # Enterprise/stagger: one-time random startup offset before first posting cycle (avoids all workers posting in sync)
         first_cycle = True
         run_first_cycle_done = False  # One-shot: run first cycle immediately when run_first_cycle_immediately is True
+        resume_first_pass = True  # One-shot: on the first scheduler decision after (re)start, apply the resume guard
         pending_groups: list[dict] = []  # Rollover: groups not finished within cycle window (processed next cycle)
         group_cooldowns: dict[int, float] = {}  # Per-session FloodWait group cooldown: chat_id → unblock_timestamp
         permanently_excluded_groups: set[str] = set()  # Enterprise: group keys with permanent errors (do not retry every cycle)
@@ -2102,6 +2156,24 @@ async def _async_session_loop(
             next_cycle_time = current_boundary  # run at this phased boundary (wait until it, or run now if past)
             delta_sec = next_cycle_time - now_ts
             delay_sec = now_ts - next_cycle_time if now_ts > next_cycle_time else 0.0
+            # Resume guard (first scheduler pass after a (re)start): if the cycle at this boundary already
+            # COMPLETED before the restart (persisted last_cycle_time == this boundary), do not re-run it —
+            # advance to the next boundary. This covers a crash during the idle wait between cycles, so a
+            # finished cycle is never re-posted. A mid-cycle crash has last_cycle_time < boundary, so it is
+            # not skipped (it resumes via the seeded posted set below). Only affects restart: in steady state
+            # the end-of-cycle sleep advances 'now' past the boundary before the loop re-enters here.
+            if resume_first_pass:
+                resume_first_pass = False
+                _last_done = float((cfg.get("last_cycle_time") or {}).get(session_file) or 0)
+                if cycle_sec > 0 and _last_done >= current_boundary - 1.0:
+                    current_boundary = current_boundary + cycle_sec
+                    next_cycle_time = current_boundary
+                    delta_sec = next_cycle_time - now_ts
+                    delay_sec = 0.0
+                    logger.info(
+                        "[Resume] session=%s cycle at %.0f already completed before restart; waiting for next boundary %.0f",
+                        session_file, current_boundary - cycle_sec, current_boundary,
+                    )
             # Instant first cycle: run immediately on start instead of waiting for cycle boundary
             if cfg.get("run_first_cycle_immediately") and not run_first_cycle_done:
                 next_cycle_time = now_ts
@@ -2331,6 +2403,26 @@ async def _async_session_loop(
             # Cycle-based eligibility: each group is eligible once per cycle (no per-group wall-clock cooldown).
             current_cycle_id = int(scheduled_run_ts)
             posted_this_cycle: set[str] = set()
+            # Resume: seed groups already posted in THIS exact cycle (persisted checkpoint) so a mid-cycle
+            # restart continues where it left off — the group loop below skips keys in posted_this_cycle.
+            # Fail-open: any mismatch (different cycle boundary, missing data) → empty set → fresh cycle.
+            try:
+                _prog = (cfg.get("cycle_progress") or {}).get(session_file) if isinstance(cfg, dict) else None
+                if _prog and int(float(_prog.get("cycle_ts") or 0)) == int(scheduled_run_ts):
+                    for _k in (_prog.get("posted") or []):
+                        if _k:
+                            posted_this_cycle.add(str(_k))
+                    if posted_this_cycle:
+                        _resume_msg = (
+                            f"[Resume] session={session_file} continuing cycle {current_cycle_id}: "
+                            f"skipping {len(posted_this_cycle)} already-posted group(s) from before restart"
+                        )
+                        logger.info(_resume_msg)
+                        if report_user_log:
+                            report_user_log(_resume_msg)
+            except Exception as _seed_err:
+                logger.debug("cycle_progress seed skipped session=%s: %s", session_file, _seed_err)
+            _last_progress_report_ts = 0.0  # throttle for mid-cycle progress checkpoints
             logger.info("[CycleScheduler] session=%s cycle_id=%s groups_ready=%s", session_file, current_cycle_id, len(groups))
             if report_user_log:
                 report_user_log(f"[CycleScheduler] session={session_file} cycle_id={current_cycle_id} groups_ready={len(groups)}")
@@ -2512,6 +2604,15 @@ async def _async_session_loop(
                             report_audit_log(session_file, "SESSION_POST_SUCCESS", group_id=chat_id)
                         posted_this_cycle.add(group_key)
                         posts_success_cycle += 1
+                        # Checkpoint mid-cycle progress (throttled) so a crash can resume this cycle.
+                        if report_cycle_progress:
+                            _now_prog = time.time()
+                            if _now_prog - _last_progress_report_ts >= CYCLE_PROGRESS_REPORT_INTERVAL_SEC:
+                                _last_progress_report_ts = _now_prog
+                                try:
+                                    report_cycle_progress(session_file, scheduled_run_ts, list(posted_this_cycle))
+                                except Exception:
+                                    pass
                         break
                     except (FloodWaitGroupSkip, FloodWaitPause) as e:
                         _fw_seconds = int(getattr(e, "seconds", 0) or 0)
@@ -2905,6 +3006,8 @@ def _build_worker_config_snapshot(
         "name": cfg.get("name") or "",
         "cycle_anchor_ts": float(cfg.get("cycle_anchor_ts") or time.time()),
         "last_cycle_time": dict(cfg.get("last_cycle_time") or {}),
+        # Resume checkpoint: posted group keys per session for an in-progress cycle (from stats file).
+        "cycle_progress": _load_cycle_progress_for_snapshot(bot_token, cfg),
         "ban_error_count_by_session": dict(cfg.get("ban_error_count_by_session") or {}),
         "excluded_sessions": list(cfg.get("excluded_sessions") or []),
         "session_cooldown_until": dict(cfg.get("session_cooldown_until") or {}),
@@ -3152,6 +3255,9 @@ def _apply_worker_result(msg: dict) -> None:
                 if session_file not in first_map:
                     first_map[session_file] = timestamp
             _save_bot_config(bot_token, upd)
+            # Cycle finished fully → drop its mid-cycle resume checkpoint so a later restart does not
+            # wrongly skip groups (a completed cycle is handled by the last_cycle_time boundary guard).
+            _clear_cycle_progress(bot_token, session_file)
             # Push updated session_pause_until and active_session_files so FloodWait-cleared sessions get groups without restart
             workers_list = _worker_handles.get(bot_token)
             if workers_list:
@@ -3168,6 +3274,15 @@ def _apply_worker_result(msg: dict) -> None:
             if _cd_attempted > 0 and _cd_failed / _cd_attempted >= 0.90 and _cd_success <= 1:
                 _schedule_session_health_check(bot_token)
         # Stats: no longer updated from cycle_done; all increments happen on post_attempt (batched).
+    elif msg_type == "cycle_progress":
+        # Mid-cycle checkpoint from a worker: which group keys this session already posted in the
+        # current cycle. Persisted to the stats file (not user JSON, to avoid bloat) so a crash/restart
+        # can resume the same cycle from where it left off.
+        session_file = msg.get("session_file")
+        cycle_ts = msg.get("cycle_ts")
+        posted = msg.get("posted") or []
+        if session_file and cycle_ts is not None:
+            _persist_cycle_progress(bot_token, session_file, float(cycle_ts), list(posted))
     elif msg_type == "cycle_failed":
         # Do not permanently exclude on a single zero-post cycle; retry on next cycle.
         session_file = msg.get("session_file")
