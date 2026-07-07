@@ -84,10 +84,16 @@ def set_menu_button_webapp_sync(bot_token: str, web_token: str, text: str = MENU
     """Point the bot's default chat menu button at the user's dashboard Web App."""
     url = build_dashboard_url(web_token)
     if not url:
-        logger.info(
-            "Mini app not linked (no https WEBSITE_URL or no web_token) for token %s…",
-            (bot_token or "")[:10],
-        )
+        website = (getattr(config, "WEBSITE_URL", "") or "").strip()
+        if not website:
+            reason = "WEBSITE_URL is not set in the backend environment"
+        elif not website.lower().startswith("https://"):
+            reason = f"WEBSITE_URL is not https ({website!r})"
+        elif not (web_token or "").strip():
+            reason = "bot has no web_token"
+        else:
+            reason = "unknown"
+        logger.info("Mini app not linked for token %s…: %s", (bot_token or "")[:10], reason)
         return False
     ok = _bot_api_post(
         bot_token,

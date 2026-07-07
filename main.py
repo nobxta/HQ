@@ -351,6 +351,13 @@ async def main() -> None:
     asyncio.create_task(_daily_session_integrity_and_reconciliation(), name="_daily_session_integrity_and_reconciliation")
     asyncio.create_task(_periodic_spambot_health_check(), name="_periodic_spambot_health_check")
     asyncio.create_task(run_miniapp_menu_button_sweep(), name="run_miniapp_menu_button_sweep")
+    try:
+        from code import config as _cfg
+        from code.miniapp import dashboard_configured as _dash_ok
+        _wu = (getattr(_cfg, "WEBSITE_URL", "") or "").strip() or "(empty)"
+        logger.info("Mini app: WEBSITE_URL=%s configured=%s", _wu, _dash_ok())
+    except Exception:
+        pass
     start_shop_bot_thread()
 
     async def _main_loop_job_consumer() -> None:
