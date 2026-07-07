@@ -79,6 +79,18 @@ export interface DashboardStats {
   }>;
 }
 
+export interface RangeAnalytics {
+  start: number;
+  end: number;
+  bucket_seconds: number;
+  points: Array<{ ts: number; sent: number; failed: number }>;
+  total_sent: number;
+  total_failed: number;
+  bots_with_data: number;
+  per_bot: Array<{ name: string; sent: number; failed: number }>;
+  generated_at: number;
+}
+
 export interface Alert {
   ts: number;
   type: string;

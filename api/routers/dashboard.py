@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 import psutil
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from api.deps import get_current_admin, Pagination
 from api.services import wrappers
@@ -220,6 +220,32 @@ async def dashboard_stats():
         "top_failing": top_failing,
         "recent_orders": recent_orders,
     }
+
+
+@router.get("/analytics")
+async def dashboard_analytics(
+    start: float = Query(..., description="Range start, unix seconds"),
+    end: float = Query(..., description="Range end, unix seconds"),
+):
+    """All-bots posting analytics over a custom time range, parsed from the durable
+    per-bot log files. Returns a bucketed sent/failed series plus totals and a
+    per-bot breakdown for the window."""
+    import asyncio
+    from api.services.log_stats import compute_range_analytics
+
+    now = time.time()
+    # Validate / clamp the window so a bad or huge request can't hammer the log parser.
+    if end > now:
+        end = now
+    if start >= end:
+        start = end - 86400
+    max_span = 366 * 86400  # 1 year
+    if end - start > max_span:
+        start = end - max_span
+
+    data = await wrappers.load_adbot()
+    bot_names = list((data.get("bots") or {}).keys())
+    return await asyncio.to_thread(compute_range_analytics, bot_names, start, end)
 
 
 @router.get("/alerts")

@@ -119,3 +119,73 @@ def compute_analytics(bot_name: str, range_key: str) -> dict:
         "summary": summary,
         "generated_at": now,
     }
+
+
+# ── Custom-range, all-bots aggregation ──────────────────────────────────────
+# Nice, ascending bucket sizes (seconds). We pick the smallest one that keeps the
+# point count under _MAX_POINTS so an arbitrary range still returns a readable chart.
+_BUCKET_LADDER = [300, 600, 900, 1800, 3600, 7200, 14400, 21600, 43200, 86400, 172800, 604800]
+_MAX_POINTS = 240
+
+
+def _pick_bucket(span_seconds: float) -> int:
+    for bs in _BUCKET_LADDER:
+        if span_seconds / bs <= _MAX_POINTS:
+            return bs
+    return _BUCKET_LADDER[-1]
+
+
+def compute_range_analytics(bot_names: list[str], start_ts: float, end_ts: float) -> dict:
+    """Bucketed posting series over an arbitrary [start_ts, end_ts] window, summed
+    across every bot in ``bot_names``. Parsed from the durable per-bot log files
+    (the same source of truth as :func:`compute_analytics`).
+    """
+    start_ts = float(start_ts)
+    end_ts = float(end_ts)
+    if end_ts <= start_ts:
+        end_ts = start_ts + 60.0
+
+    bucket_seconds = _pick_bucket(end_ts - start_ts)
+    first_bucket = int(start_ts // bucket_seconds) * bucket_seconds
+    count = int((end_ts - first_bucket) // bucket_seconds) + 1
+    count = max(1, min(count, _MAX_POINTS + 2))
+
+    points = [{"ts": first_bucket + i * bucket_seconds, "sent": 0, "failed": 0} for i in range(count)]
+    total_sent = total_failed = 0
+    bots_with_data = 0
+    per_bot: list[dict] = []
+
+    for name in bot_names:
+        path = _resolve_log_path(name)
+        if path is None:
+            continue
+        b_sent = b_failed = 0
+        for ts, ok in _parse_events(path):
+            if ts < start_ts or ts > end_ts:
+                continue
+            idx = int((ts - first_bucket) // bucket_seconds)
+            if 0 <= idx < count:
+                points[idx]["sent" if ok else "failed"] += 1
+            if ok:
+                b_sent += 1
+            else:
+                b_failed += 1
+        if b_sent or b_failed:
+            bots_with_data += 1
+            total_sent += b_sent
+            total_failed += b_failed
+            per_bot.append({"name": name, "sent": b_sent, "failed": b_failed})
+
+    per_bot.sort(key=lambda x: (x["failed"], x["sent"]), reverse=True)
+
+    return {
+        "start": start_ts,
+        "end": end_ts,
+        "bucket_seconds": bucket_seconds,
+        "points": points,
+        "total_sent": total_sent,
+        "total_failed": total_failed,
+        "bots_with_data": bots_with_data,
+        "per_bot": per_bot,
+        "generated_at": time.time(),
+    }

@@ -15,8 +15,10 @@ import {
   ArrowRightLeft, Loader2, Play, Trash2, RefreshCw,
   HelpCircle, MessageSquare, AlertTriangle, HardDrive,
   ExternalLink, Hammer, Square, CheckSquare, ChevronDown,
+  Calendar,
 } from "lucide-react";
 import { formatDateTime, timeAgo } from "@/lib/utils";
+import type { RangeAnalytics } from "@/lib/types";
 import useSWR from "swr";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
@@ -54,6 +56,20 @@ type ReplQueueData = {
 
 const replFetcher = (url: string) => api.get(url).then(r => r.data);
 
+/* YYYY-MM-DD for a Date in the viewer's local timezone (native <input type="date"> format). */
+function toLocalDateStr(d: Date): string {
+  const off = d.getTimezoneOffset() * 60000;
+  return new Date(d.getTime() - off).toISOString().slice(0, 10);
+}
+
+/* Axis label for a bucket start ts (unix seconds), tuned to the bucket size. */
+function fmtRangeLabel(ts: number, bucketSeconds: number): string {
+  const d = new Date(ts * 1000);
+  if (bucketSeconds >= 86400) return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  if (bucketSeconds >= 3600) return d.toLocaleString([], { month: "short", day: "numeric", hour: "numeric" });
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
 export default function DashboardPage() {
   const { data, isLoading } = useDashboard();
   const { data: alertsData } = useAlerts();
@@ -66,6 +82,29 @@ export default function DashboardPage() {
   const [processing, setProcessing] = useState(false);
   const [cancelling, setCancelling] = useState<string | null>(null);
   const [stuckOpen, setStuckOpen] = useState(false);
+
+  // ── Custom-range analytics (all bots) ──
+  const [rangeStart, setRangeStart] = useState(() => toLocalDateStr(new Date(Date.now() - 6 * 86400000)));
+  const [rangeEnd, setRangeEnd] = useState(() => toLocalDateStr(new Date()));
+  const startUnix = rangeStart ? Math.floor(new Date(`${rangeStart}T00:00:00`).getTime() / 1000) : 0;
+  const endUnix = rangeEnd ? Math.floor(new Date(`${rangeEnd}T23:59:59`).getTime() / 1000) : 0;
+  const rangeValid = startUnix > 0 && endUnix > 0 && startUnix < endUnix;
+  const { data: rangeData, isLoading: rangeLoading } = useSWR<RangeAnalytics>(
+    rangeValid ? `/api/dashboard/analytics?start=${startUnix}&end=${endUnix}` : null,
+    replFetcher,
+    { keepPreviousData: true }
+  );
+
+  const applyPreset = (preset: "7d" | "30d" | "90d" | "month") => {
+    const now = new Date();
+    setRangeEnd(toLocalDateStr(now));
+    if (preset === "month") {
+      setRangeStart(toLocalDateStr(new Date(now.getFullYear(), now.getMonth(), 1)));
+    } else {
+      const days = preset === "7d" ? 6 : preset === "30d" ? 29 : 89;
+      setRangeStart(toLocalDateStr(new Date(now.getTime() - days * 86400000)));
+    }
+  };
 
   // Orders that got paid but are stuck (insufficient/bad sessions, no token, etc.) —
   // payment is already received, so these need attention, not silence.
@@ -128,6 +167,18 @@ export default function DashboardPage() {
       failed: h.failed,
     };
   });
+
+  // Custom-range derived values
+  const rangeChart = (rangeData?.points || []).map((p) => ({
+    label: fmtRangeLabel(p.ts, rangeData?.bucket_seconds || 3600),
+    sent: p.sent,
+    failed: p.failed,
+  }));
+  const rSent = rangeData?.total_sent || 0;
+  const rFailed = rangeData?.total_failed || 0;
+  const rTotal = rSent + rFailed;
+  const rSuccess = rTotal > 0 ? ((rSent / rTotal) * 100).toFixed(1) : "—";
+  const rangePerBot = (rangeData?.per_bot || []).slice(0, 6);
 
   const clayStats = [
     {
@@ -640,6 +691,144 @@ export default function DashboardPage() {
             )}
           </div>
         </div>
+      </div>
+
+      {/* ────── Custom Range Analytics (all bots) ────── */}
+      <div className="clay-card">
+        <div className="flex flex-col gap-3 px-5 py-4 border-b border-dark-800/50 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2.5">
+            <Calendar className="h-4 w-4 text-accent" />
+            <h3 className="text-sm font-semibold text-white">Custom Range Analytics</h3>
+            <span className="text-[11px] text-dark-500 hidden sm:inline">· all bots</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Presets */}
+            {([
+              { k: "7d", label: "7d" },
+              { k: "30d", label: "30d" },
+              { k: "90d", label: "90d" },
+              { k: "month", label: "This month" },
+            ] as const).map((p) => (
+              <button
+                key={p.k}
+                onClick={() => applyPreset(p.k)}
+                className="clay-btn-soft px-2.5 py-1.5 text-[11px] font-bold text-dark-300 hover:text-white uppercase tracking-wide"
+              >
+                {p.label}
+              </button>
+            ))}
+            {/* Date inputs */}
+            <input
+              type="date"
+              value={rangeStart}
+              max={rangeEnd || undefined}
+              onChange={(e) => setRangeStart(e.target.value)}
+              className="clay-inset bg-transparent px-2.5 py-1.5 text-xs text-dark-200 [color-scheme:dark] focus:outline-none focus:ring-1 focus:ring-accent/40"
+            />
+            <span className="text-dark-500 text-xs">→</span>
+            <input
+              type="date"
+              value={rangeEnd}
+              min={rangeStart || undefined}
+              max={toLocalDateStr(new Date())}
+              onChange={(e) => setRangeEnd(e.target.value)}
+              className="clay-inset bg-transparent px-2.5 py-1.5 text-xs text-dark-200 [color-scheme:dark] focus:outline-none focus:ring-1 focus:ring-accent/40"
+            />
+          </div>
+        </div>
+
+        {!rangeValid ? (
+          <div className="flex flex-col items-center justify-center py-12 text-dark-500">
+            <Calendar className="h-10 w-10 text-dark-700 mb-2" />
+            <p className="text-sm font-medium text-dark-400">Pick a valid start and end date</p>
+          </div>
+        ) : (
+          <div className="p-5">
+            {/* Summary tiles */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+              {[
+                { label: "Sent", val: rSent.toLocaleString(), color: "text-emerald-400" },
+                { label: "Failed", val: rFailed.toLocaleString(), color: "text-red-400" },
+                { label: "Success Rate", val: rSuccess === "—" ? "—" : `${rSuccess}%`, color: "text-white" },
+                { label: "Active Bots", val: (rangeData?.bots_with_data || 0).toLocaleString(), color: "text-accent" },
+              ].map((t) => (
+                <div key={t.label} className="clay-inset p-3.5 text-center">
+                  <p className={`text-xl font-bold ${t.color} tabular-nums`}>{t.val}</p>
+                  <p className="text-[9px] text-dark-600 font-bold uppercase tracking-widest mt-1">{t.label}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+              {/* Chart */}
+              <div className="lg:col-span-2">
+                <div className="h-[220px]">
+                  {rangeLoading && rangeChart.length === 0 ? (
+                    <div className="h-full flex items-center justify-center text-dark-500">
+                      <Loader2 className="h-6 w-6 animate-spin text-dark-600" />
+                    </div>
+                  ) : rTotal === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-dark-500">
+                      <Activity className="h-10 w-10 text-dark-700 mb-2" />
+                      <p className="text-sm font-medium text-dark-400">No posts in this range</p>
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={rangeChart}>
+                        <defs>
+                          <linearGradient id="rangeSentGrad" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#34d399" stopOpacity={0.3} />
+                            <stop offset="100%" stopColor="#34d399" stopOpacity={0} />
+                          </linearGradient>
+                          <linearGradient id="rangeFailGrad" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#f87171" stopOpacity={0.2} />
+                            <stop offset="100%" stopColor="#f87171" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1e1e30" vertical={false} />
+                        <XAxis dataKey="label" stroke="#4a4a5a" fontSize={10} tickLine={false} axisLine={false} minTickGap={24} />
+                        <YAxis stroke="#4a4a5a" fontSize={10} tickLine={false} axisLine={false} />
+                        <Tooltip
+                          contentStyle={{
+                            background: "#252533", border: "1px solid rgba(52,211,153,0.2)",
+                            borderRadius: "12px", fontSize: "12px", padding: "10px 14px",
+                            boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
+                          }}
+                          labelStyle={{ color: "#acacbe", marginBottom: "4px" }}
+                        />
+                        <Area type="monotone" dataKey="sent" stroke="#34d399" strokeWidth={2} fill="url(#rangeSentGrad)" dot={false} />
+                        <Area type="monotone" dataKey="failed" stroke="#f87171" strokeWidth={2} fill="url(#rangeFailGrad)" dot={false} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+              </div>
+
+              {/* Per-bot breakdown for the range */}
+              <div className="clay-inset p-3">
+                <p className="text-[10px] font-bold text-dark-500 uppercase tracking-widest mb-2 px-1">Bots in range</p>
+                {rangePerBot.length === 0 ? (
+                  <div className="flex items-center justify-center py-8 text-xs text-dark-600">No activity</div>
+                ) : (
+                  <div className="space-y-1.5 max-h-[180px] overflow-y-auto custom-scrollbar">
+                    {rangePerBot.map((bot) => {
+                      const t = bot.sent + bot.failed;
+                      const fr = t > 0 ? ((bot.failed / t) * 100).toFixed(0) : "0";
+                      return (
+                        <div key={bot.name} className="flex items-center justify-between rounded-lg bg-dark-800/30 px-2.5 py-2">
+                          <span className="text-xs font-medium text-dark-200 truncate mr-2">{bot.name}</span>
+                          <span className="text-[11px] text-dark-500 shrink-0">
+                            {bot.sent.toLocaleString()} sent · <span className={bot.failed > 0 ? "text-red-400" : "text-dark-500"}>{fr}% fail</span>
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ────── Top Failing + Renewals + Support Tickets ────── */}
