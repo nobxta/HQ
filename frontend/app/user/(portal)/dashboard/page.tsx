@@ -9,8 +9,8 @@ import {
   Send, ShieldAlert, Clock, CalendarClock,
   ChevronRight, AlertTriangle, Zap,
   AlertOctagon, ExternalLink, RefreshCw, Activity,
-  Target, TrendingUp, ArrowUpRight, ArrowDownRight,
-  Users, BarChart3, Gauge, Sparkles, Timer,
+  Target, TrendingUp, ArrowUpRight,
+  Users, Timer,
   MoreVertical, Power, ChevronDown, Gem, Shield,
 } from "lucide-react";
 import { formatDate, parseFlexibleDate } from "@/lib/utils";
@@ -142,28 +142,6 @@ function CircleProgress({ value, size = 120, stroke = 8, color = "accent", delay
           filter: `drop-shadow(0 0 6px ${glowMap[color] || glowMap.accent})`,
         }} />
     </svg>
-  );
-}
-
-/* ────────────────────── mini bar chart (weekly) ────────────────────── */
-
-function WeeklyBars({ data }: { data: number[] }) {
-  const max = Math.max(...data, 1);
-  const days = ["M", "T", "W", "T", "F", "S", "S"];
-  return (
-    <div className="flex items-end gap-1.5 h-16">
-      {data.map((v, i) => (
-        <div key={i} className="flex-1 flex flex-col items-center gap-1">
-          <div className="w-full rounded-sm bg-white/[0.04] overflow-hidden relative" style={{ height: "48px" }}>
-            <div
-              className="absolute bottom-0 w-full rounded-sm bg-gradient-to-t from-accent to-accent/60 transition-all duration-700 ease-out"
-              style={{ height: `${Math.max((v / max) * 100, 4)}%`, transitionDelay: `${i * 60}ms` }}
-            />
-          </div>
-          <span className="text-[8px] text-dark-600 font-medium">{days[i]}</span>
-        </div>
-      ))}
-    </div>
   );
 }
 
@@ -743,24 +721,26 @@ export default function UserDashboard() {
                     <Zap className="h-3 w-3" />{bot.plan_name}
                   </span>
                 )}
-                {/* Expiry pill */}
+                {/* Expiry pill — "Valid until · date" */}
                 {validTill && (
-                  <span className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-[11px] font-medium border ${
-                    expired ? "bg-danger/10 text-danger border-danger/15" : expiringSoon ? "bg-warning/10 text-warning border-warning/15" : "bg-dark-800/30 text-dark-400 border-dark-700/20"
-                  }`}><CalendarClock className="h-3 w-3" />{expired ? "Expired" : expiringSoon ? `${daysLeft}d left` : formatDate(bot.valid_till)}</span>
+                  <span className={`inline-flex items-center rounded-full border overflow-hidden text-[11px] font-medium ${
+                    expired ? "border-danger/15 text-danger" : expiringSoon ? "border-warning/15 text-warning" : "border-dark-700/30 text-dark-400"
+                  }`}>
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-dark-800/40"><CalendarClock className="h-3 w-3" />Valid until</span>
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-dark-800/20 border-l border-white/[0.05]"><Clock className="h-3 w-3" />{expired ? "Expired" : expiringSoon ? `${daysLeft}d left` : formatDate(bot.valid_till)}</span>
+                  </span>
                 )}
               </div>
             </div>
           </div>
 
-          {/* Start / Stop button */}
+          {/* Start / Stop button — filled gradient */}
           <button onClick={() => doAction(running ? "stop" : "start")} disabled={!!actionLoading || preStartLoading}
-            className={`shrink-0 flex items-center gap-2.5 rounded-2xl px-7 py-3.5 text-sm font-bold border transition-all duration-300 disabled:opacity-50 ${
-              running
-                ? "bg-danger/10 text-danger border-danger/20 hover:bg-danger/20 hover:shadow-lg hover:shadow-danger/10"
-                : "bg-success/10 text-success border-success/20 hover:bg-success/20 hover:shadow-lg hover:shadow-success/10"
-            }`}>
-            {(actionLoading || preStartLoading) ? <Loader2 className="h-5 w-5 animate-spin" /> : running ? <Square className="h-5 w-5" /> : <Play className="h-5 w-5" />}
+            className="shrink-0 flex items-center gap-2.5 rounded-2xl px-8 py-4 text-[15px] font-bold text-white transition-all duration-300 disabled:opacity-50 hover:brightness-110"
+            style={running
+              ? { background: "linear-gradient(135deg, #ff8080, #ff6b6b)", boxShadow: "0 8px 24px rgba(255,107,107,0.35)" }
+              : { background: "linear-gradient(135deg, #8b6cff, #6c5ce7)", boxShadow: "0 8px 24px rgba(108,92,231,0.4)" }}>
+            {(actionLoading || preStartLoading) ? <Loader2 className="h-5 w-5 animate-spin" /> : running ? <Square className="h-5 w-5 fill-white" /> : <Play className="h-5 w-5 fill-white" />}
             {preStartLoading ? "Checking..." : running ? "Stop Bot" : "Start Bot"}
           </button>
         </div>
@@ -801,94 +781,83 @@ export default function UserDashboard() {
         }`}><AlertTriangle className="h-4 w-4 shrink-0" />{expired ? "Plan expired. Renew to continue." : `Expires in ${daysLeft}d. Renew soon.`}</div>
       )}
 
-      {/* ═══════════ STAT CARDS ROW — Crextio big counters ═══════════ */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4 stagger-children">
-        <GlassStatCard
-          icon={<Send className="h-4 w-4" />}
-          accent="accent"
-          label="Messages Sent"
-          value={totalSent}
-          todayValue={todaySent}
-          todayLabel="today"
-          trend="up"
-        />
-        <GlassStatCard
-          icon={<XCircle className="h-4 w-4" />}
-          accent="danger"
-          label="Failed"
-          value={totalFailed}
-          todayValue={todayFailed}
-          todayLabel="today"
-          trend="down"
-        />
-        <GlassStatCard
-          icon={<Users className="h-4 w-4" />}
-          accent="success"
-          label="Accounts"
-          value={sessions.length}
-          sub={`${healthySessions} healthy`}
-        />
-        <GlassStatCard
-          icon={<BarChart3 className="h-4 w-4" />}
-          accent="warning"
-          label="Cycles"
-          value={stats?.total_cycles || 0}
-          sub={stats?.last_cycle_ts ? fmtAgo(stats.last_cycle_ts) : "no cycles yet"}
-        />
+      {/* ═══════════ STAT CARDS ROW ═══════════ */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4 stagger-children">
+        <GlassStatCard icon={<Send className="h-[18px] w-[18px]" />} accent="accent" label="Messages Sent" value={totalSent}
+          footer={<span className="flex items-center gap-1 text-[13px] font-medium text-success"><ArrowUpRight className="h-4 w-4" />{todaySent > 0 ? `+${todaySent}` : "0"} today</span>} />
+        <GlassStatCard icon={<XCircle className="h-[18px] w-[18px]" />} accent="danger" label="Failed" value={totalFailed} highlight
+          footer={<span className={`flex items-center gap-1 text-[13px] font-medium ${todayFailed > 0 ? "text-danger" : "text-dark-400"}`}><ArrowUpRight className="h-4 w-4" />{todayFailed > 0 ? `+${todayFailed}` : "0"} today</span>} />
+        <GlassStatCard icon={<Users className="h-[18px] w-[18px]" />} accent="accent" label="Accounts" value={sessions.length}
+          footer={<div className="flex items-center gap-3 text-[13px] font-medium">
+            <span className="flex items-center gap-1.5 text-success"><span className="h-1.5 w-1.5 rounded-full bg-success" />{healthySessions} healthy</span>
+            {failingCount > 0 && <span className="flex items-center gap-1.5 text-danger"><span className="h-1.5 w-1.5 rounded-full bg-danger" />{failingCount} issue{failingCount !== 1 ? "s" : ""}</span>}
+          </div>} />
+        <GlassStatCard icon={<RefreshCw className="h-[18px] w-[18px]" />} accent="accent" label="Cycles" value={stats?.total_cycles || 0}
+          footer={<span className="flex items-center gap-1.5 text-[13px] font-medium text-dark-400"><Clock className="h-4 w-4" />{stats?.last_cycle_ts ? fmtAgo(stats.last_cycle_ts) : "no cycles yet"}</span>} />
       </div>
 
       {/* ═══════════ MAIN GRID — 3 panel Crextio layout ═══════════ */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4" style={{ height: "calc(100vh - 400px)", minHeight: "340px" }}>
 
-        {/* ────── LEFT: Performance card (like Crextio Progress + Time Tracker combined) ────── */}
-        <div className="lg:col-span-3 glass-card p-5 flex flex-col animate-stagger-1">
+        {/* ────── LEFT: Performance ────── */}
+        <div className="lg:col-span-4 glass-card p-5 flex flex-col animate-stagger-1">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
-              <div className="p-1.5 rounded-xl bg-accent/10"><Gauge className="h-4 w-4 text-accent" /></div>
-              <span className="text-sm font-bold text-dark-100">Performance</span>
+              <TrendingUp className="h-5 w-5 text-accent" />
+              <span className="text-[15px] font-bold text-white">Performance</span>
             </div>
-            <Link href="/user/logs" className="text-[10px] text-accent hover:text-accent-300 flex items-center gap-0.5 font-medium group">
-              Details <ChevronRight className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" />
-            </Link>
+            {/* working period dropdown */}
+            <div className="relative">
+              <button onClick={() => setPerfOpen(v => !v)}
+                className="flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-1.5 text-[12px] text-dark-200 font-medium hover:bg-white/[0.05]">
+                <CalendarClock className="h-3.5 w-3.5 text-dark-400" />
+                {perfConfig.title}
+                <ChevronDown className={`h-3.5 w-3.5 text-dark-400 transition-transform ${perfOpen ? "rotate-180" : ""}`} />
+              </button>
+              {perfOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setPerfOpen(false)} />
+                  <div className="absolute right-0 top-full mt-1.5 z-20 w-36 rounded-xl border border-white/[0.08] bg-dark-900 shadow-xl overflow-hidden">
+                    {([["today", "Today"], ["week", "This Week"], ["month", "This Month"]] as const).map(([val, lbl]) => (
+                      <button key={val} onClick={() => { setPerfPeriod(val); setPerfOpen(false); }}
+                        className={`w-full text-left px-3 py-2 text-[12px] font-medium transition-colors ${
+                          perfPeriod === val ? "bg-accent/15 text-accent" : "text-dark-300 hover:bg-white/[0.04]"
+                        }`}>
+                        {lbl}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
 
-          {/* Big ring — like Crextio Time Tracker circle */}
-          <div className="flex-1 flex flex-col items-center justify-center py-2">
-            <div className="relative">
-              <CircleProgress
-                value={successRate}
-                size={140}
-                stroke={10}
-                color={successRate >= 70 ? "success" : successRate >= 40 ? "warning" : "danger"}
-              />
+          {/* ring + bar chart side by side */}
+          <div className="flex-1 flex items-center gap-4 py-2">
+            <div className="relative shrink-0">
+              <CircleProgress value={successRate} size={140} stroke={10}
+                color={successRate >= 70 ? "success" : successRate >= 40 ? "warning" : "danger"} />
               <div className="absolute inset-0 flex flex-col items-center justify-center">
-                <span className="text-4xl font-bold text-white tracking-tighter leading-none">
-                  <AnimatedNumber value={successRate} />
-                  <span className="text-lg text-dark-300">%</span>
+                <span className="text-[34px] font-bold text-white tracking-tighter leading-none">
+                  <AnimatedNumber value={successRate} /><span className="text-lg text-dark-300">%</span>
                 </span>
-                <span className="text-[10px] text-dark-500 font-semibold uppercase tracking-wider mt-1">Success Rate</span>
+                <span className="text-[10px] text-dark-500 font-semibold mt-1">Success Rate</span>
               </div>
             </div>
-          </div>
-
-          {/* Weekly activity bars — like Crextio Progress bar chart */}
-          <div className="mt-3 mb-2">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[10px] text-dark-500 font-semibold uppercase tracking-wider">This Week</span>
-              <span className="text-[10px] text-accent font-semibold">{todaySent > 0 ? `${todaySent} today` : ""}</span>
+            <div className="flex-1 min-w-0">
+              <PerfBars data={perfConfig.data} labels={perfConfig.labels} height={150} />
             </div>
-            <WeeklyBars data={weeklyData} />
           </div>
 
-          {/* Mini stat strips */}
-          <div className="space-y-2 mt-3 pt-3 border-t border-white/[0.04]">
-            <MiniStatBar label="Sent" value={totalSent} max={total || 1} color="bg-success" />
-            <MiniStatBar label="Failed" value={totalFailed} max={total || 1} color="bg-danger" />
+          {/* Sent / Failed strips */}
+          <div className="space-y-3 mt-3 pt-4 border-t border-white/[0.04]">
+            <PerfStatBar label="Sent" value={totalSent} max={total || 1} color="bg-accent" />
+            <PerfStatBar label="Failed" value={totalFailed} max={total || 1} color="bg-danger" />
           </div>
         </div>
 
-        {/* ────── CENTER: Accounts (like Crextio Profile + Calendar area) ────── */}
-        <div className="lg:col-span-5 glass-card flex flex-col overflow-hidden animate-stagger-2">
+        {/* ────── CENTER: Accounts ────── */}
+        <div className="lg:col-span-4 glass-card flex flex-col overflow-hidden animate-stagger-2">
           <div className="flex items-center justify-between px-5 py-3.5 border-b border-white/[0.04]">
             <div className="flex items-center gap-2.5">
               <div className="p-1.5 rounded-xl bg-accent/10"><Target className="h-4 w-4 text-accent" /></div>
@@ -947,12 +916,15 @@ export default function UserDashboard() {
                       </div>
 
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-2">
                           <span className="text-sm font-semibold text-dark-50 truncate">{name}</span>
-                          {failing && <AlertTriangle className="h-3.5 w-3.5 text-danger shrink-0" />}
+                          <span className={`text-[11px] font-semibold shrink-0 ${failing ? "text-danger" : "text-success"}`}>
+                            {failing ? "Issue" : "Healthy"}
+                          </span>
                         </div>
-                        <div className="flex items-center gap-3 mt-0.5">
+                        <div className="flex items-center gap-2.5 mt-0.5">
                           {lastAttempted > 0 && <span className="text-[10px] text-dark-500 font-medium">Last: {lastSent}/{lastAttempted}</span>}
+                          <span className="h-0.5 w-0.5 rounded-full bg-dark-600" />
                           <span className="text-[10px] text-dark-600">{sent.toLocaleString()} sent</span>
                         </div>
                       </div>
@@ -978,6 +950,15 @@ export default function UserDashboard() {
               </div>
             )}
           </div>
+
+          {/* Footer link */}
+          {sessions.length > 0 && (
+            <div className="px-5 py-3 border-t border-white/[0.04]">
+              <Link href="/user/accounts" className="flex items-center justify-center gap-1.5 text-xs text-accent hover:text-accent-300 font-semibold transition-colors group">
+                View all {sessions.length} account{sessions.length !== 1 ? "s" : ""} <ChevronRight className="h-3.5 w-3.5 group-hover:translate-x-0.5 transition-transform" />
+              </Link>
+            </div>
+          )}
         </div>
 
         {/* ────── RIGHT: Live Activity (like Crextio Onboarding Task dark card) ────── */}
@@ -1082,9 +1063,9 @@ export default function UserDashboard() {
 
 /* ═══════════════════ GLASS STAT CARD ═══════════════════ */
 
-function GlassStatCard({ icon, accent, label, value, todayValue, todayLabel, sub, trend }: {
+function GlassStatCard({ icon, accent, label, value, footer, highlight }: {
   icon: React.ReactNode; accent: string; label: string; value: number;
-  todayValue?: number; todayLabel?: string; sub?: string; trend?: "up" | "down";
+  footer: React.ReactNode; highlight?: boolean;
 }) {
   const colorMap: Record<string, { bg: string; text: string; glow: string }> = {
     accent:  { bg: "bg-accent/12", text: "text-accent", glow: "shadow-glow-accent" },
@@ -1096,33 +1077,27 @@ function GlassStatCard({ icon, accent, label, value, todayValue, todayLabel, sub
   const c = colorMap[accent] || colorMap.accent;
 
   return (
-    <div className="glass-stat group hover:border-white/[0.1] transition-all duration-300 cursor-default px-4 py-4">
-      {/* Background ambient glow on hover */}
-      <div className={`absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none ${c.glow}`} />
+    <div className={`glass-stat group transition-all duration-300 cursor-default px-5 py-5 ${
+      highlight ? "!border-danger/20" : "hover:border-white/[0.1]"
+    }`}>
+      {highlight
+        ? <div className="absolute -top-10 -right-10 w-32 h-32 rounded-full bg-danger/12 blur-[50px] pointer-events-none" />
+        : <div className={`absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none ${c.glow}`} />}
 
       <div className="relative">
-        <div className="flex items-center justify-between mb-3">
-          <div className={`p-2 rounded-xl ${c.bg} ${c.text} group-hover:scale-110 transition-transform duration-300`}>{icon}</div>
-          <span className="text-[10px] text-dark-500 font-semibold uppercase tracking-wider">{label}</span>
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className={`p-2.5 rounded-xl ${c.bg} ${c.text} group-hover:scale-105 transition-transform duration-300`}>{icon}</div>
+            <span className="text-[14px] text-dark-300 font-medium truncate">{label}</span>
+          </div>
+          <MoreVertical className="h-[18px] w-[18px] text-dark-600 shrink-0 -mr-1" />
         </div>
 
-        <p className="text-3xl font-bold text-white tracking-tighter leading-none">
+        <p className="text-[34px] font-bold text-white tracking-tight leading-none mt-3">
           <AnimatedNumber value={value} />
         </p>
 
-        {todayValue !== undefined && (
-          <div className="flex items-center gap-1 mt-2">
-            {trend === "up" && <ArrowUpRight className="h-3 w-3 text-success" />}
-            {trend === "down" && todayValue > 0 && <ArrowDownRight className="h-3 w-3 text-danger" />}
-            <span className={`text-[11px] font-medium ${
-              trend === "up" ? "text-success" : trend === "down" && todayValue > 0 ? "text-danger" : "text-dark-400"
-            }`}>
-              {todayValue > 0 ? `+${todayValue}` : "0"} {todayLabel}
-            </span>
-          </div>
-        )}
-
-        {sub && <p className="text-[11px] text-dark-400 font-medium mt-2">{sub}</p>}
+        <div className="mt-2.5">{footer}</div>
       </div>
     </div>
   );
@@ -1165,16 +1140,16 @@ function MobileStatCard({ icon, accent, label, value, footer, highlight }: {
 
 /* ═══════════════════ MOBILE PERF BARS ═══════════════════ */
 
-function PerfBars({ data, labels }: { data: number[]; labels: string[] }) {
+function PerfBars({ data, labels, height = 104 }: { data: number[]; labels: string[]; height?: number }) {
   const max = Math.max(...data, 1);
   const ticks = [100, 75, 50, 25, 0];
   return (
     <div className="flex gap-1.5">
-      <div className="flex flex-col justify-between h-[104px] shrink-0">
+      <div className="flex flex-col justify-between shrink-0" style={{ height }}>
         {ticks.map(t => <span key={t} className="text-[8px] text-dark-600 leading-none tabular-nums">{t}%</span>)}
       </div>
       <div className="flex-1 min-w-0">
-        <div className="relative h-[104px]">
+        <div className="relative" style={{ height }}>
           {ticks.map((t, i) => (
             <div key={t} className="absolute left-0 right-0 border-t border-dashed border-white/[0.06]" style={{ top: `${i * 25}%` }} />
           ))}
@@ -1221,24 +1196,6 @@ function StatusCol({ icon, iconColor, label, value, sub, divider }: {
       </div>
       <p className="text-[13px] font-bold text-white leading-tight truncate">{value}</p>
       <p className="text-[9px] text-dark-500 mt-0.5 leading-tight">{sub}</p>
-    </div>
-  );
-}
-
-/* ═══════════════════ MINI STAT BAR ═══════════════════ */
-
-function MiniStatBar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
-  const pct = max > 0 ? Math.round((value / max) * 100) : 0;
-  return (
-    <div className="flex items-center gap-3">
-      <span className="text-[10px] text-dark-500 font-semibold w-11 shrink-0">{label}</span>
-      <div className="flex-1 h-2 rounded-full bg-white/[0.04] overflow-hidden">
-        <div
-          className={`h-full rounded-full ${color} progress-bar-animated`}
-          style={{ width: `${Math.max(pct, 3)}%` }}
-        />
-      </div>
-      <span className="text-[10px] text-dark-300 font-bold w-14 text-right shrink-0">{value.toLocaleString()}</span>
     </div>
   );
 }

@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { clearPortalSession, getPortalSession } from "@/lib/portal-api";
 import {
   LayoutDashboard, Terminal, Link2, List,
-  Settings, CreditCard, Shield, LogOut, X, Users,
+  Settings, CreditCard, LogOut, X, Users,
 } from "lucide-react";
 
 const nav = [
@@ -56,8 +56,11 @@ export default function PortalSidebar({ open, onClose }: PortalSidebarProps) {
       >
         <div className="flex items-center justify-between px-5 py-5 border-b border-dark-700/50">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent">
-              <Shield className="h-5 w-5 text-white" />
+            <div className="relative shrink-0">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-accent-400 to-accent-700 shadow-lg shadow-accent/25">
+                <span className="text-lg font-bold text-white">{(session?.bot_name || "A").charAt(0).toUpperCase()}</span>
+              </div>
+              <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-success border-2 border-dark-950" />
             </div>
             <div className="min-w-0">
               <h1 className="text-base font-bold text-white truncate">{session?.bot_name || "AdBot"}</h1>
