@@ -938,6 +938,28 @@ def _prune_buckets(buckets: list[dict], now_ts: float) -> None:
     buckets[:] = [b for b in buckets if (b.get("hour_ts") or 0) >= cutoff]
 
 
+# Long-term daily history (for 7d / 30d / heatmap views). Retained ~13 months.
+DAILY_HISTORY_DAYS = 400
+
+
+def _add_event_to_daily(daily: list[dict], day_ts: int, success: bool) -> None:
+    """Mutate daily buckets: find or create day bucket, increment sent or failed."""
+    for b in daily:
+        if b.get("day_ts") == day_ts:
+            if success:
+                b["sent"] = b.get("sent", 0) + 1
+            else:
+                b["failed"] = b.get("failed", 0) + 1
+            return
+    daily.append({"day_ts": day_ts, "sent": 1 if success else 0, "failed": 0 if success else 1})
+
+
+def _prune_daily(daily: list[dict], now_ts: float) -> None:
+    """Keep only daily buckets within the retention window."""
+    cutoff = int(now_ts // 86400) - DAILY_HISTORY_DAYS
+    daily[:] = [b for b in daily if (b.get("day_ts") or 0) >= cutoff]
+
+
 def _sum_buckets(buckets: list[dict]) -> tuple[int, int]:
     """Return (sent, failed) total from bucket list."""
     sent = sum(b.get("sent", 0) for b in (buckets or []))
@@ -953,6 +975,7 @@ def _default_stats_data() -> dict:
         "created_at": time.time(),
         "session_stats": {},
         "last24h_buckets": [],
+        "daily_buckets": [],
     }
 
 
@@ -1087,6 +1110,7 @@ def _flush_bot_stats(bot_token: str) -> None:
         if legacy_attempts and isinstance(legacy_attempts, dict):
             st["session_recent_attempts"] = legacy_attempts
     st.setdefault("last24h_buckets", [])
+    st.setdefault("daily_buckets", [])
     lifetime_sent = int(st.get("lifetime_sent", 0)) + p["lifetime_sent_delta"]
     lifetime_failed = int(st.get("lifetime_failed", 0)) + p["lifetime_failed_delta"]
     created_at = st.get("created_at") or now
@@ -1099,6 +1123,7 @@ def _flush_bot_stats(bot_token: str) -> None:
         success = bool(ev.get("success"))
         hour_ts = int(ts // 3600)
         _add_event_to_buckets(st["last24h_buckets"], hour_ts, success)
+        _add_event_to_daily(st["daily_buckets"], int(ts // 86400), success)
         if session_file:
             entry = session_stats.get(session_file)
             if not entry or not isinstance(entry, dict):
@@ -1117,6 +1142,7 @@ def _flush_bot_stats(bot_token: str) -> None:
         entry.setdefault("last24h_buckets", [])
         session_stats[session_file] = entry
     _prune_buckets(st["last24h_buckets"], now)
+    _prune_daily(st["daily_buckets"], now)
     for entry in session_stats.values():
         if isinstance(entry, dict) and "last24h_buckets" in entry:
             _prune_buckets(entry["last24h_buckets"], now)
@@ -1201,12 +1227,15 @@ def _get_stats_for_display(bot_token: str) -> dict:
             "best_cycle_ts": entry.get("best_cycle_ts", 0),
         }
     global_buckets = list(st.get("last24h_buckets") or [])
+    daily_buckets = [dict(b) for b in (st.get("daily_buckets") or [])]
     if p and p.get("pending_events"):
         for ev in p["pending_events"]:
             ts = ev.get("ts") or 0
             if ts >= now - RECENT_EVENTS_WINDOW_SEC:
                 _add_event_to_buckets(global_buckets, int(ts // 3600), bool(ev.get("success")))
+            _add_event_to_daily(daily_buckets, int(ts // 86400), bool(ev.get("success")))
     sent_24, failed_24 = _sum_buckets(global_buckets)
+    daily_buckets.sort(key=lambda b: b.get("day_ts") or 0)
     return {
         "lifetime_sent": lifetime_sent,
         "lifetime_failed": lifetime_failed,
@@ -1215,6 +1244,7 @@ def _get_stats_for_display(bot_token: str) -> dict:
         "last24h_sent": sent_24,
         "last24h_failed": failed_24,
         "last24h_buckets": global_buckets,
+        "daily_buckets": daily_buckets,
         "total_cycles": int(st.get("total_cycles", 0)),
         "last_cycle_ts": st.get("last_cycle_ts", 0),
         "last_cycle_session": st.get("last_cycle_session", ""),

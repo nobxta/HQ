@@ -135,12 +135,18 @@ def serialize_stats(stats: dict) -> dict:
     return {
         "lifetime_sent": stats.get("lifetime_sent", stats.get("total_posts_sent", 0)),
         "lifetime_failed": stats.get("lifetime_failed", stats.get("total_posts_failed", 0)),
+        "last24h_sent": stats.get("last24h_sent", 0),
+        "last24h_failed": stats.get("last24h_failed", 0),
         "cycles": stats.get("cycles", 0),
         "total_cycles": stats.get("total_cycles", 0),
+        "created_at": stats.get("created_at", 0),
         "last_cycle_ts": stats.get("last_cycle_ts", 0),
         "last_cycle_session": stats.get("last_cycle_session", ""),
         "session_stats": stats.get("session_stats", stats.get("sessions", {})),
-        "hourly_buckets": stats.get("hourly_buckets", []),
+        # Time-series for the Performance chart. Hourly buckets cover the last 24h;
+        # daily buckets accumulate long-term history for 7d/30d views.
+        "last24h_buckets": stats.get("last24h_buckets", []),
+        "daily_buckets": stats.get("daily_buckets", []),
     }
 
 

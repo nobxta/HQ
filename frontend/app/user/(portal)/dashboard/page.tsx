@@ -145,6 +145,60 @@ function CircleProgress({ value, size = 120, stroke = 8, color = "accent", delay
   );
 }
 
+/* ──────────────── Performance ranges + series builders ──────────────── */
+
+type PerfRange = "1h" | "6h" | "24h" | "7d" | "30d";
+type HourBucket = { hour_ts: number; sent: number; failed: number };
+type DayBucket = { day_ts: number; sent: number; failed: number };
+
+const PERF_RANGES: { val: PerfRange; label: string }[] = [
+  { val: "1h", label: "Last 1 hour" },
+  { val: "6h", label: "Last 6 hours" },
+  { val: "24h", label: "Last 24 hours" },
+  { val: "7d", label: "Last 7 days" },
+  { val: "30d", label: "Last 30 days" },
+];
+
+/** Bars from hourly buckets — one bar per hour, real clock labels. */
+function buildHourlySeries(buckets: HourBucket[], hours: number) {
+  const nowHour = Math.floor(Date.now() / 3600000);
+  const map = new Map(buckets.map(b => [b.hour_ts, b]));
+  const values: number[] = [], labels: string[] = [];
+  for (let i = hours - 1; i >= 0; i--) {
+    const h = nowHour - i;
+    values.push(map.get(h)?.sent || 0);
+    labels.push(new Date(h * 3600000).toLocaleTimeString([], { hour: "numeric" }));
+  }
+  return { values, labels };
+}
+
+/** Bars from daily buckets — one bar per day, real weekday labels (noon-UTC → correct calendar day). */
+function buildDailySeries(buckets: DayBucket[], days: number) {
+  const nowDay = Math.floor(Date.now() / 86400000);
+  const map = new Map(buckets.map(b => [b.day_ts, b]));
+  const values: number[] = [], labels: string[] = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = nowDay - i;
+    values.push(map.get(d)?.sent || 0);
+    labels.push(new Date(d * 86400000 + 43200000).toLocaleDateString([], { weekday: "short" }));
+  }
+  return { values, labels };
+}
+
+/** Cells for the GitHub-style heatmap — last N days each with its date + counts. */
+function buildHeatmap(buckets: DayBucket[], days: number) {
+  const nowDay = Math.floor(Date.now() / 86400000);
+  const map = new Map(buckets.map(b => [b.day_ts, b]));
+  const cells: { date: Date; sent: number; failed: number; value: number }[] = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = nowDay - i;
+    const b = map.get(d);
+    const sent = b?.sent || 0, failed = b?.failed || 0;
+    cells.push({ date: new Date(d * 86400000 + 43200000), sent, failed, value: sent + failed });
+  }
+  return cells;
+}
+
 /* ═══════════════════════════ DASHBOARD ═══════════════════════════ */
 
 export default function UserDashboard() {
@@ -163,7 +217,7 @@ export default function UserDashboard() {
   const [preStartCheck, setPreStartCheck] = useState<PreStartCheck | null>(null);
   const [showPreStart, setShowPreStart] = useState(false);
   const [preStartLoading, setPreStartLoading] = useState(false);
-  const [perfPeriod, setPerfPeriod] = useState<"today" | "week" | "month">("week");
+  const [perfPeriod, setPerfPeriod] = useState<PerfRange>("7d");
   const [perfOpen, setPerfOpen] = useState(false);
   const router = useRouter();
 
@@ -196,29 +250,30 @@ export default function UserDashboard() {
     return out;
   }, [logData]);
 
-  /* weekly data for the bar chart — must be before early returns */
-  const weeklyData = useMemo(() => {
-    const todayS = stats?.last24h_sent || 0;
-    const totalS = stats?.lifetime_sent || 0;
-    const cycles = stats?.total_cycles || 1;
-    const base = todayS || Math.round(totalS / Math.max(cycles, 1));
-    return Array.from({ length: 7 }, () => Math.max(1, Math.round(base * (0.4 + Math.random() * 0.8))));
-  }, [stats?.last24h_sent, stats?.lifetime_sent, stats?.total_cycles]);
+  /* ─── real Performance series built from server buckets ─── */
+  const hourlyBuckets: HourBucket[] = stats?.last24h_buckets || [];
+  const dailyBuckets: DayBucket[] = stats?.daily_buckets || [];
 
-  /* period-aware series for the mobile Performance chart (deterministic) */
-  const perfConfig = useMemo(() => {
-    const todayS = stats?.last24h_sent || 0;
-    const totalS = stats?.lifetime_sent || 0;
-    const cycles = stats?.total_cycles || 1;
-    const base = todayS || Math.round(totalS / Math.max(cycles, 1)) || 5;
-    const gen = (b: number, n: number, seed: number) =>
-      Array.from({ length: n }, (_, i) => Math.max(1, Math.round(b * (0.35 + Math.abs(Math.sin(seed + i * 1.7)) * 0.6))));
-    if (perfPeriod === "today")
-      return { data: gen(Math.max(1, Math.round(base / 4)), 6, 11), labels: ["12a", "4a", "8a", "12p", "4p", "8p"], title: "Today" };
-    if (perfPeriod === "month")
-      return { data: gen(base * 5, 5, 23), labels: ["W1", "W2", "W3", "W4", "W5"], title: "This Month" };
-    return { data: gen(base, 7, 37), labels: ["M", "T", "W", "T", "F", "S", "S"], title: "This Week" };
-  }, [perfPeriod, stats?.last24h_sent, stats?.lifetime_sent, stats?.total_cycles]);
+  const perf = useMemo(() => {
+    if (perfPeriod === "30d") return { mode: "heatmap" as const, cells: buildHeatmap(dailyBuckets, 30) };
+    if (perfPeriod === "7d") return { mode: "bars" as const, ...buildDailySeries(dailyBuckets, 7) };
+    const hours = perfPeriod === "1h" ? 1 : perfPeriod === "6h" ? 6 : 24;
+    return { mode: "bars" as const, ...buildHourlySeries(hourlyBuckets, hours) };
+  }, [perfPeriod, hourlyBuckets, dailyBuckets]);
+
+  /* exact sent/failed totals for the selected range */
+  const rangeTotals = useMemo(() => {
+    if (perfPeriod === "7d" || perfPeriod === "30d") {
+      const days = perfPeriod === "7d" ? 7 : 30;
+      const cutoff = Math.floor(Date.now() / 86400000) - days + 1;
+      return dailyBuckets.reduce((a, b) => (b.day_ts >= cutoff ? { sent: a.sent + (b.sent || 0), failed: a.failed + (b.failed || 0) } : a), { sent: 0, failed: 0 });
+    }
+    const hours = perfPeriod === "1h" ? 1 : perfPeriod === "6h" ? 6 : 24;
+    const cutoff = Math.floor(Date.now() / 3600000) - hours + 1;
+    return hourlyBuckets.reduce((a, b) => (b.hour_ts >= cutoff ? { sent: a.sent + (b.sent || 0), failed: a.failed + (b.failed || 0) } : a), { sent: 0, failed: 0 });
+  }, [perfPeriod, hourlyBuckets, dailyBuckets]);
+
+  const perfTitle = PERF_RANGES.find(r => r.val === perfPeriod)?.label || "";
 
   /* ─── loading / error ─── */
   if (isLoading) return (
@@ -611,50 +666,41 @@ export default function UserDashboard() {
               <span className="text-[15px] font-bold text-white truncate">Performance</span>
             </div>
             {/* working period dropdown */}
-            <div className="relative shrink-0">
-              <button onClick={() => setPerfOpen(v => !v)}
-                className="flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5 text-[12px] text-dark-200 font-medium">
-                <CalendarClock className="h-3.5 w-3.5 text-dark-400" />
-                {perfConfig.title}
-                <ChevronDown className={`h-3.5 w-3.5 text-dark-400 transition-transform ${perfOpen ? "rotate-180" : ""}`} />
-              </button>
-              {perfOpen && (
-                <>
-                  <div className="fixed inset-0 z-10" onClick={() => setPerfOpen(false)} />
-                  <div className="absolute right-0 top-full mt-1.5 z-20 w-32 rounded-xl border border-white/[0.08] bg-dark-900 shadow-xl overflow-hidden">
-                    {([["today", "Today"], ["week", "This Week"], ["month", "This Month"]] as const).map(([val, lbl]) => (
-                      <button key={val} onClick={() => { setPerfPeriod(val); setPerfOpen(false); }}
-                        className={`w-full text-left px-3 py-2 text-[12px] font-medium transition-colors ${
-                          perfPeriod === val ? "bg-accent/15 text-accent" : "text-dark-300 hover:bg-white/[0.04]"
-                        }`}>
-                        {lbl}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
+            <PerfRangeDropdown period={perfPeriod} open={perfOpen} setOpen={setPerfOpen} setPeriod={setPerfPeriod} title={perfTitle} />
           </div>
 
-          <div className="flex items-center gap-3">
-            <div className="relative shrink-0">
-              <CircleProgress value={successRate} size={110} stroke={9}
-                color={successRate >= 70 ? "success" : successRate >= 40 ? "warning" : "danger"} />
-              <div className="absolute inset-0 flex flex-col items-center justify-center">
-                <span className="text-[28px] font-bold text-white tracking-tighter leading-none">
-                  <AnimatedNumber value={successRate} /><span className="text-base text-dark-300">%</span>
-                </span>
-                <span className="text-[9px] text-dark-500 font-semibold mt-0.5">Success Rate</span>
+          {perf.mode === "heatmap" ? (
+            <div className="flex items-center justify-center gap-4">
+              <div className="relative shrink-0">
+                <CircleProgress value={successRate} size={92} stroke={8}
+                  color={successRate >= 70 ? "success" : successRate >= 40 ? "warning" : "danger"} />
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-[22px] font-bold text-white leading-none"><AnimatedNumber value={successRate} /><span className="text-sm text-dark-300">%</span></span>
+                </div>
+              </div>
+              <ContribHeatmap cells={perf.cells} />
+            </div>
+          ) : (
+            <div className="flex items-center gap-3">
+              <div className="relative shrink-0">
+                <CircleProgress value={successRate} size={110} stroke={9}
+                  color={successRate >= 70 ? "success" : successRate >= 40 ? "warning" : "danger"} />
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-[28px] font-bold text-white tracking-tighter leading-none">
+                    <AnimatedNumber value={successRate} /><span className="text-base text-dark-300">%</span>
+                  </span>
+                  <span className="text-[9px] text-dark-500 font-semibold mt-0.5">Success Rate</span>
+                </div>
+              </div>
+              <div className="flex-1 min-w-0">
+                <PerfBars values={perf.values} labels={perf.labels} />
               </div>
             </div>
-            <div className="flex-1 min-w-0">
-              <PerfBars data={perfConfig.data} labels={perfConfig.labels} />
-            </div>
-          </div>
+          )}
 
           <div className="space-y-2.5 mt-4">
-            <PerfStatBar label="Sent" value={totalSent} max={total || 1} color="bg-accent" />
-            <PerfStatBar label="Failed" value={totalFailed} max={total || 1} color="bg-danger" />
+            <PerfStatBar label="Sent" value={rangeTotals.sent} max={rangeTotals.sent + rangeTotals.failed || 1} color="bg-accent" />
+            <PerfStatBar label="Failed" value={rangeTotals.failed} max={rangeTotals.sent + rangeTotals.failed || 1} color="bg-danger" />
           </div>
         </div>
 
@@ -806,53 +852,44 @@ export default function UserDashboard() {
               <TrendingUp className="h-5 w-5 text-accent" />
               <span className="text-[15px] font-bold text-white">Performance</span>
             </div>
-            {/* working period dropdown */}
-            <div className="relative">
-              <button onClick={() => setPerfOpen(v => !v)}
-                className="flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-1.5 text-[12px] text-dark-200 font-medium hover:bg-white/[0.05]">
-                <CalendarClock className="h-3.5 w-3.5 text-dark-400" />
-                {perfConfig.title}
-                <ChevronDown className={`h-3.5 w-3.5 text-dark-400 transition-transform ${perfOpen ? "rotate-180" : ""}`} />
-              </button>
-              {perfOpen && (
-                <>
-                  <div className="fixed inset-0 z-10" onClick={() => setPerfOpen(false)} />
-                  <div className="absolute right-0 top-full mt-1.5 z-20 w-36 rounded-xl border border-white/[0.08] bg-dark-900 shadow-xl overflow-hidden">
-                    {([["today", "Today"], ["week", "This Week"], ["month", "This Month"]] as const).map(([val, lbl]) => (
-                      <button key={val} onClick={() => { setPerfPeriod(val); setPerfOpen(false); }}
-                        className={`w-full text-left px-3 py-2 text-[12px] font-medium transition-colors ${
-                          perfPeriod === val ? "bg-accent/15 text-accent" : "text-dark-300 hover:bg-white/[0.04]"
-                        }`}>
-                        {lbl}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
+            {/* working range dropdown */}
+            <PerfRangeDropdown period={perfPeriod} open={perfOpen} setOpen={setPerfOpen} setPeriod={setPerfPeriod} title={perfTitle} wide />
           </div>
 
-          {/* ring + bar chart side by side */}
-          <div className="flex-1 flex items-center gap-4 py-2">
-            <div className="relative shrink-0">
-              <CircleProgress value={successRate} size={140} stroke={10}
-                color={successRate >= 70 ? "success" : successRate >= 40 ? "warning" : "danger"} />
-              <div className="absolute inset-0 flex flex-col items-center justify-center">
-                <span className="text-[34px] font-bold text-white tracking-tighter leading-none">
-                  <AnimatedNumber value={successRate} /><span className="text-lg text-dark-300">%</span>
-                </span>
-                <span className="text-[10px] text-dark-500 font-semibold mt-1">Success Rate</span>
+          {perf.mode === "heatmap" ? (
+            <div className="flex-1 flex flex-col items-center justify-center gap-4 py-2">
+              <div className="relative shrink-0">
+                <CircleProgress value={successRate} size={120} stroke={9}
+                  color={successRate >= 70 ? "success" : successRate >= 40 ? "warning" : "danger"} />
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-[28px] font-bold text-white tracking-tighter leading-none"><AnimatedNumber value={successRate} /><span className="text-base text-dark-300">%</span></span>
+                  <span className="text-[10px] text-dark-500 font-semibold mt-1">Success Rate</span>
+                </div>
+              </div>
+              <ContribHeatmap cells={perf.cells} big />
+            </div>
+          ) : (
+            <div className="flex-1 flex items-center gap-4 py-2">
+              <div className="relative shrink-0">
+                <CircleProgress value={successRate} size={140} stroke={10}
+                  color={successRate >= 70 ? "success" : successRate >= 40 ? "warning" : "danger"} />
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-[34px] font-bold text-white tracking-tighter leading-none">
+                    <AnimatedNumber value={successRate} /><span className="text-lg text-dark-300">%</span>
+                  </span>
+                  <span className="text-[10px] text-dark-500 font-semibold mt-1">Success Rate</span>
+                </div>
+              </div>
+              <div className="flex-1 min-w-0">
+                <PerfBars values={perf.values} labels={perf.labels} height={150} />
               </div>
             </div>
-            <div className="flex-1 min-w-0">
-              <PerfBars data={perfConfig.data} labels={perfConfig.labels} height={150} />
-            </div>
-          </div>
+          )}
 
           {/* Sent / Failed strips */}
           <div className="space-y-3 mt-3 pt-4 border-t border-white/[0.04]">
-            <PerfStatBar label="Sent" value={totalSent} max={total || 1} color="bg-accent" />
-            <PerfStatBar label="Failed" value={totalFailed} max={total || 1} color="bg-danger" />
+            <PerfStatBar label="Sent" value={rangeTotals.sent} max={rangeTotals.sent + rangeTotals.failed || 1} color="bg-accent" />
+            <PerfStatBar label="Failed" value={rangeTotals.failed} max={rangeTotals.sent + rangeTotals.failed || 1} color="bg-danger" />
           </div>
         </div>
 
@@ -1140,29 +1177,110 @@ function MobileStatCard({ icon, accent, label, value, footer, highlight }: {
 
 /* ═══════════════════ MOBILE PERF BARS ═══════════════════ */
 
-function PerfBars({ data, labels, height = 104 }: { data: number[]; labels: string[]; height?: number }) {
-  const max = Math.max(...data, 1);
-  const ticks = [100, 75, 50, 25, 0];
+function PerfBars({ values, labels, height = 104 }: { values: number[]; labels: string[]; height?: number }) {
+  const max = Math.max(...values, 1);
+  // numeric y-axis derived from the real max (not a fake percentage scale)
+  const ticks = [max, Math.round(max * 0.75), Math.round(max * 0.5), Math.round(max * 0.25), 0];
+  const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
+  // thin out x labels when there are many bars (e.g. 24h) so they stay readable
+  const step = values.length > 12 ? Math.ceil(values.length / 8) : 1;
+  const allZero = values.every(v => v === 0);
   return (
     <div className="flex gap-1.5">
       <div className="flex flex-col justify-between shrink-0" style={{ height }}>
-        {ticks.map(t => <span key={t} className="text-[8px] text-dark-600 leading-none tabular-nums">{t}%</span>)}
+        {ticks.map((t, i) => <span key={i} className="text-[8px] text-dark-600 leading-none tabular-nums">{fmt(t)}</span>)}
       </div>
       <div className="flex-1 min-w-0">
         <div className="relative" style={{ height }}>
           {ticks.map((t, i) => (
-            <div key={t} className="absolute left-0 right-0 border-t border-dashed border-white/[0.06]" style={{ top: `${i * 25}%` }} />
+            <div key={i} className="absolute left-0 right-0 border-t border-dashed border-white/[0.06]" style={{ top: `${i * 25}%` }} />
           ))}
+          {allZero && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <span className="text-[10px] text-dark-600 font-medium">No activity in this range</span>
+            </div>
+          )}
           <div className="absolute inset-0 flex items-end justify-between gap-1">
-            {data.map((v, i) => (
+            {values.map((v, i) => (
               <div key={i} className="flex-1 rounded-t-[3px] bg-gradient-to-t from-accent-600 to-accent-400 transition-all duration-700 ease-out"
-                style={{ height: `${Math.max((v / max) * 100, 4)}%`, transitionDelay: `${i * 50}ms` }} />
+                style={{ height: `${v > 0 ? Math.max((v / max) * 100, 4) : 0}%`, transitionDelay: `${i * 40}ms` }} />
             ))}
           </div>
         </div>
         <div className="flex justify-between gap-1 mt-1.5">
-          {labels.map((d, i) => <span key={i} className="flex-1 text-center text-[9px] text-dark-500 font-medium">{d}</span>)}
+          {labels.map((d, i) => <span key={i} className="flex-1 text-center text-[9px] text-dark-500 font-medium truncate">{i % step === 0 ? d : ""}</span>)}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════ PERF RANGE DROPDOWN ═══════════════════ */
+
+function PerfRangeDropdown({ period, open, setOpen, setPeriod, title, wide }: {
+  period: PerfRange; open: boolean; setOpen: (v: boolean | ((p: boolean) => boolean)) => void;
+  setPeriod: (v: PerfRange) => void; title: string; wide?: boolean;
+}) {
+  return (
+    <div className="relative shrink-0">
+      <button onClick={() => setOpen(v => !v)}
+        className={`flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] text-[12px] text-dark-200 font-medium hover:bg-white/[0.05] ${wide ? "px-3 py-1.5" : "px-2.5 py-1.5"}`}>
+        <CalendarClock className="h-3.5 w-3.5 text-dark-400" />
+        {title}
+        <ChevronDown className={`h-3.5 w-3.5 text-dark-400 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full mt-1.5 z-20 w-36 rounded-xl border border-white/[0.08] bg-dark-900 shadow-xl overflow-hidden">
+            {PERF_RANGES.map(({ val, label }) => (
+              <button key={val} onClick={() => { setPeriod(val); setOpen(false); }}
+                className={`w-full text-left px-3 py-2 text-[12px] font-medium transition-colors ${
+                  period === val ? "bg-accent/15 text-accent" : "text-dark-300 hover:bg-white/[0.04]"
+                }`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════ GITHUB-STYLE HEATMAP ═══════════════════ */
+
+function ContribHeatmap({ cells, big }: { cells: { date: Date; sent: number; failed: number; value: number }[]; big?: boolean }) {
+  const max = Math.max(1, ...cells.map(c => c.value));
+  const level = (v: number) => (v === 0 ? 0 : v / max > 0.66 ? 4 : v / max > 0.33 ? 3 : v / max > 0.1 ? 2 : 1);
+  const colors = ["bg-white/[0.05]", "bg-success/30", "bg-success/50", "bg-success/75", "bg-success"];
+  const sz = big ? "h-4 w-4" : "h-3.5 w-3.5";
+  const gap = big ? "gap-[4px]" : "gap-[3px]";
+  // pad the first column so the first day lands on its real weekday row (Sun=0 … Sat=6)
+  const first = cells[0]?.date.getDay() ?? 0;
+  const padded: (typeof cells[number] | null)[] = [...Array(first).fill(null), ...cells];
+  const cols: (typeof cells[number] | null)[][] = [];
+  for (let i = 0; i < padded.length; i += 7) cols.push(padded.slice(i, i + 7));
+  return (
+    <div>
+      <div className={`flex ${gap}`}>
+        {cols.map((col, ci) => (
+          <div key={ci} className={`flex flex-col ${gap}`}>
+            {Array.from({ length: 7 }).map((_, ri) => {
+              const cell = col[ri];
+              if (!cell) return <div key={ri} className={`${sz} rounded-[3px] bg-transparent`} />;
+              return (
+                <div key={ri} className={`${sz} rounded-[3px] ${colors[level(cell.value)]}`}
+                  title={`${cell.date.toLocaleDateString([], { month: "short", day: "numeric" })} — ${cell.sent} sent, ${cell.failed} failed`} />
+              );
+            })}
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center justify-end gap-1 mt-2 text-[9px] text-dark-500">
+        <span>Less</span>
+        {colors.map((c, i) => <span key={i} className={`${big ? "h-3 w-3" : "h-2.5 w-2.5"} rounded-[2px] ${c}`} />)}
+        <span>More</span>
       </div>
     </div>
   );
