@@ -37,7 +37,16 @@ SHOP_BOT_TOKEN = (os.getenv("SHOP_BOT_TOKEN", "") or "").strip()
 # Support: prefer SUPPORT_CHAT_ID (opens direct chat via tg://user?id=). Fallback: SUPPORT_USER_ID / SUPPORT_ID.
 SUPPORT_CHAT_ID = int(os.getenv("SUPPORT_CHAT_ID", "0") or "0")
 SUPPORT_USER_ID = int(os.getenv("SUPPORT_USER_ID", "0") or os.getenv("SUPPORT_ID", "0") or "0")
-WEBSITE_URL = (os.getenv("WEBSITE_URL", "") or "").strip()
+# Public site URL (used for portal links + the Telegram Mini App dashboard button).
+# Falls back to the frontend's NEXTAUTH_URL / NEXT_PUBLIC_SITE_URL when present in
+# the backend environment, so a single public URL can serve both. Note: the mini
+# app button requires this to be a public HTTPS URL (Telegram rejects http/localhost).
+WEBSITE_URL = (
+    os.getenv("WEBSITE_URL", "")
+    or os.getenv("NEXTAUTH_URL", "")
+    or os.getenv("NEXT_PUBLIC_SITE_URL", "")
+    or ""
+).strip()
 NOWPAYMENTS_API_KEY = (os.getenv("NOWPAYMENTS_API_KEY", "") or "").strip()
 NOWPAYMENTS_BASE_URL = (os.getenv("NOWPAYMENTS_BASE_URL", "https://api.nowpayments.io/v1") or "https://api.nowpayments.io/v1").rstrip("/")
 # IPN/webhook secret (NOWPayments dashboard → Store settings → IPN). Required for the webhook.
