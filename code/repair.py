@@ -546,7 +546,16 @@ async def repair_fix_bot_token(
     from .users import _stop_posting, create_user_bot, disconnect_and_remove_controller_bot
     await _stop_posting(bot_token)
     await asyncio.sleep(1)
+    # Tears down the old controller bot AND removes its dashboard mini app button.
     await disconnect_and_remove_controller_bot(bot_token)
+    # Retire the old bot: rename it so it no longer looks like an active AdBot.
+    try:
+        from .miniapp import set_bot_name_not_in_use
+        await set_bot_name_not_in_use(bot_token)
+    except Exception as e:
+        logger.warning("Fix Bot Token: could not rename old bot to '%s': %s", "NOT IN USE", e)
+    # New controller bot activates via create_user_bot, which re-links the mini app
+    # (menu button) to the same dashboard using the bot's existing web_token.
     asyncio.create_task(create_user_bot(new_token.strip()))
 
     # Set new bot's name/photo/bio to match the standard AdBot profile (same as at creation)

@@ -7,6 +7,7 @@ import queue
 import random
 import re
 import shutil
+import string
 import tempfile
 import threading
 import time
@@ -4095,9 +4096,52 @@ async def await_all_pending_stop_cleanup() -> None:
         pass
 
 
+def _ensure_web_token(bot_token: str) -> str:
+    """Return the bot's web access code, generating and persisting one if missing.
+
+    The mini app dashboard URL is built from this token, so every activated bot
+    needs one for its menu button to work."""
+    cfg = _get_cfg(bot_token) or {}
+    wt = (cfg.get("web_token") or "").strip()
+    if wt:
+        return wt
+    new_wt = "".join(random.choices(string.ascii_letters + string.digits, k=8))
+
+    def _set(c: dict) -> None:
+        if not (c.get("web_token") or "").strip():
+            c["web_token"] = new_wt
+
+    _save_bot_config(bot_token, _set)
+    # Re-read in case another writer set one concurrently.
+    return ((_get_cfg(bot_token) or {}).get("web_token") or new_wt).strip()
+
+
+def _link_dashboard_miniapp(bot_token: str) -> None:
+    """Ensure a web_token exists and point the bot's menu button at the dashboard.
+
+    Fire-and-forget: schedules the Bot API call on the running loop so bot
+    startup is never blocked by network latency."""
+    try:
+        web_token = _ensure_web_token(bot_token)
+    except Exception as e:
+        logger.debug("Mini app web_token ensure failed for %s…: %s", bot_token[:10], e)
+        web_token = ((_get_cfg(bot_token) or {}).get("web_token") or "").strip()
+    if not web_token:
+        return
+    from .miniapp import set_menu_button_webapp
+    asyncio.create_task(set_menu_button_webapp(bot_token, web_token))
+
+
 async def disconnect_and_remove_controller_bot(bot_token: str) -> None:
     """Disconnect the controller (user) bot for this token, remove from BOT_CLIENTS and PTB cache, unregister from shutdown,
     and delete its session file(s) so the same token can be reused without 'session already had an authorized user' or DB lock."""
+    # Retire the mini app: remove the dashboard Web App button from this (now
+    # abandoned) bot. Covers delete, expire, and the old bot on token replace.
+    try:
+        from .miniapp import reset_menu_button
+        await reset_menu_button(bot_token)
+    except Exception as e:
+        logger.debug("Could not reset menu button for %s…: %s", bot_token[:10], e)
     client = BOT_CLIENTS.pop(bot_token, None)
     bot_ptb.remove_ptb_bot(bot_token)
     if client is not None:
@@ -6698,6 +6742,13 @@ async def create_user_bot(bot_token: str) -> None:
         raise
     BOT_CLIENTS[bot_token] = client
     logger.info("User bot running: %s", cfg.get("name") or bot_token[:20])
+    # Link this bot's chat menu button to the user's web dashboard (Telegram Mini App).
+    # Runs for every activation (create / token-replace / crash-recovery / boot), so it
+    # is self-healing and keeps the mini app pointed at the current bot. Fire-and-forget.
+    try:
+        _link_dashboard_miniapp(bot_token)
+    except Exception as e:
+        logger.debug("Mini app link scheduling failed for %s…: %s", bot_token[:10], e)
     try:
         await client.run_until_disconnected()
     finally:
