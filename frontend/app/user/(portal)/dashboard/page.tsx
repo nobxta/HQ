@@ -1,5 +1,5 @@
 "use client";
-import { usePortalBot, usePortalStats, usePortalLogs } from "@/lib/hooks/usePortal";
+import { usePortalBot, usePortalStats, usePortalLogs, usePortalAnalytics } from "@/lib/hooks/usePortal";
 import { getPortalSession } from "@/lib/portal-api";
 import portalApi from "@/lib/portal-api";
 import Modal from "@/components/ui/Modal";
@@ -148,8 +148,7 @@ function CircleProgress({ value, size = 120, stroke = 8, color = "accent", delay
 /* ──────────────── Performance ranges + series builders ──────────────── */
 
 type PerfRange = "1h" | "6h" | "24h" | "7d" | "30d";
-type HourBucket = { hour_ts: number; sent: number; failed: number };
-type DayBucket = { day_ts: number; sent: number; failed: number };
+type AnalyticsPoint = { ts: number; sent: number; failed: number };
 
 const PERF_RANGES: { val: PerfRange; label: string }[] = [
   { val: "1h", label: "Last 1 hour" },
@@ -159,44 +158,12 @@ const PERF_RANGES: { val: PerfRange; label: string }[] = [
   { val: "30d", label: "Last 30 days" },
 ];
 
-/** Bars from hourly buckets — one bar per hour, real clock labels. */
-function buildHourlySeries(buckets: HourBucket[], hours: number) {
-  const nowHour = Math.floor(Date.now() / 3600000);
-  const map = new Map(buckets.map(b => [b.hour_ts, b]));
-  const values: number[] = [], labels: string[] = [];
-  for (let i = hours - 1; i >= 0; i--) {
-    const h = nowHour - i;
-    values.push(map.get(h)?.sent || 0);
-    labels.push(new Date(h * 3600000).toLocaleTimeString([], { hour: "numeric" }));
-  }
-  return { values, labels };
-}
-
-/** Bars from daily buckets — one bar per day, real weekday labels (noon-UTC → correct calendar day). */
-function buildDailySeries(buckets: DayBucket[], days: number) {
-  const nowDay = Math.floor(Date.now() / 86400000);
-  const map = new Map(buckets.map(b => [b.day_ts, b]));
-  const values: number[] = [], labels: string[] = [];
-  for (let i = days - 1; i >= 0; i--) {
-    const d = nowDay - i;
-    values.push(map.get(d)?.sent || 0);
-    labels.push(new Date(d * 86400000 + 43200000).toLocaleDateString([], { weekday: "short" }));
-  }
-  return { values, labels };
-}
-
-/** Cells for the GitHub-style heatmap — last N days each with its date + counts. */
-function buildHeatmap(buckets: DayBucket[], days: number) {
-  const nowDay = Math.floor(Date.now() / 86400000);
-  const map = new Map(buckets.map(b => [b.day_ts, b]));
-  const cells: { date: Date; sent: number; failed: number; value: number }[] = [];
-  for (let i = days - 1; i >= 0; i--) {
-    const d = nowDay - i;
-    const b = map.get(d);
-    const sent = b?.sent || 0, failed = b?.failed || 0;
-    cells.push({ date: new Date(d * 86400000 + 43200000), sent, failed, value: sent + failed });
-  }
-  return cells;
+/** Format a bucket's start timestamp (unix seconds) as a local axis label, based on bucket size.
+ *  Daily buckets are aligned to UTC midnight, so nudge to noon-UTC to pick the correct calendar day. */
+function fmtBucketLabel(ts: number, bucketSeconds: number): string {
+  if (bucketSeconds >= 86400) return new Date(ts * 1000 + 43200000).toLocaleDateString([], { weekday: "short" });
+  if (bucketSeconds >= 3600) return new Date(ts * 1000).toLocaleTimeString([], { hour: "numeric" });
+  return new Date(ts * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 /* ═══════════════════════════ DASHBOARD ═══════════════════════════ */
@@ -205,6 +172,8 @@ export default function UserDashboard() {
   const { data: bot, isLoading, mutate } = usePortalBot();
   const { data: stats } = usePortalStats();
   const { data: logData } = usePortalLogs(50);
+  const [perfPeriod, setPerfPeriod] = useState<PerfRange>("7d");
+  const { data: analytics } = usePortalAnalytics(perfPeriod);
   const session = getPortalSession();
   const [actionLoading, setActionLoading] = useState("");
   const [controlSteps, setControlSteps] = useState<ControlStep[]>([]);
@@ -217,7 +186,6 @@ export default function UserDashboard() {
   const [preStartCheck, setPreStartCheck] = useState<PreStartCheck | null>(null);
   const [showPreStart, setShowPreStart] = useState(false);
   const [preStartLoading, setPreStartLoading] = useState(false);
-  const [perfPeriod, setPerfPeriod] = useState<PerfRange>("7d");
   const [perfOpen, setPerfOpen] = useState(false);
   const router = useRouter();
 
@@ -250,29 +218,27 @@ export default function UserDashboard() {
     return out;
   }, [logData]);
 
-  /* ─── real Performance series built from server buckets ─── */
-  const hourlyBuckets: HourBucket[] = stats?.last24h_buckets || [];
-  const dailyBuckets: DayBucket[] = stats?.daily_buckets || [];
+  /* ─── real Performance series from the log-derived analytics endpoint ─── */
+  const perfPoints: AnalyticsPoint[] = analytics?.points || [];
+  const bucketSeconds: number = analytics?.bucket_seconds || 3600;
 
   const perf = useMemo(() => {
-    if (perfPeriod === "30d") return { mode: "heatmap" as const, cells: buildHeatmap(dailyBuckets, 30) };
-    if (perfPeriod === "7d") return { mode: "bars" as const, ...buildDailySeries(dailyBuckets, 7) };
-    const hours = perfPeriod === "1h" ? 1 : perfPeriod === "6h" ? 6 : 24;
-    return { mode: "bars" as const, ...buildHourlySeries(hourlyBuckets, hours) };
-  }, [perfPeriod, hourlyBuckets, dailyBuckets]);
-
-  /* exact sent/failed totals for the selected range */
-  const rangeTotals = useMemo(() => {
-    if (perfPeriod === "7d" || perfPeriod === "30d") {
-      const days = perfPeriod === "7d" ? 7 : 30;
-      const cutoff = Math.floor(Date.now() / 86400000) - days + 1;
-      return dailyBuckets.reduce((a, b) => (b.day_ts >= cutoff ? { sent: a.sent + (b.sent || 0), failed: a.failed + (b.failed || 0) } : a), { sent: 0, failed: 0 });
+    if (perfPeriod === "30d") {
+      const cells = perfPoints.map(p => {
+        const sent = p.sent || 0, failed = p.failed || 0;
+        return { date: new Date(p.ts * 1000 + 43200000), sent, failed, value: sent + failed };
+      });
+      return { mode: "heatmap" as const, cells };
     }
-    const hours = perfPeriod === "1h" ? 1 : perfPeriod === "6h" ? 6 : 24;
-    const cutoff = Math.floor(Date.now() / 3600000) - hours + 1;
-    return hourlyBuckets.reduce((a, b) => (b.hour_ts >= cutoff ? { sent: a.sent + (b.sent || 0), failed: a.failed + (b.failed || 0) } : a), { sent: 0, failed: 0 });
-  }, [perfPeriod, hourlyBuckets, dailyBuckets]);
+    return {
+      mode: "bars" as const,
+      values: perfPoints.map(p => p.sent || 0),
+      labels: perfPoints.map(p => fmtBucketLabel(p.ts, bucketSeconds)),
+    };
+  }, [perfPeriod, perfPoints, bucketSeconds]);
 
+  /* exact sent/failed totals for the selected range (from the same log parse) */
+  const rangeTotals = { sent: analytics?.range_sent || 0, failed: analytics?.range_failed || 0 };
   const perfTitle = PERF_RANGES.find(r => r.val === perfPeriod)?.label || "";
 
   /* ─── loading / error ─── */
@@ -361,8 +327,9 @@ export default function UserDashboard() {
   const totalFailed = stats?.lifetime_failed || 0;
   const total = totalSent + totalFailed;
   const successRate = total > 0 ? Math.round((totalSent / total) * 100) : 0;
-  const todaySent = stats?.last24h_sent || 0;
-  const todayFailed = stats?.last24h_failed || 0;
+  // "today" = last 24h, from the log-derived analytics (reliable) with stats as fallback.
+  const todaySent = analytics?.summary?.h24?.sent ?? stats?.last24h_sent ?? 0;
+  const todayFailed = analytics?.summary?.h24?.failed ?? stats?.last24h_failed ?? 0;
   const todayTotal = todaySent + todayFailed;
 
   const validTill = bot.valid_till ? parseFlexibleDate(bot.valid_till) : null;

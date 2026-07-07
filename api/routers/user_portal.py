@@ -388,6 +388,19 @@ async def portal_get_stats(bot_name: str, telegram_id: int = Query(...)):
     return serialize_stats(stats)
 
 
+@router.get("/bot/{bot_name}/analytics")
+async def portal_get_analytics(
+    bot_name: str,
+    telegram_id: int = Query(...),
+    range: str = Query("7d"),
+):
+    """Time-bucketed posting analytics parsed from the durable log file (source of truth)."""
+    token, cfg = await _get_user_bot(telegram_id, bot_name)
+    name = cfg.get("name", bot_name)
+    from api.services.log_stats import compute_analytics
+    return await asyncio.to_thread(compute_analytics, name, range)
+
+
 @router.get("/bot/{bot_name}/logs")
 async def portal_get_logs(bot_name: str, telegram_id: int = Query(...), lines: int = Query(100, ge=1, le=20000)):
     await _get_user_bot(telegram_id, bot_name)

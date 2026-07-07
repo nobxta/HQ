@@ -37,6 +37,14 @@ export function usePortalLogs(lines = 100) {
   return useSWR(key, fetcher, { refreshInterval: 3000, shouldRetryOnError: false });
 }
 
+// Time-bucketed posting analytics parsed from the log file (real source of truth).
+// range ∈ "1h" | "6h" | "24h" | "7d" | "30d".
+export function usePortalAnalytics(range: string) {
+  const s = validSession(useSession());
+  const key = s ? `/api/portal/bot/${encodeURIComponent(s.bot_name)}/analytics?telegram_id=${s.telegram_id}&range=${range}` : null;
+  return useSWR(key, fetcher, { refreshInterval: 15000, shouldRetryOnError: false });
+}
+
 export function usePortalOrders() {
   const s = validSession(useSession());
   const key = s ? `/api/portal/bot/${encodeURIComponent(s.bot_name)}/orders?telegram_id=${s.telegram_id}` : null;
