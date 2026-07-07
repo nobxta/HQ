@@ -129,6 +129,15 @@ def _skip_group_errors() -> tuple[Type[Exception], ...]:
         getattr(tl_errors, "ChannelForumMissingError", None),
         getattr(tl_errors, "TopicDeletedError", None),
         getattr(tl_errors, "MessageThreadInvalidError", None),
+        # Typed "can't write here" errors (present in Telethon 1.43+). Previously these were
+        # only caught by fragile string matching in _PERMANENT_ERROR_PATTERNS; matching the
+        # class makes dead-group skipping wording-independent (paid posts, media/plain
+        # restricted, group restricted). is_permanent_error() also parks them on cooldown.
+        getattr(tl_errors, "ChatSendPlainForbiddenError", None),
+        getattr(tl_errors, "ChatSendMediaForbiddenError", None),
+        getattr(tl_errors, "ChatSendPhotosForbiddenError", None),
+        getattr(tl_errors, "ChatSendVideosForbiddenError", None),
+        getattr(tl_errors, "ChatRestrictedError", None),
     ]
     return tuple(e for e in errs if e is not None)
 

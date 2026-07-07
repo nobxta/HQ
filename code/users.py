@@ -2022,6 +2022,13 @@ async def _async_session_loop(
             expected_sec=None,  # posting runs until the bot is stopped
             receive_updates=True,  # required for DM auto-reply handler to receive NewMessage events
             catch_up=False,
+            # Hand ALL FloodWait/SlowMode to our own handler instead of letting Telethon
+            # silently asyncio.sleep() them inside send_message. The default (60) makes a
+            # single group's short slowmode freeze the whole account for up to a minute with
+            # no log, and bypasses the per-group group_cooldowns skip logic below. With 0,
+            # every flood raises immediately -> we cool down just that group, skip it, and keep
+            # posting to the rest (no account-wide pause, no lost posts, floods now logged).
+            flood_sleep_threshold=0,
         )
         # Starter: even-spread phase = ordinal * (cycle/N) so accounts post at different times (persisted
         # every cycle by the anchor phase). Enterprise: first half at 0, second half after 5 min.
