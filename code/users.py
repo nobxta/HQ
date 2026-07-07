@@ -4132,6 +4132,44 @@ def _link_dashboard_miniapp(bot_token: str) -> None:
     asyncio.create_task(set_menu_button_webapp(bot_token, web_token))
 
 
+# Interval for the mini app self-healing sweep (every 24h).
+MINIAPP_SWEEP_INTERVAL_SEC = 24 * 3600
+
+
+async def run_miniapp_menu_button_sweep() -> None:
+    """Every 24h, ensure every hosted bot's Telegram Mini App (dashboard menu
+    button) is set to the correct URL.
+
+    Startup already links each bot via create_user_bot; this catches bots that
+    were created before the mini app existed, had their button cleared, or whose
+    web_token was (re)generated. Idempotent and skipped entirely when no public
+    HTTPS site is configured."""
+    from .miniapp import dashboard_configured, set_menu_button_webapp
+
+    await asyncio.sleep(300)  # let startup settle before the first sweep
+    while True:
+        try:
+            if not dashboard_configured():
+                # No public https URL → nothing the mini app can point at.
+                await asyncio.sleep(MINIAPP_SWEEP_INTERVAL_SEC)
+                continue
+            tokens = list((load_adbot().get("bots") or {}).keys())
+            linked = 0
+            for token in tokens:
+                try:
+                    web_token = _ensure_web_token(token)
+                    if web_token and await set_menu_button_webapp(token, web_token):
+                        linked += 1
+                except Exception as e:
+                    logger.debug("Mini app sweep failed for %s…: %s", token[:10], e)
+                await asyncio.sleep(1)  # gentle pacing to avoid Bot API rate limits
+            if tokens:
+                logger.info("Mini app sweep: %d/%d bot(s) linked to dashboard", linked, len(tokens))
+        except Exception as e:
+            logger.warning("Mini app sweep loop error: %s", e)
+        await asyncio.sleep(MINIAPP_SWEEP_INTERVAL_SEC)
+
+
 async def disconnect_and_remove_controller_bot(bot_token: str) -> None:
     """Disconnect the controller (user) bot for this token, remove from BOT_CLIENTS and PTB cache, unregister from shutdown,
     and delete its session file(s) so the same token can be reused without 'session already had an authorized user' or DB lock."""

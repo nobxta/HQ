@@ -46,6 +46,15 @@ def build_dashboard_url(web_token: str) -> str | None:
     return f"{website}/login?token={urllib.parse.quote(token)}"
 
 
+def dashboard_configured() -> bool:
+    """True when a public HTTPS site URL is available to build mini app links.
+
+    When this is False (e.g. local dev with an http/localhost URL, or no URL at
+    all) the mini app cannot be set, so callers should skip the work entirely."""
+    website = (getattr(config, "WEBSITE_URL", "") or "").strip()
+    return website.lower().startswith("https://")
+
+
 def _bot_api_post(bot_token: str, method: str, payload: dict) -> bool:
     """POST JSON to the Telegram Bot API. Sync; safe to call from a worker thread."""
     token = (bot_token or "").strip()

@@ -277,7 +277,7 @@ async def main() -> None:
     _clean_stale_userbot_sessions()
 
     from code.utils import load_adbot, discover_local_sessions, get_shutdown_clients
-    from code.users import _stop_posting, _log_queue_consumer, run_session_health_monitor, await_all_pending_stop_cleanup, _stats_flush_loop, _drift_check_loop, _user_log_flush_loop
+    from code.users import _stop_posting, _log_queue_consumer, run_session_health_monitor, await_all_pending_stop_cleanup, _stats_flush_loop, _drift_check_loop, _user_log_flush_loop, run_miniapp_menu_button_sweep
 
     data = load_adbot()
 
@@ -350,6 +350,7 @@ async def main() -> None:
     asyncio.create_task(_worker_watchdog_loop(), name="_worker_watchdog_loop")
     asyncio.create_task(_daily_session_integrity_and_reconciliation(), name="_daily_session_integrity_and_reconciliation")
     asyncio.create_task(_periodic_spambot_health_check(), name="_periodic_spambot_health_check")
+    asyncio.create_task(run_miniapp_menu_button_sweep(), name="run_miniapp_menu_button_sweep")
     start_shop_bot_thread()
 
     async def _main_loop_job_consumer() -> None:
