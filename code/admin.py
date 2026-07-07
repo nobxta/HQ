@@ -822,6 +822,13 @@ async def _core_create_adbot_async(
             form["_result_reason"] = "insufficient_valid_sessions"
             form["_assigned_count"] = len(assigned)
             form["_required_count"] = sessions_count
+            # Return the sessions we already claimed back to the free pool. Without this
+            # they were popped out of free_sessions but never bound to a bot — leaking good
+            # accounts into limbo until the nightly integrity scan recovers them.
+            for _s in assigned:
+                _fn = _s.get("file")
+                if _fn and _fn not in adbot_data.get("free_sessions", []):
+                    adbot_data.setdefault("free_sessions", []).append(_fn)
             save_adbot(adbot_data)
             return None
         if not assigned:

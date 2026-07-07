@@ -469,7 +469,10 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
             "mode": _mode,
             "group_file": group_file,
             "plan_name": o.get("plan_name", ""),
-            "renewal_price": str(o.get("amount_usd", 0)),
+            # Renewal baseline must be the MONTHLY price, independent of whether this
+            # purchase was weekly or monthly — the renewal endpoint scales from a monthly
+            # figure. Falling back to the paid amount only if the plan has no month price.
+            "renewal_price": str(plan_obj.get("price_month") or o.get("amount_usd", 0)),
             "order_id": order_id,
             "source": "web",
             "user_id": o.get("user_id") or 0,
@@ -1108,7 +1111,8 @@ async def run_payment_reconciliation() -> int:
             "mode": (o.get("plan_mode") or "starter").strip().capitalize(),
             "group_file": group_file,
             "plan_name": (o.get("plan_name") or ""),
-            "renewal_price": str(o.get("amount_usd", 0)),
+            # Renewal baseline = monthly price (see apply_confirmed_payment note).
+            "renewal_price": str(plan_obj.get("price_month") or o.get("amount_usd", 0)),
             "order_id": order_id,
             "source": "shop",
             "user_id": o.get("user_id"),

@@ -1772,7 +1772,12 @@ def _mark_bot_dead(bot_token: str, reason: str) -> None:
 
 
 def _auto_replace_dead_session(bot_token: str, user_name: str, dead_session_file: str) -> None:
-    """Auto-pull a free session from pool to replace a dead one. Best-effort; if no free sessions, skip."""
+    """DEPRECATED / UNUSED. Silent free auto-replacement was removed on purpose: it handed a
+    paid replacement out for free and bypassed the owner's plan quota. Dead sessions now go
+    through _notify_dead_session_replacement → the owner replaces them (free within quota,
+    else paid). Kept only for reference; do not call from the runtime death path.
+
+    Auto-pull a free session from pool to replace a dead one. Best-effort; if no free sessions, skip."""
     # This runs in a sync context only; on a live event loop we can't safely do the
     # blocking pool work here, so bail early (same as before).
     try:
@@ -1834,7 +1839,12 @@ def _mark_session_dead_and_replace(bot_token: str, session_file: str, log_msg: s
     if not cfg:
         return
     name_display = cfg.get("name") or bot_token[:20]
-    sessions = [s for s in cfg.get("sessions", []) if s.get("file") != session_file]
+    old_sessions = cfg.get("sessions", [])
+    dead_real_name = next(
+        (s.get("real_name") for s in old_sessions if s.get("file") == session_file),
+        session_file,
+    )
+    sessions = [s for s in old_sessions if s.get("file") != session_file]
     cfg["sessions"] = sessions
     cfg.setdefault("session_replacements", [])
     cfg["session_replacements"].append({
@@ -1880,11 +1890,27 @@ def _mark_session_dead_and_replace(bot_token: str, session_file: str, log_msg: s
                 shutil.move(str(path), str(dead_path))
             except OSError:
                 pass
-    # Auto-replace: pull a free session from pool if available (works for both types)
-    _auto_replace_dead_session(bot_token, user_name, session_file)
     admin_msg = format_session_death_admin_message(session_file, log_msg)
     add_admin_alert("session_died", admin_msg)
     logger.warning("Session dead: %s — %s", session_file, log_msg)
+    # Do NOT silently pull a free session from the pool. That would hand out a paid
+    # replacement for free and bypass the owner's plan quota. Instead, flag the dead
+    # session for replacement and notify the owner (Replace Free / Pay $) + admin, so the
+    # user replaces it themselves through the normal flow (free within quota, else paid).
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None:
+        loop.create_task(
+            _notify_dead_session_replacement(bot_token, session_file, dead_real_name, log_msg)
+        )
+    else:
+        logger.info(
+            "[DeadSession] %s flagged; no running loop to notify owner (worker context) — "
+            "controller safety sweep / portal will surface it",
+            session_file,
+        )
 
 
 async def _connect_session_for_cycle(
@@ -1894,8 +1920,12 @@ async def _connect_session_for_cycle(
     *,
     report_heartbeat: Optional[Callable[[], None]] = None,
     report_user_log: Optional[Callable[[str], None]] = None,
-) -> bool:
-    """Connect client for this cycle (or ensure already connected). Returns True if connected and authorized, False after retries.
+    report_session_died: Optional[Callable[[str, str], None]] = None,
+) -> str:
+    """Connect client for this cycle (or ensure already connected).
+    Returns "ok" (connected + authorized), "unauth" (connected but session logged out /
+    de-authorized — dead), or "failed" (transient connect failure after retries).
+    On "unauth" it calls report_session_died so the dead session is flagged for replacement.
     Uses SESSION_CONNECT_TIMEOUT_SEC so scheduler is not blocked; sends heartbeat during connect to avoid false worker frozen."""
     for attempt in range(SESSION_RECONNECT_MAX_ATTEMPTS):
         connect_start = time.time()
@@ -1945,14 +1975,22 @@ async def _connect_session_for_cycle(
                         pass
 
             if not await client.is_user_authorized():
-                logger.warning("Session %s not authorized (attempt %s)", session_file, attempt + 1)
-                return False
+                # Connected fine but the session is logged out / de-authorized — this is a
+                # dead account, not a transient failure. Flag it for replacement (owner is
+                # notified: free within quota, else paid) instead of silently skipping it
+                # every cycle forever.
+                logger.warning("Session %s not authorized — de-authorized/logged out (attempt %s)", session_file, attempt + 1)
+                if report_user_log:
+                    report_user_log(f"[Connect] session={session_file} UNAUTHORIZED — session logged out; flagging for replacement")
+                if report_session_died:
+                    report_session_died(session_file, "UNAUTHORIZED — session logged out or de-authorized")
+                return "unauth"
             connect_end = time.time()
             duration = connect_end - connect_start
             logger.info("[Connect] session=%s connect_end duration_sec=%.2f", session_file, duration)
             if report_user_log:
                 report_user_log(f"[Connect] session={session_file} connect_end duration_sec={duration:.2f}")
-            return True
+            return "ok"
         except SessionBusyError as e:
             # Session file is held by another task (chatlist sync, health check, portal, …).
             # Report WHO holds it and how long to wait, then retry with backoff.
@@ -1978,7 +2016,7 @@ async def _connect_session_for_cycle(
             if attempt < SESSION_RECONNECT_MAX_ATTEMPTS - 1:
                 backoff = min(SESSION_RECONNECT_DELAY_SEC * (2 ** attempt), 60)
                 await asyncio.sleep(backoff)
-    return False
+    return "failed"
 
 
 async def _async_session_loop(
@@ -2074,7 +2112,8 @@ async def _async_session_loop(
                 client, session_file, bot_token,
                 report_heartbeat=report_heartbeat,
                 report_user_log=report_user_log,
-            ):
+                report_session_died=report_session_died,
+            ) == "ok":
                 session_ready.set()
                 if report_user_log:
                     report_user_log(f"[Connect] session={session_file} prewarm_ready")
@@ -2245,11 +2284,21 @@ async def _async_session_loop(
                 _is_conn = getattr(client, "is_connected", None)
                 is_connected = (_is_conn() if callable(_is_conn) else _is_conn) if _is_conn is not None else False
             if not is_connected:
-                if not await _connect_session_for_cycle(
+                _conn_status = await _connect_session_for_cycle(
                     client, session_file, bot_token,
                     report_heartbeat=report_heartbeat,
                     report_user_log=report_user_log,
-                ):
+                    report_session_died=report_session_died,
+                )
+                if _conn_status == "unauth":
+                    # Session is logged out / de-authorized (dead). It has already been
+                    # flagged for replacement + removed by the controller; stop this worker
+                    # cleanly instead of looping on a dead account forever.
+                    logger.info("Session %s stopping (unauthorized/de-authorized)", session_file)
+                    if report_audit_log:
+                        report_audit_log(session_file, "SESSION_STOPPED", reason="unauthorized")
+                    return
+                if _conn_status != "ok":
                     bot_name = cfg.get("name") or bot_token[:20]
                     msg = f"AdBot {bot_name} — session {session_file} failed to connect. Will retry next cycle."
                     if report_alert:
@@ -3147,32 +3196,76 @@ async def _run_session_health_check(bot_token: str) -> None:
         )
         if not entries:
             return
-        free_entries = [e for e in entries if e.get("free_replacement")]
-        paid_entries = [e for e in entries if not e.get("free_replacement")]
-        price_per = get_session_replacement_price()
-        text, spec = _build_health_alert_content(entries, free_entries, paid_entries, price_per)
-        buttons = []
-        if free_entries:
-            buttons.append([panel_button(f"Replace Free ({len(free_entries)})", CB_REP_FREE, "log_free_available")])
-        if paid_entries:
-            total = sum(float(e.get("price_usd", 0)) for e in paid_entries)
-            buttons.append([panel_button(f"Pay ${total:.2f} & Replace", CB_REP_PAY, "log_paid")])
-        buttons.append([Button.inline("Skip / Continue Without", CB_REP_SKIP)])
-        # Send to log group (PTB, no buttons — read-only record; only the owner DM below is actionable)
-        enqueue_log(bot_token, text, entities=_health_alert_ptb_entities(spec), batchable=False)
-        # Send directly to owner via controller bot (Telethon)
-        bot_client = BOT_CLIENTS.get(bot_token)
-        if bot_client and owner_id:
-            try:
-                await bot_client.send_message(
-                    owner_id, text,
-                    formatting_entities=_health_alert_telethon_entities(spec),
-                    buttons=buttons,
-                )
-            except Exception as e:
-                logger.warning("[Replacement] Failed to send notification to owner %s: %s", owner_id, e)
+        await _send_replacement_alert(bot_token, cfg, entries)
     except Exception as e:
         logger.exception("[Replacement] Health check failed for %s: %s", bot_token[:20], e)
+
+
+async def _send_replacement_alert(bot_token: str, cfg: dict, entries: list[dict]) -> None:
+    """Send the Session Health / Replacement alert: a read-only record to the log group and
+    an actionable DM (Replace Free / Pay $ / Skip) to the owner. Shared by the SpamBot health
+    check and the runtime dead-session flow so both notify the user identically."""
+    free_entries = [e for e in entries if e.get("free_replacement")]
+    paid_entries = [e for e in entries if not e.get("free_replacement")]
+    price_per = get_session_replacement_price()
+    text, spec = _build_health_alert_content(entries, free_entries, paid_entries, price_per)
+    buttons = []
+    if free_entries:
+        buttons.append([panel_button(f"Replace Free ({len(free_entries)})", CB_REP_FREE, "log_free_available")])
+    if paid_entries:
+        total = sum(float(e.get("price_usd", 0)) for e in paid_entries)
+        buttons.append([panel_button(f"Pay ${total:.2f} & Replace", CB_REP_PAY, "log_paid")])
+    buttons.append([Button.inline("Skip / Continue Without", CB_REP_SKIP)])
+    # Send to log group (PTB, no buttons — read-only record; only the owner DM below is actionable)
+    enqueue_log(bot_token, text, entities=_health_alert_ptb_entities(spec), batchable=False)
+    # Send directly to owner via controller bot (Telethon)
+    owner_id = cfg.get("owner_id") or 0
+    bot_client = BOT_CLIENTS.get(bot_token)
+    if bot_client and owner_id:
+        try:
+            await bot_client.send_message(
+                owner_id, text,
+                formatting_entities=_health_alert_telethon_entities(spec),
+                buttons=buttons,
+            )
+        except Exception as e:
+            logger.warning("[Replacement] Failed to send notification to owner %s: %s", owner_id, e)
+
+
+async def _notify_dead_session_replacement(
+    bot_token: str, session_file: str, real_name: str, reason: str
+) -> None:
+    """A session died at runtime (banned / de-authorized / frozen). Flag it for replacement
+    and notify the owner + admin so they replace it themselves — free within their plan
+    quota, otherwise paid. We never auto-pull a free session for a dead one."""
+    try:
+        cfg = _get_cfg(bot_token)
+        if not cfg:
+            return
+        # Don't duplicate an existing open request for the same session.
+        existing = {e["session_file"] for e in get_pending_replacements_for_bot(bot_token)}
+        if session_file in existing:
+            return
+        free_remaining = get_free_replacements_remaining(cfg)
+        entries = create_replacement_request(
+            bot_token=bot_token,
+            bot_name=cfg.get("name", ""),
+            owner_id=cfg.get("owner_id") or 0,
+            sessions=[{
+                "session_file": session_file,
+                "real_name": real_name or session_file,
+                "spam_status": "DEAD",
+                "failure_rate": 1.0,
+            }],
+            # Offer the free button only if the plan still has free replacements left;
+            # otherwise it comes through as a paid ($) replacement.
+            free_count=1 if free_remaining > 0 else 0,
+        )
+        if not entries:
+            return
+        await _send_replacement_alert(bot_token, cfg, entries)
+    except Exception as e:
+        logger.warning("[DeadSession] notify/replacement-request failed for %s: %s", session_file, e)
 
 
 async def _health_check_background_loop() -> None:

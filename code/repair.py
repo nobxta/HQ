@@ -357,8 +357,11 @@ async def repair_replace_session(
         return "Config not found."
     sessions = cfg.get("sessions", [])
     idx = next((i for i, s in enumerate(sessions) if s.get("file") == old_session_file), None)
-    if idx is None:
-        return "Session not found."
+    # idx is None when the old session was already removed from the bot (e.g. a runtime
+    # death moved it to sessions/dead/ before the owner chose to replace). In that case we
+    # ADD a fresh session instead of swapping one in place, so a dead account still flows
+    # through the same free/paid replacement path.
+    add_mode = idx is None
 
     # Atomically claim a free session (removed from the pool and persisted before we
     # return) so a concurrent creation/replacement can never grab the same account.
@@ -381,25 +384,32 @@ async def repair_replace_session(
     real_name = str(info[1]) if info else new_fn
     user_id = int(info[0]) if info else 0
 
-    dest_dir = _get_session_dest_dir(status)
-    old_path = config.SESSIONS_ACTIVE / old_session_file
-    if old_path.is_file():
-        try:
-            dest_path = dest_dir / old_session_file
-            shutil.move(str(old_path), str(dest_path))
-        except Exception as e:
-            logger.warning("Move session to %s failed: %s", dest_dir, e)
+    if not add_mode:
+        # Swap-in-place: move the old (frozen/limited/unauth) session out of active/ and
+        # record it in the matching pool bucket.
+        dest_dir = _get_session_dest_dir(status)
+        old_path = config.SESSIONS_ACTIVE / old_session_file
+        if old_path.is_file():
+            try:
+                dest_path = dest_dir / old_session_file
+                shutil.move(str(old_path), str(dest_path))
+            except Exception as e:
+                logger.warning("Move session to %s failed: %s", dest_dir, e)
 
-    # Track moved session in the correct pool bucket (atomic, re-reads pool fresh).
-    _pool_bucket_for_status = {
-        SPAM_FROZEN: "frozen_sessions",
-        SPAM_TEMP_LIMITED: "limited_sessions",
-        SPAM_HARD_LIMITED: "limited_sessions",
-    }
-    dest_bucket = _pool_bucket_for_status.get(status, "unauth_sessions")
-    await asyncio.to_thread(move_session_to_bucket, old_session_file, dest_bucket)
+        # Track moved session in the correct pool bucket (atomic, re-reads pool fresh).
+        _pool_bucket_for_status = {
+            SPAM_FROZEN: "frozen_sessions",
+            SPAM_TEMP_LIMITED: "limited_sessions",
+            SPAM_HARD_LIMITED: "limited_sessions",
+        }
+        dest_bucket = _pool_bucket_for_status.get(status, "unauth_sessions")
+        await asyncio.to_thread(move_session_to_bucket, old_session_file, dest_bucket)
 
-    sessions[idx] = {"file": new_fn, "real_name": real_name, "user_id": user_id, "index": idx + 1}
+        sessions[idx] = {"file": new_fn, "real_name": real_name, "user_id": user_id, "index": idx + 1}
+    else:
+        # Add-mode: the dead session is already gone (moved to dead/ at time of death), so
+        # just append the fresh account to restore the bot to full strength.
+        sessions.append({"file": new_fn, "real_name": real_name, "user_id": user_id, "index": len(sessions) + 1})
     cfg["sessions"] = sessions
     cfg.setdefault("session_replacements", [])
     cfg["session_replacements"].append({

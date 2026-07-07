@@ -2176,7 +2176,10 @@ def _creation_progress(order: dict) -> dict:
     if status in ("creating",):
         return {"state": "creating", "percent": 70}
     if status == "pending_creation":
-        return {"state": "queued" if not order.get("bot_token") else "creating", "percent": 40}
+        # pending_creation always means "paid, waiting on capacity (sessions or token)".
+        # Show 'queued' until an actual bot username exists, so we never animate a build
+        # that hasn't started.
+        return {"state": "queued" if not order.get("created_bot_username") else "creating", "percent": 40}
     if status == "paid":
         return {"state": "starting", "percent": 15}
     if status in ("failed", "cancelled", "expired", "invoice_failed"):
@@ -2216,6 +2219,56 @@ async def portal_purchase_create(body: PurchaseCreateRequest):
     display = (ref.name or ref.telegram_username or ref.email or "").strip()
     user_id = int(ref.telegram_id) if ref.telegram_id else 0
     plan_name = plan.get("name") or body.plan_id.capitalize()
+
+    # Idempotency: if this identifiable buyer already has an OPEN, unexpired invoice for the
+    # exact same plan + billing + currency, return THAT one instead of minting a duplicate
+    # order + address. Page reloads / double-clicks otherwise spawn several live invoices.
+    if user_id:
+        try:
+            from code.shop.storage import load_orders as _load_orders
+            from datetime import datetime as _dt
+            now_dt = _dt.utcnow()
+            for _o in _load_orders():
+                if _o.get("source") != "web" or _o.get("status") not in ("payment_waiting", "confirming"):
+                    continue
+                if int(_o.get("user_id") or 0) != user_id:
+                    continue
+                if _o.get("plan_id") != body.plan_id or _o.get("plan_mode") != mode:
+                    continue
+                if int(_o.get("duration_days") or 0) != duration_days:
+                    continue
+                if (_o.get("currency") or "").upper() != (body.currency or "").upper():
+                    continue
+                if not (_o.get("pay_address") or ""):
+                    continue
+                _exp = (_o.get("invoice_expires_at") or "").strip()
+                if _exp:
+                    try:
+                        if now_dt > _dt.strptime(_exp.replace("Z", "").split(".")[0], "%Y-%m-%dT%H:%M:%S"):
+                            continue
+                    except ValueError:
+                        pass
+                return {
+                    "order_id": _o.get("order_id", ""),
+                    "plan_id": body.plan_id,
+                    "plan_name": plan_name,
+                    "plan_mode": mode,
+                    "billing": body.billing,
+                    "duration_days": duration_days,
+                    "display_name": _o.get("bot_name") or display,
+                    "base_amount_usd": float(_o.get("base_amount_usd") or base),
+                    "coupon": (_o.get("coupon") or "").upper(),
+                    "coupon_percent": float(_o.get("coupon_percent") or 0),
+                    "amount_usd": float(_o.get("amount_usd") or amount),
+                    "pay_address": _o.get("pay_address") or "",
+                    "pay_amount": _o.get("pay_amount"),
+                    "pay_currency": (_o.get("pay_currency") or body.currency).upper(),
+                    "invoice_expires_at": _o.get("invoice_expires_at") or "",
+                    "queued": token_pool.count_available() == 0,
+                    "reused": True,
+                }
+        except Exception:
+            pass
 
     order = create_order(
         user_id=user_id,
@@ -2298,6 +2351,15 @@ async def portal_purchase_status(order_id: str):
     waiting = status in ("payment_waiting", "confirming")
     underpaid = waiting and amount_received > 0 and amount_received < pay_amount
     expired = status in ("expired", "cancelled", "failed")
+    # Payment is done but the build can't start yet — we're out of ad-accounts (or a bot
+    # token). Surface this distinctly so the UI stops showing a fake "building…" spinner
+    # and instead tells the buyer they're queued (matches the Telegram shop-bot message).
+    awaiting_capacity = status == "pending_creation" and not order.get("created_bot_username")
+    queue_message = (
+        "Payment received. We're briefly at capacity, so your AdBot is queued and will "
+        "activate automatically — you'll be notified the moment it's ready."
+        if awaiting_capacity else ""
+    )
 
     # Fire notifications once, the first time we observe the bot is ready.
     if status == "completed" and not order.get("notified"):
@@ -2318,8 +2380,10 @@ async def portal_purchase_status(order_id: str):
         "remaining": round(pay_amount - amount_received, 8) if underpaid else 0,
         "underpaid": underpaid,
         "expired": expired,
+        "awaiting_capacity": awaiting_capacity,
+        "queue_message": queue_message,
         "tx_hash": order.get("tx_hash", "") or "",
-        "queued": bool(order.get("queued")) and not order.get("bot_token"),
+        "queued": (bool(order.get("queued")) and not order.get("bot_token")) or awaiting_capacity,
         "creation": _creation_progress(order),
         "creation_step": order.get("creation_step", "") or "",
         "access_token": order.get("web_token", "") or "",

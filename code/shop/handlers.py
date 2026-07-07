@@ -1338,7 +1338,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             plan_obj = {"sessions": 1, "cycle": 3600, "gap": 5}
         valid_end = datetime.utcnow() + timedelta(days=order.get("duration_days", 7))
         valid_till = valid_end.strftime("%d/%m/%Y")
-        renewal_price = str(order.get("amount_usd", 0))
+        # Renewal baseline = MONTHLY price, not the amount paid (which may be a weekly
+        # purchase) — the renewal endpoint scales from a monthly figure.
+        renewal_price = str(plan_obj.get("price_month") or order.get("amount_usd", 0))
         from ..chatlist import default_group_file_for_mode
         _plan_mode = (order.get("plan_mode") or "starter").strip().capitalize()
         group_file = default_group_file_for_mode(_plan_mode)
@@ -1433,7 +1435,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             plan_obj = {"sessions": 1, "cycle": 3600, "gap": 5}
         valid_end = datetime.utcnow() + timedelta(days=order.get("duration_days", 7))
         valid_till = valid_end.strftime("%d/%m/%Y")
-        renewal_price = str(order.get("amount_usd", 0))
+        # Renewal baseline = MONTHLY price, not the amount paid (which may be a weekly
+        # purchase) — the renewal endpoint scales from a monthly figure.
+        renewal_price = str(plan_obj.get("price_month") or order.get("amount_usd", 0))
         from ..chatlist import default_group_file_for_mode
         _plan_mode = (order.get("plan_mode") or "starter").strip().capitalize()
         group_file = default_group_file_for_mode(_plan_mode)

@@ -332,9 +332,17 @@ async def process_ready_replacements() -> list[dict[str, Any]]:
     """Process all 'ready' replacement entries: swap sessions from free pool.
     Returns list of processed entries with results."""
     results = []
+    # Atomically CLAIM every 'ready' entry by flipping it to 'processing' under the lock,
+    # then work on the claimed snapshot. A concurrent caller (portal auto-process, IPN
+    # confirm, admin, background loop) will now see 'processing' — not 'ready' — and skip
+    # them, so one dead session can never be replaced twice (double free-session spend).
     with _queue_lock:
         queue = load_replacement_queue()
         ready = [e for e in queue if e.get("status") == "ready"]
+        if ready:
+            for e in ready:
+                e["status"] = "processing"
+            save_replacement_queue(queue)
     if not ready:
         return results
 
@@ -575,8 +583,10 @@ async def process_queue_by_admin() -> dict[str, Any]:
         return {"processed": 0, "error": "No free sessions in pool"}
     with _queue_lock:
         queue = load_replacement_queue()
-        # Pick up BOTH "awaiting_session" AND "ready" entries
-        processable = [e for e in queue if e.get("status") in ("awaiting_session", "ready")]
+        # Pick up "awaiting_session", "ready", and any "processing" entries left stuck by
+        # a crash mid-swap (a live processor already holds real 'ready' ones, so re-marking
+        # them 'ready' here is harmless — process_ready_replacements re-claims atomically).
+        processable = [e for e in queue if e.get("status") in ("awaiting_session", "ready", "processing")]
     if not processable:
         return {"processed": 0, "message": "No queued replacements"}
     # Mark all as "ready" so process_ready_replacements picks them up
