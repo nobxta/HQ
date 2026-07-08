@@ -402,7 +402,10 @@ async def portal_get_analytics(
 
 
 @router.get("/bot/{bot_name}/logs")
-async def portal_get_logs(bot_name: str, telegram_id: int = Query(...), lines: int = Query(100, ge=1, le=20000)):
+async def portal_get_logs(bot_name: str, telegram_id: int = Query(...), lines: int = Query(100, ge=0, le=1000000)):
+    # lines=0 (or a count >= the file size) returns the WHOLE log — used by the portal's
+    # "Load all" so the user can see every Successful/Failed entry, not just a recent tail.
+    # The portal defaults to a small tail to stay light; the full read is opt-in.
     await _get_user_bot(telegram_id, bot_name)
     from code.config import DATA_LOGS_DIR
     from code.utils import name_to_filename
@@ -414,7 +417,7 @@ async def portal_get_logs(bot_name: str, telegram_id: int = Query(...), lines: i
     try:
         content = await asyncio.to_thread(log_path.read_text, "utf-8", "replace")
         all_lines = content.splitlines()
-        tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
+        tail = all_lines if (lines <= 0 or lines >= len(all_lines)) else all_lines[-lines:]
         return {"lines": tail, "total_lines": len(all_lines)}
     except Exception as e:
         raise HTTPException(500, f"Failed to read logs: {e}")

@@ -431,7 +431,8 @@ export default function UserLogsPage() {
   // allows (a request for 10000 was seen 422-ing while 1000 succeeded) — rather than hardcode a number
   // that might again exceed whatever the server currently accepts, start generous and step the request
   // size down automatically on a 422 until it succeeds, so the page always shows whatever it can get.
-  const [fetchLines, setFetchLines] = useState(2500);
+  // Light by default (fast, low load). "Load older"/"Load all" opt into a deeper window; 0 = whole file.
+  const [fetchLines, setFetchLines] = useState(1500);
   const [displayCount] = useState(1000);  // how many rows to render
   // usePortalSessionValid() reads localStorage, which doesn't exist during SSR — evaluating it
   // immediately would render a different tree on the server vs. the client's first paint and
@@ -441,7 +442,10 @@ export default function UserLogsPage() {
   useEffect(() => { setMounted(true); }, []);
   const sessionValid = usePortalSessionValid();
   const { data: bot } = usePortalBot();
-  const { data, error: logsError, isLoading: logsLoading, mutate } = usePortalLogs(fetchLines);
+  // Poll fast for the light live tail; back off to 12s once a big window (or the whole file) is
+  // loaded so we don't re-transfer thousands of lines every 3 seconds.
+  const logsPollMs = fetchLines === 0 || fetchLines > 3000 ? 12000 : 3000;
+  const { data, error: logsError, isLoading: logsLoading, mutate } = usePortalLogs(fetchLines, logsPollMs);
 
   useEffect(() => {
     const status = (logsError as any)?.response?.status;
@@ -735,12 +739,24 @@ export default function UserLogsPage() {
           </div>
           <p className="text-sm text-dark-500 mt-1">Real-time activity from all your accounts</p>
           {(data?.total_lines ?? 0) > lines.length && (
-            <button
-              onClick={(e) => { e.stopPropagation(); setFetchLines((n) => Math.min(n + 5000, 20000)); }}
-              className="mt-1 text-[11px] font-semibold text-accent hover:text-accent-300 transition-colors"
-            >
-              Showing last {lines.length.toLocaleString()} of {(data?.total_lines ?? 0).toLocaleString()} log lines · Load older
-            </button>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] font-semibold">
+              <span className="text-dark-500">
+                Showing last {lines.length.toLocaleString()} of {(data?.total_lines ?? 0).toLocaleString()} log lines
+              </span>
+              <button
+                onClick={(e) => { e.stopPropagation(); setFetchLines((n) => (n === 0 ? 0 : n + 5000)); }}
+                className="text-accent hover:text-accent-300 transition-colors"
+              >
+                Load older
+              </button>
+              <span className="text-dark-700">·</span>
+              <button
+                onClick={(e) => { e.stopPropagation(); setFetchLines(0); }}
+                className="text-accent hover:text-accent-300 transition-colors"
+              >
+                Load all
+              </button>
+            </div>
           )}
         </div>
 

@@ -31,10 +31,10 @@ export function usePortalStats() {
   return useSWR(key, fetcher, { refreshInterval: 10000, shouldRetryOnError: false });
 }
 
-export function usePortalLogs(lines = 100) {
+export function usePortalLogs(lines = 100, refreshInterval = 3000) {
   const s = validSession(useSession());
   const key = s ? `/api/portal/bot/${encodeURIComponent(s.bot_name)}/logs?telegram_id=${s.telegram_id}&lines=${lines}` : null;
-  return useSWR(key, fetcher, { refreshInterval: 3000, shouldRetryOnError: false });
+  return useSWR(key, fetcher, { refreshInterval, shouldRetryOnError: false });
 }
 
 // Time-bucketed posting analytics parsed from the log file (real source of truth).
