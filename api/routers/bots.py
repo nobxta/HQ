@@ -541,7 +541,7 @@ async def get_bot_stats(name: str):
 
 
 @router.get("/{name}/logs")
-async def get_bot_logs(name: str, lines: int = Query(100, ge=1, le=1000)):
+async def get_bot_logs(name: str, lines: int = Query(100, ge=1, le=5000)):
     from code.config import DATA_LOGS_DIR
     log_path = DATA_LOGS_DIR / f"{name}.log"
     if not log_path.is_file():

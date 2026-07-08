@@ -1569,7 +1569,7 @@ function SessionLogsModal({ name, file, onClose }: { name: string; file: string;
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await api.get(`/api/bots/${encodeURIComponent(name)}/logs?lines=2000`);
+      const { data } = await api.get(`/api/bots/${encodeURIComponent(name)}/logs?lines=3000`);
       const all: string[] = data.lines || [];
       // Log lines are `[TAG] account=<account> group_name=…` — match on the account token.
       setLines(all.filter((l) => l.includes(`account=${account} `)));
