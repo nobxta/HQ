@@ -468,6 +468,20 @@ async def main() -> None:
                     await _start_posting(bot_token)
                 except Exception as e:
                     logger.exception("restart_bot job failed: %s", e)
+            elif job_type == "restart_bot_preserve":
+                # Cycle-preserving restart: re-reads config (so a session enable/disable takes
+                # effect and groups reassign across the remaining accounts) WITHOUT resetting the
+                # cycle anchor — the still-enabled accounts keep their schedule instead of all
+                # re-posting a full cycle at once. Used by the per-session disable/enable toggle.
+                (bot_token,) = payload
+                try:
+                    await _stop_posting(bot_token)
+                    await asyncio.sleep(2)
+                    from code.users import cleanup_active_sessions_for_bot as _cleanup_active_sessions_for_bot
+                    _cleanup_active_sessions_for_bot(bot_token)
+                    await _start_posting(bot_token, preserve_cycle_time=True)
+                except Exception as e:
+                    logger.exception("restart_bot_preserve job failed: %s", e)
 
     asyncio.create_task(_main_loop_job_consumer(), name="_main_loop_job_consumer")
     await resume_adbots(data)

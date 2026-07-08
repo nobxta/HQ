@@ -30,6 +30,7 @@ def serialize_bot_summary(token: str, cfg: dict) -> dict:
 def serialize_bot_detail(token: str, cfg: dict) -> dict:
     """Full bot detail (still no raw token)."""
     base = serialize_bot_summary(token, cfg)
+    disabled_set = {(f or "").strip() for f in (cfg.get("disabled_sessions") or []) if f}
     base.update({
         "sessions": [
             {
@@ -37,12 +38,14 @@ def serialize_bot_detail(token: str, cfg: dict) -> dict:
                 "real_name": s.get("real_name", ""),
                 "user_id": s.get("user_id"),
                 "index": s.get("index"),
+                "disabled": (s.get("file", "") or "").strip() in disabled_set,
             }
             for s in cfg.get("sessions", [])
         ],
         "authorized": cfg.get("authorized", []),
         "excluded_groups": cfg.get("excluded_groups", []),
         "excluded_sessions": cfg.get("excluded_sessions", []),
+        "disabled_sessions": cfg.get("disabled_sessions", []),
         "custom_chatlist": cfg.get("custom_chatlist"),
         "plan": cfg.get("plan"),
         "history": cfg.get("history"),

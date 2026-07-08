@@ -1130,6 +1130,21 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
     setActionLoading("");
   };
 
+  const toggleSession = async (file: string, currentlyDisabled: boolean) => {
+    if (!currentlyDisabled && !confirm(`Disable ${file}?\n\nIt will stop being used in ads until you enable it again. The other accounts keep running.`)) return;
+    const action = currentlyDisabled ? "enable" : "disable";
+    setActionLoading(file);
+    try {
+      await api.post(`/api/bots/${encodeURIComponent(name)}/sessions/${encodeURIComponent(file)}/${action}`);
+      toast.success(currentlyDisabled ? `${file} enabled` : `${file} disabled`);
+      onUpdate();
+      fetchDetails();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || `${action} failed`);
+    }
+    setActionLoading("");
+  };
+
   const addSession = async (file: string) => {
     setActionLoading(file);
     try {
@@ -1162,6 +1177,7 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
   };
 
   const displaySessions = details || sessions.map((s: any) => ({ ...s, status: "unknown" }));
+  const disabledFiles = new Set<string>(((bot.disabled_sessions as string[]) || []).map((f) => (f || "").trim()));
 
   const statusBadge = (status: string) => {
     const map: Record<string, string> = {
@@ -1256,8 +1272,9 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {displaySessions.map((s: any, i: number) => {
             const health = s.status === "active" ? 100 : s.status === "busy" ? 60 : s.status === "error" ? 40 : s.status === "dead" ? 12 : 55;
+            const isDisabled = disabledFiles.has((s.file || "").trim());
             return (
-              <HqCard key={s.file || i} className={`p-4 ${s.status === "dead" ? "!border-hq-danger/25" : ""}`}>
+              <HqCard key={s.file || i} className={`p-4 ${isDisabled ? "opacity-60 !border-hq-warning/40" : s.status === "dead" ? "!border-hq-danger/25" : ""}`}>
                 {/* Header */}
                 <div className="flex items-start justify-between mb-4">
                   <div className="flex items-center gap-3 min-w-0">
@@ -1271,6 +1288,7 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
                     </div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
+                    {isDisabled && <span className="rounded-[8px] bg-hq-warning/15 text-hq-warning px-1.5 py-0.5 text-[10px] font-semibold border border-hq-warning/30">Disabled</span>}
                     {s.premium && <span title="Premium"><Crown className="h-3.5 w-3.5 text-hq-warning" /></span>}
                     {s.restricted && <span title="Restricted"><Ban className="h-3.5 w-3.5 text-hq-danger" /></span>}
                   </div>
@@ -1312,6 +1330,15 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
 
                 {/* Actions */}
                 <div className="grid grid-cols-2 gap-1.5">
+                  <HqBtn
+                    tone={isDisabled ? "success" : "secondary"}
+                    onClick={() => toggleSession(s.file, isDisabled)}
+                    loading={actionLoading === s.file}
+                    icon={Power}
+                    className="!py-1.5 !text-[12px] justify-center col-span-2"
+                  >
+                    {isDisabled ? "Enable (use in ads)" : "Disable (pause in ads)"}
+                  </HqBtn>
                   <HqBtn tone="ghost" onClick={() => openEdit(s)} icon={Edit} className="!py-1.5 !text-[12px] justify-center">Edit</HqBtn>
                   <HqBtn tone="ghost" onClick={() => validateSession(s.file)} loading={validating === s.file} icon={ShieldCheck} className="!py-1.5 !text-[12px] justify-center">Validate</HqBtn>
                   <HqBtn tone="ghost" onClick={() => { fetchFreeSessions(); setShowReplace(s.file); }} icon={ArrowRightLeft} className="!py-1.5 !text-[12px] justify-center">Replace</HqBtn>

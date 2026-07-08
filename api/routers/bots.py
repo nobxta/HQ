@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/bots", tags=["bots"], dependencies=[Depends(get_current_admin)])
 
 
+def _bot_is_live(cfg: dict) -> bool:
+    """True when the bot has running workers that need a restart to pick up a session change."""
+    return cfg.get("state") in ("running", "activating")
+
+
 @router.get("/create-context")
 async def create_context():
     """Return data needed for the creation wizard: free sessions, group files, existing tokens."""
@@ -1058,6 +1063,9 @@ async def remove_session_from_bot(name: str, session_file: str):
 
     # Remove from bot
     cfg["sessions"] = [s for s in sessions if s.get("file") != session_file]
+    # Drop any stale disabled flag so a re-added account doesn't inherit "parked" state.
+    if session_file in (cfg.get("disabled_sessions") or []):
+        cfg["disabled_sessions"] = [f for f in cfg["disabled_sessions"] if f != session_file]
     await wrappers.save_user_data(name, cfg)
 
     # Add back to free pool
@@ -1069,6 +1077,80 @@ async def remove_session_from_bot(name: str, session_file: str):
 
     await wrappers.log_admin_action("web_admin", "remove_session", target=f"{session_file} from {name}")
     return {"status": "removed", "file": session_file}
+
+
+@router.post("/{name}/sessions/{session_file}/disable")
+async def disable_session(name: str, session_file: str):
+    """Park a session so it is NOT used in ads until re-enabled.
+
+    The account stays bound to the bot (unlike Remove, it is not returned to the free pool).
+    The disabled state persists across restarts/resumes until explicitly re-enabled. If the
+    bot is live, a cycle-preserving restart is queued so the account stops within moments and
+    its groups reassign across the remaining enabled accounts, without disturbing their timing.
+    """
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    sessions = cfg.get("sessions") or []
+    if not any(s.get("file") == session_file for s in sessions):
+        raise HTTPException(404, f"Session '{session_file}' not assigned to '{name}'")
+
+    disabled = [f for f in (cfg.get("disabled_sessions") or []) if f]
+    if session_file in disabled:
+        return {"status": "already_disabled", "file": session_file}
+
+    # Guard: never disable the last enabled account — the bot would have nothing to post with.
+    enabled_after = [
+        s for s in sessions
+        if (s.get("file") or "") and s.get("file") not in disabled and s.get("file") != session_file
+    ]
+    if not enabled_after:
+        raise HTTPException(
+            400,
+            "Cannot disable the last enabled session; the bot would have no accounts left to post with.",
+        )
+
+    disabled.append(session_file)
+    cfg["disabled_sessions"] = disabled
+    await wrappers.save_user_data(name, cfg)
+
+    applied = "on_next_start"
+    if _bot_is_live(cfg):
+        token = await wrappers.get_token_by_name(name)
+        if token:
+            from code.admin_ptb import submit_main_loop_job
+            submit_main_loop_job("restart_bot_preserve", (token,))
+            applied = "live"
+
+    await wrappers.log_admin_action("web_admin", "disable_session", target=f"{session_file} on {name}")
+    return {"status": "disabled", "file": session_file, "applied": applied}
+
+
+@router.post("/{name}/sessions/{session_file}/enable")
+async def enable_session(name: str, session_file: str):
+    """Re-enable a previously disabled session so it is used in ads again."""
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    disabled = [f for f in (cfg.get("disabled_sessions") or []) if f]
+    if session_file not in disabled:
+        return {"status": "already_enabled", "file": session_file}
+
+    cfg["disabled_sessions"] = [f for f in disabled if f != session_file]
+    await wrappers.save_user_data(name, cfg)
+
+    applied = "on_next_start"
+    if _bot_is_live(cfg):
+        token = await wrappers.get_token_by_name(name)
+        if token:
+            from code.admin_ptb import submit_main_loop_job
+            submit_main_loop_job("restart_bot_preserve", (token,))
+            applied = "live"
+
+    await wrappers.log_admin_action("web_admin", "enable_session", target=f"{session_file} on {name}")
+    return {"status": "enabled", "file": session_file, "applied": applied}
 
 
 class AddSessionRequest(BaseModel):

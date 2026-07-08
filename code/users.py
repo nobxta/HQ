@@ -1597,7 +1597,7 @@ def _assigned_groups_for_session(
     excluded_group_keys = set(cfg.get("excluded_groups") or [])
     if excluded_group_keys:
         all_groups = [g for g in all_groups if _target_key_for_skip(g) not in excluded_group_keys]
-    excluded = set(cfg.get("excluded_sessions") or [])
+    excluded = set(cfg.get("excluded_sessions") or []) | _disabled_session_files(cfg)
     if session_file in excluded:
         return [], len(all_groups)
     # FloodWait pause: do not assign groups to a session that is paused (resume only after pause expires).
@@ -3044,9 +3044,20 @@ def _merged_excluded_groups(bot_token: str, cfg: dict | None = None) -> list:
     return list(base)
 
 
+def _disabled_session_files(cfg: dict) -> set[str]:
+    """Session files an admin has manually parked via the dashboard Enable/Disable toggle.
+
+    Unlike ``excluded_sessions`` (auto-managed by the engine and wiped to [] on every
+    start/stop — see ``_clear_session_pause_and_fresh_start``), ``disabled_sessions`` is
+    operator-controlled and persists across starts, stops, resumes and crash recovery
+    until the account is explicitly re-enabled. A disabled account stays bound to the bot;
+    it is simply skipped when spawning workers and assigning groups."""
+    return {(f or "").strip() for f in (cfg.get("disabled_sessions") or []) if (f or "").strip()}
+
+
 def _active_session_files(cfg: dict) -> list[str]:
-    """Sessions that can receive groups this run: not excluded, not paused, not in cooldown. Used for Enterprise redistribution."""
-    excluded = set(cfg.get("excluded_sessions") or [])
+    """Sessions that can receive groups this run: not excluded, not disabled, not paused, not in cooldown. Used for Enterprise redistribution."""
+    excluded = set(cfg.get("excluded_sessions") or []) | _disabled_session_files(cfg)
     pause_until = cfg.get("session_pause_until") or {}
     cooldown_until = cfg.get("session_cooldown_until") or {}
     now = time.time()
@@ -3881,6 +3892,11 @@ async def _restart_single_worker(bot_token: str, worker_id: int) -> bool:
         return False
     old_proc, old_cmd_q, _wid, session_chunk = workers_list[worker_id]
     session_file = _session_file_from_chunk(session_chunk)
+    # Admin-parked account: never revive it. A disabled session has no worker after a normal
+    # (re)start, but guard here so the health monitor cannot resurrect one via a stale registry entry.
+    if session_file in _disabled_session_files(cfg):
+        logger.info("[WorkerRestart] session=%s is disabled by admin; skipping revive", session_file)
+        return False
     key = (bot_token, session_file)
     if key in _restart_in_progress:
         logger.warning("[WorkerRestart] session=%s restart already in progress, rejecting", session_file)
@@ -3912,7 +3928,7 @@ async def _restart_single_worker(bot_token: str, worker_id: int) -> bool:
         global _worker_result_queue
         if _worker_result_queue is None:
             _worker_result_queue = multiprocessing.Queue()
-        excluded = set(cfg.get("excluded_sessions") or [])
+        excluded = set(cfg.get("excluded_sessions") or []) | _disabled_session_files(cfg)
         valid_sessions = [
             s for s in cfg.get("sessions", [])
             if (s.get("file") or "") and config.resolve_session_path(s.get("file") or "").is_file()
@@ -4075,7 +4091,7 @@ async def _start_posting(
     if not sessions:
         _last_start_failure_reason[bot_token] = "no_sessions"
         return False
-    excluded = set(cfg.get("excluded_sessions") or [])
+    excluded = set(cfg.get("excluded_sessions") or []) | _disabled_session_files(cfg)
     valid_sessions = [
         s for s in sessions
         if (s.get("file") or "") and config.resolve_session_path(s.get("file") or "").is_file()
