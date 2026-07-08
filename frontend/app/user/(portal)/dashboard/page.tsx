@@ -828,7 +828,10 @@ export default function UserDashboard() {
       </div>
 
       {/* ═══════════ MAIN GRID — 3 panel Crextio layout ═══════════ */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4" style={{ height: "calc(100vh - 400px)", minHeight: "340px" }}>
+      {/* Height is clamped so the panels stay well-proportioned on any window: they never
+          shrink below 340px nor stretch to absurd heights on very tall/portrait windows
+          (which used to leave huge dead space in the middle of each card). */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4" style={{ height: "clamp(340px, calc(100vh - 400px), 620px)" }}>
 
         {/* ────── LEFT: Performance ────── */}
         <div className="lg:col-span-4 glass-card p-5 flex flex-col animate-stagger-1">
