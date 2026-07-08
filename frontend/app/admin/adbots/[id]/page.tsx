@@ -14,6 +14,7 @@ import {
   MessageSquare, Clock, Users, Zap, Eye, Edit, Save, Copy,
   TrendingUp, TrendingDown, AlertCircle, CheckCircle, XCircle,
   Calendar, DollarSign, Hash, Globe, Shield, User, Plus, RefreshCw,
+  CreditCard, KeyRound, Timer,
   Loader2, Phone, AtSign, Crown, Ban, ShieldCheck, ArrowRightLeft,
   Minus, FileText, Search, Key, EyeOff, ChevronDown, ChevronRight,
   ExternalLink, CheckCircle2, Download, Sparkles, List,
@@ -34,7 +35,10 @@ const tabs = [
   { id: "groups", label: "Groups", icon: Users },
   { id: "content", label: "Content", icon: FileText },
   { id: "logs", label: "Logs", icon: Terminal },
+  { id: "payments", label: "Payments", icon: CreditCard },
+  { id: "access", label: "Access", icon: KeyRound },
   { id: "settings", label: "Settings", icon: Settings },
+  { id: "actions", label: "Actions", icon: Wrench },
 ];
 
 export default function BotDetailPage() {
@@ -103,32 +107,39 @@ export default function BotDetailPage() {
               <h1 className="text-[18px] font-bold text-hq-text leading-none truncate">{bot.name}</h1>
               {bot.bot_username && <span className="text-[13px] text-hq-muted font-mono">@{bot.bot_username}</span>}
               <HqStatusPill label={sp.label} color={sp.color} />
-              <span className="text-[11px] px-2.5 py-1 rounded-full font-semibold capitalize" style={{ background: "rgba(124,92,255,0.12)", color: "#C4B5FD", border: "1px solid rgba(124,92,255,0.2)" }}>⚡ {bot.plan_name || bot.mode}</span>
-            </div>
-            <div className="flex items-center gap-4 mt-1.5 flex-wrap">
-              <span className="text-[12px] text-hq-muted flex items-center gap-1.5"><Users size={11} />Owner: {String(bot.owner_id || "admin")}</span>
-              <span className="text-[12px] text-hq-muted flex items-center gap-1.5"><Clock size={11} />{dLeft !== null ? (dLeft >= 0 ? `${dLeft}d left · ` : `expired · `) : ""}{formatDate(bot.valid_till)}</span>
               {health !== null && (
-                <span className="text-[12px] flex items-center gap-1.5" style={{ color: health >= 80 ? "#22C55E" : health >= 50 ? "#F59E0B" : "#EF4444" }}>
-                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: "currentColor", animation: "pulse 2s infinite" }} />Health {health}%
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold"
+                  style={{ color: health >= 80 ? "#22C55E" : health >= 50 ? "#F59E0B" : "#EF4444", backgroundColor: (health >= 80 ? "#22C55E" : health >= 50 ? "#F59E0B" : "#EF4444") + "1f" }}>
+                  <Activity size={11} strokeWidth={2} /> Health {health}%
                 </span>
               )}
             </div>
+            <div className="flex items-center gap-x-4 gap-y-1 mt-1.5 flex-wrap text-[12px] text-hq-muted">
+              <span className="flex items-center gap-1.5"><User size={11} />Owner: {String(bot.owner_id || "admin")}</span>
+              <span className="flex items-center gap-1.5"><Calendar size={11} />{dLeft !== null ? (dLeft >= 0 ? `${dLeft}d left · ` : `expired · `) : ""}{formatDate(bot.valid_till)}</span>
+              <span className="flex items-center gap-1.5"><Smartphone size={11} />{bot.sessions_count || 0} sessions</span>
+              <span className="flex items-center gap-1.5"><Timer size={11} />Cycle {bot.cycle}s</span>
+            </div>
           </div>
-          {/* Actions */}
-          <div className="flex items-center gap-2 shrink-0 flex-wrap">
-            {bot.running ? (
-              <HqBtn tone="danger" onClick={() => doAction("stop")} loading={actionLoading === "stop"} icon={Square}>Stop</HqBtn>
-            ) : (
-              <HqBtn tone="primary" onClick={() => doAction("start")} loading={actionLoading === "start"} icon={Play}>Start</HqBtn>
-            )}
-            <HqBtn tone="ghost" onClick={() => doAction("restart")} loading={actionLoading === "restart"} icon={RotateCw}><span className="hidden sm:inline">Restart</span></HqBtn>
-            {bot.suspended ? (
-              <HqBtn tone="ghost" onClick={() => doAction("resume")} loading={actionLoading === "resume"} icon={PlayCircle}><span className="hidden sm:inline">Resume</span></HqBtn>
-            ) : (
-              <HqBtn tone="ghost" onClick={() => doAction("suspend")} loading={actionLoading === "suspend"} icon={Pause}><span className="hidden sm:inline">Suspend</span></HqBtn>
-            )}
-            <HqBtn tone="danger" onClick={() => setDeleteConfirm(true)} icon={Trash2} iconOnly />
+          {/* Global actions — the full set lives in the More menu / Actions tab */}
+          <div className="flex items-center gap-2 shrink-0">
+            <HqBtn tone="secondary" onClick={() => setActiveTab("actions")} icon={Wrench} className="hidden sm:inline-flex">Manage</HqBtn>
+            <ActionMenu
+              items={[
+                bot.running
+                  ? { label: "Stop bot", icon: Square, tone: "danger", onClick: () => doAction("stop") }
+                  : { label: "Start bot", icon: Play, tone: "success", onClick: () => doAction("start") },
+                { label: "Restart bot", icon: RotateCw, onClick: () => doAction("restart") },
+                bot.suspended
+                  ? { label: "Resume bot", icon: PlayCircle, onClick: () => doAction("resume") }
+                  : { label: "Suspend bot", icon: Pause, onClick: () => doAction("suspend") },
+                { separator: true },
+                { label: "Repair & actions", icon: Wrench, onClick: () => setActiveTab("actions") },
+                { label: "Access code", icon: KeyRound, onClick: () => setActiveTab("access") },
+                { separator: true },
+                { label: "Delete bot", icon: Trash2, tone: "danger", onClick: () => setDeleteConfirm(true) },
+              ]}
+            />
           </div>
         </div>
 
@@ -148,12 +159,15 @@ export default function BotDetailPage() {
 
       {/* Tab content */}
       <main className="px-4 sm:px-6 py-6">
-        {activeTab === "overview" && <OverviewTab name={name} bot={bot} onUpdate={() => mutate()} />}
+        {activeTab === "overview" && <OverviewTab name={name} bot={bot} onNavigate={setActiveTab} />}
         {activeTab === "sessions" && <SessionsTab bot={bot} name={name} onUpdate={() => mutate()} />}
         {activeTab === "groups" && <GroupsTab bot={bot} name={name} onUpdate={() => mutate()} />}
         {activeTab === "content" && <PostingTab name={name} bot={bot} onUpdate={() => mutate()} />}
         {activeTab === "logs" && <LogsTab name={name} />}
+        {activeTab === "payments" && <PaymentsTab name={name} bot={bot} />}
+        {activeTab === "access" && <AccessTab name={name} bot={bot} onUpdate={() => mutate()} />}
         {activeTab === "settings" && <SettingsTab name={name} bot={bot} onUpdate={() => mutate()} />}
+        {activeTab === "actions" && <ActionsTab name={name} bot={bot} onUpdate={() => mutate()} onDelete={() => setDeleteConfirm(true)} />}
       </main>
 
       <ConfirmModal
@@ -271,32 +285,6 @@ const HqInput = forwardRef<HTMLInputElement, { label?: string } & InputHTMLAttri
 );
 HqInput.displayName = "HqInput";
 
-/* Quick-action row: fires a real endpoint, shows spinner + result toast */
-function QuickActionRow({ label, icon: Icon, run, ok, onDone }: { label: string; icon: any; run: () => Promise<any>; ok: string; onDone?: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const go = async () => {
-    setBusy(true);
-    try {
-      const r = await run();
-      toast.success(r?.data?.message || ok);
-      onDone?.();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || `${label} failed`);
-    }
-    setBusy(false);
-  };
-  return (
-    <button onClick={go} disabled={busy}
-      className="w-full flex items-center gap-3 rounded-[12px] border border-hq-border bg-hq-elev px-3.5 py-2.5 text-left hover:border-hq-accent/30 hover:bg-white/[0.04] transition-all disabled:opacity-50">
-      <span className="w-8 h-8 rounded-[10px] bg-hq-accent/10 flex items-center justify-center shrink-0">
-        {busy ? <Loader2 className="h-4 w-4 text-hq-accent animate-spin" /> : <Icon className="h-4 w-4 text-hq-accent" strokeWidth={1.75} />}
-      </span>
-      <span className="text-[13px] font-medium text-hq-text">{label}</span>
-      <ChevronRight className="h-4 w-4 text-hq-muted ml-auto" />
-    </button>
-  );
-}
-
 /* Key/value row used inside hq detail cards */
 function KV({ k, v }: { k: string; v: ReactNode }) {
   return (
@@ -406,13 +394,342 @@ function LegendRow({ color, label, value }: { color: string; label: string; valu
   );
 }
 
-function OverviewTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: () => void }) {
+/* ── Missing-value formatter: never render raw undefined/null/empty ── */
+function fmt(v: any, fallback = "Not set"): string {
+  if (v === undefined || v === null) return fallback;
+  const s = String(v).trim();
+  return s === "" || s === "undefined" || s === "null" ? fallback : s;
+}
+function cap(s: string): string { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+
+/* Compact metric card — read-only headline number + one line of context */
+function MetricCard({ label, value, sub, icon: Icon, tone = "accent" }: {
+  label: string; value: string | number; sub?: ReactNode; icon: any; tone?: "accent" | "success" | "danger" | "warning";
+}) {
+  const toneMap: Record<string, string> = {
+    accent: "text-hq-accent bg-hq-accent/10",
+    success: "text-hq-success bg-hq-success/10",
+    danger: "text-hq-danger bg-hq-danger/10",
+    warning: "text-hq-warning bg-hq-warning/10",
+  };
+  return (
+    <div className="rounded-[16px] border border-hq-border bg-hq-card p-4 transition-colors hover:border-white/[0.12]">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-medium uppercase tracking-wide text-hq-muted">{label}</span>
+        <span className={`w-7 h-7 rounded-[9px] flex items-center justify-center ${toneMap[tone]}`}>
+          <Icon className="w-3.5 h-3.5" strokeWidth={1.75} />
+        </span>
+      </div>
+      <p className="mt-2.5 text-[24px] leading-none font-semibold text-hq-text tabular-nums">{value}</p>
+      {sub && <p className="mt-1.5 text-[12px] text-hq-muted truncate">{sub}</p>}
+    </div>
+  );
+}
+
+/* Small label:value operational chip for the health strip */
+function HealthChip({ label, value, tone = "muted", pulse = false }: {
+  label: string; value: string; tone?: "success" | "danger" | "warning" | "muted" | "info"; pulse?: boolean;
+}) {
+  const map: Record<string, string> = {
+    success: "#22C55E", danger: "#EF4444", warning: "#F59E0B", info: "#38BDF8", muted: "#667085",
+  };
+  const c = map[tone];
+  return (
+    <span className="inline-flex items-center gap-2 rounded-[10px] border border-hq-border bg-hq-elev px-2.5 py-1.5 text-[12px]">
+      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: c, animation: pulse ? "pulse 2s infinite" : "none" }} />
+      <span className="text-hq-muted">{label}</span>
+      <span className="font-medium" style={{ color: tone === "muted" ? "#98A2B3" : c }}>{value}</span>
+    </span>
+  );
+}
+
+/* Thin health bar */
+function HealthBar({ pct }: { pct: number | null }) {
+  const col = pct === null ? "#667085" : pct >= 80 ? "#22C55E" : pct >= 50 ? "#F59E0B" : "#EF4444";
+  return (
+    <div className="h-1.5 w-full rounded-full bg-hq-bg overflow-hidden">
+      <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct ?? 0}%`, background: col }} />
+    </div>
+  );
+}
+
+/* 2-column definition grid (single column on mobile) */
+function DetailGrid({ rows }: { rows: [string, ReactNode][] }) {
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
+      {rows.map(([k, v], i) => (
+        <div key={k} className={`flex items-center justify-between gap-3 py-2.5 ${i < rows.length - (rows.length % 2 === 0 ? 2 : 1) ? "border-b border-hq-border/50" : ""}`}>
+          <span className="text-[12px] text-hq-muted shrink-0">{k}</span>
+          <span className="text-[13px] text-hq-text font-medium text-right truncate min-w-0">{v}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* Empty state */
+function EmptyState({ icon: Icon = AlertCircle, title, hint }: { icon?: any; title: string; hint?: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center text-center py-10 px-4">
+      <span className="w-10 h-10 rounded-[12px] bg-hq-elev border border-hq-border flex items-center justify-center mb-3">
+        <Icon className="w-5 h-5 text-hq-muted" strokeWidth={1.75} />
+      </span>
+      <p className="text-[13px] text-hq-sub font-medium">{title}</p>
+      {hint && <p className="text-[12px] text-hq-muted mt-1">{hint}</p>}
+    </div>
+  );
+}
+
+/* Kebab dropdown for global bot actions (closes on outside click / Escape) */
+type MenuItem = { label: string; icon?: any; tone?: "danger" | "success" | "default"; onClick: () => void; separator?: undefined } | { separator: true };
+function ActionMenu({ items }: { items: MenuItem[] }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDoc); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+  return (
+    <div className="relative" ref={ref}>
+      <button onClick={() => setOpen((o) => !o)} title="More actions"
+        className={`w-9 h-9 rounded-[12px] border flex items-center justify-center transition-colors ${open ? "border-hq-accent/40 bg-hq-accent/10 text-hq-text" : "border-hq-border bg-hq-card text-hq-sub hover:text-hq-text hover:bg-hq-elev"}`}>
+        <MoreVertical className="h-4.5 w-4.5" strokeWidth={1.75} />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-11 z-30 w-52 rounded-[14px] border border-hq-border bg-hq-card p-1.5 shadow-[0_12px_40px_rgba(0,0,0,0.5)] animate-fade-in">
+          {items.map((it, i) => it.separator ? (
+            <div key={i} className="my-1 h-px bg-hq-border/70" />
+          ) : (
+            <button key={i} onClick={() => { setOpen(false); it.onClick(); }}
+              className={`w-full flex items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-[13px] text-left transition-colors ${
+                it.tone === "danger" ? "text-hq-danger hover:bg-hq-danger/10" : it.tone === "success" ? "text-hq-success hover:bg-hq-success/10" : "text-hq-sub hover:text-hq-text hover:bg-hq-elev"
+              }`}>
+              {it.icon && <it.icon className="h-4 w-4 shrink-0" strokeWidth={1.75} />}
+              {it.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── OVERVIEW (read-only) ─── */
+function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavigate: (tab: string) => void }) {
   const { data: stats } = useAdbotStats(name);
+  const { data: overview } = useSessionsOverview(name, "all");
+
+  const sent = stats?.lifetime_sent || 0;
+  const failed = stats?.lifetime_failed || 0;
+  const totalPosts = sent + failed;
+  const successRate = totalPosts ? Math.round((sent / totalPosts) * 100) : null;
+  const failureRate = totalPosts ? Math.round((failed / totalPosts) * 100) : null;
+  const cycles = stats?.cycles || 0;
+
+  const summary = overview?.summary;
+  const previewSessions = (overview?.sessions || []).slice(0, 5);
+  const activeCount = summary?.active ?? bot.sessions_count ?? 0;
+  const deadCount = summary?.dead ?? 0;
+  const disabledCount = summary?.disabled ?? 0;
+
+  const daysLeft = daysUntil(bot.valid_till);
+  const lastCycleTs = stats?.last_cycle_ts || 0;
+
+  const sessionStats: Record<string, any> = stats?.session_stats || {};
+  const perfData = Object.entries(sessionStats).map(([s, v]) => ({
+    name: s.replace(".session", "").slice(-4),
+    sent: v.lifetime_sent || v.sent || 0,
+    failed: v.lifetime_failed || v.failed || 0,
+  })).slice(0, 12);
+
+  const donutData = totalPosts > 0
+    ? [{ name: "Sent", value: sent }, { name: "Failed", value: failed }]
+    : [{ name: "None", value: 1 }];
+  const donutColors = totalPosts > 0 ? ["#7C5CFF", "#EF4444"] : ["#242A38"];
+
+  const botToken = bot.bot_username ? "Connected" : "Not configured";
+  const details: [string, ReactNode][] = [
+    ["Mode", cap(fmt(bot.mode))],
+    ["Plan", fmt(bot.plan_name)],
+    ["Owner", fmt(bot.owner_id, "Admin")],
+    ["Cycle", bot.cycle != null ? `${bot.cycle}s` : "Not set"],
+    ["Gap", bot.gap != null ? `${bot.gap}s` : "Not set"],
+    ["Group file", fmt(bot.group_file, "Not configured")],
+    ["Created", bot.created_at ? formatDate(bot.created_at) : "Not tracked"],
+    ["Valid until", bot.valid_till ? formatDate(bot.valid_till) : "Not set"],
+    ["Bot token", <span className={bot.bot_username ? "text-hq-success" : "text-hq-warning"}>{botToken}{bot.bot_username ? ` · @${bot.bot_username}` : ""}</span>],
+    ["Log group", bot.log_group
+      ? <a href={bot.log_group} target="_blank" rel="noreferrer" className="text-hq-accent hover:underline inline-flex items-center gap-1 justify-end">Open <ExternalLink className="w-3 h-3" /></a>
+      : "Not set"],
+  ];
+
+  const systemRows: [string, ReactNode][] = [
+    ["Posting", <span className={bot.running ? "text-hq-success" : "text-hq-muted"}>{bot.running ? "Running" : "Stopped"}</span>],
+    ["Active sessions", activeCount],
+    ["Disabled sessions", disabledCount],
+    ["Dead sessions", <span className={deadCount > 0 ? "text-hq-danger" : ""}>{deadCount}</span>],
+    ["Total cycles", cycles > 0 ? cycles.toLocaleString() : "No cycles yet"],
+    ["Last cycle", lastCycleTs ? relTime(lastCycleTs) : "Not tracked"],
+    ["Last session used", fmt(stats?.last_cycle_session?.replace(".session", ""), "Not tracked")],
+  ];
+
+  return (
+    <div className="space-y-4">
+      {/* Metric cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+        <MetricCard label="Delivery" icon={Send} tone={successRate !== null && successRate < 50 ? "danger" : "success"}
+          value={sent.toLocaleString()}
+          sub={totalPosts ? `${failed.toLocaleString()} failed · ${successRate}% success` : "No posts yet"} />
+        <MetricCard label="Sessions" icon={Server} tone={deadCount > 0 ? "warning" : "accent"}
+          value={activeCount}
+          sub={`${deadCount} dead · ${disabledCount} disabled`} />
+        <MetricCard label="Cycle" icon={Timer} tone="accent"
+          value={bot.cycle != null ? `${bot.cycle}s` : "—"}
+          sub={`Gap ${bot.gap ?? "—"}s · ${cap(fmt(bot.mode, "—"))} mode`} />
+        <MetricCard label="Validity" icon={Calendar} tone={daysLeft !== null && daysLeft <= 3 ? "danger" : "accent"}
+          value={daysLeft === null ? "—" : `${Math.max(daysLeft, 0)}d`}
+          sub={bot.valid_till ? `Expires ${formatDate(bot.valid_till)}` : "Not set"} />
+      </div>
+
+      {/* Operational health strip */}
+      <div className="flex flex-wrap gap-2">
+        <HealthChip label="Posting" value={bot.running ? "Running" : "Stopped"} tone={bot.running ? "success" : "muted"} pulse={bot.running} />
+        <HealthChip label="Frozen" value={bot.frozen ? "Yes" : "No"} tone={bot.frozen ? "danger" : "success"} />
+        <HealthChip label="Suspended" value={bot.suspended ? "Yes" : "No"} tone={bot.suspended ? "warning" : "success"} />
+        <HealthChip label="Web access" value={bot.web_token ? "Enabled" : "Disabled"} tone={bot.web_token ? "success" : "muted"} />
+        <HealthChip label="Last activity" value={lastCycleTs ? relTime(lastCycleTs) : "None"} tone="muted" />
+      </div>
+
+      {/* Performance + Delivery */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3.5">
+        <HqCard className="p-5 lg:col-span-2">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-[15px] font-semibold text-hq-text">Posting performance</h3>
+              <p className="text-[12px] text-hq-muted mt-0.5">Sent vs failed per session (lifetime)</p>
+            </div>
+          </div>
+          {perfData.length === 0 ? (
+            <div className="h-[220px] flex items-center justify-center"><EmptyState icon={BarChart3} title="No posting activity yet" hint="Charts appear once the bot completes a cycle." /></div>
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={perfData} barCategoryGap="28%">
+                <XAxis dataKey="name" tick={{ fill: "#667085", fontSize: 11 }} axisLine={false} tickLine={false} />
+                <Tooltip
+                  cursor={{ fill: "rgba(255,255,255,0.03)" }}
+                  contentStyle={{ background: "#151925", border: "1px solid #242A38", borderRadius: 12, color: "#F4F7FB", fontSize: 12 }}
+                  labelStyle={{ color: "#98A2B3" }}
+                />
+                <Bar dataKey="sent" name="Sent" radius={[5, 5, 0, 0]} fill="#7C5CFF" maxBarSize={36} />
+                <Bar dataKey="failed" name="Failed" radius={[5, 5, 0, 0]} fill="#EF4444" maxBarSize={36} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </HqCard>
+
+        <HqCard className="p-5">
+          <h3 className="text-[15px] font-semibold text-hq-text mb-1">Delivery</h3>
+          <p className="text-[12px] text-hq-muted">Sent vs failed</p>
+          <div className="relative h-[160px] mt-2">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={donutData} dataKey="value" innerRadius={56} outerRadius={78} paddingAngle={totalPosts > 0 ? 3 : 0} stroke="none">
+                  {donutData.map((_, i) => <Cell key={i} fill={donutColors[i]} />)}
+                </Pie>
+              </PieChart>
+            </ResponsiveContainer>
+            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+              <span className="text-[24px] font-semibold text-hq-text leading-none tabular-nums">{successRate === null ? "—" : `${successRate}%`}</span>
+              <span className="text-[11px] text-hq-muted mt-1">Success</span>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3 mt-3">
+            <LegendRow color="#7C5CFF" label="Sent" value={sent.toLocaleString()} />
+            <LegendRow color="#EF4444" label="Failed" value={failed.toLocaleString()} />
+            <LegendRow color="#22C55E" label="Success rate" value={successRate === null ? "—" : `${successRate}%`} />
+            <LegendRow color="#F59E0B" label="Failure rate" value={failureRate === null ? "—" : `${failureRate}%`} />
+          </div>
+        </HqCard>
+      </div>
+
+      {/* Session health preview */}
+      <HqCard className="p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-[15px] font-semibold text-hq-text">Session health</h3>
+            <p className="text-[12px] text-hq-muted mt-0.5">Top {previewSessions.length || 0} of {summary?.total ?? 0} accounts</p>
+          </div>
+          <HqBtn tone="ghost" onClick={() => onNavigate("sessions")} icon={ArrowRightLeft} className="!py-1.5 !text-[12px]">View all</HqBtn>
+        </div>
+        {previewSessions.length === 0 ? (
+          <EmptyState icon={Smartphone} title="No sessions assigned" hint="Assign accounts from the Sessions tab." />
+        ) : (
+          <div className="overflow-x-auto -mx-1">
+            <table className="w-full text-[13px] min-w-[560px]">
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-wide text-hq-muted border-b border-hq-border">
+                  {["Session", "Status", "Sent", "Failed", "Success", "Last used"].map((h) => (
+                    <th key={h} className="px-2 py-2 font-medium whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-hq-border/50">
+                {previewSessions.map((s) => (
+                  <tr key={s.file} className="hover:bg-hq-hover/50 transition-colors">
+                    <td className="px-2 py-2.5">
+                      <div className="text-hq-text font-medium truncate max-w-[160px]">{s.display_name || `Account ${s.index}`}</div>
+                      <div className="text-[11px] text-hq-muted font-mono truncate max-w-[160px]">{s.phone_from_file || s.telegram_user_id || s.file}</div>
+                    </td>
+                    <td className="px-2 py-2.5"><SessionStatusChip status={s.status} /></td>
+                    <td className="px-2 py-2.5 tabular-nums text-hq-success">{s.stats.sent.toLocaleString()}</td>
+                    <td className="px-2 py-2.5 tabular-nums" style={{ color: s.stats.failed > 0 ? "#EF4444" : undefined }}>{s.stats.failed.toLocaleString()}</td>
+                    <td className="px-2 py-2.5 w-32">
+                      <div className="flex items-center gap-2">
+                        <HealthBar pct={s.stats.success_rate} />
+                        <span className="text-[12px] tabular-nums w-9 text-right text-hq-sub">{s.stats.success_rate === null ? "—" : `${s.stats.success_rate}%`}</span>
+                      </div>
+                    </td>
+                    <td className="px-2 py-2.5 text-[12px] text-hq-muted whitespace-nowrap">{relTime(s.last_active_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </HqCard>
+
+      {/* Details + System state */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3.5">
+        <HqCard className="p-5 lg:col-span-2">
+          <h3 className="text-[15px] font-semibold text-hq-text mb-2">Details</h3>
+          <DetailGrid rows={details} />
+        </HqCard>
+        <HqCard className="p-5">
+          <h3 className="text-[15px] font-semibold text-hq-text mb-2">System state</h3>
+          <div>
+            {systemRows.map(([k, v], i) => (
+              <div key={k} className={`flex items-center justify-between gap-3 py-2.5 ${i < systemRows.length - 1 ? "border-b border-hq-border/50" : ""}`}>
+                <span className="text-[12px] text-hq-muted">{k}</span>
+                <span className="text-[13px] text-hq-text font-medium tabular-nums text-right truncate">{v}</span>
+              </div>
+            ))}
+          </div>
+        </HqCard>
+      </div>
+    </div>
+  );
+}
+
+/* ─── ACCESS (web access code + login history) ─── */
+function AccessTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: () => void }) {
   const [showToken, setShowToken] = useState(false);
   const [customToken, setCustomToken] = useState("");
   const [editToken, setEditToken] = useState(false);
   const [tokenLoading, setTokenLoading] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
 
   const lastLogin = bot.last_web_login;
   const loginHistory: any[] = bot.web_login_history || [];
@@ -420,9 +737,7 @@ function OverviewTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
   const resetToken = async (custom?: string) => {
     setTokenLoading(true);
     try {
-      const { data } = await api.post(`/api/bots/${encodeURIComponent(name)}/web-access/set-token`, {
-        web_token: custom || null,
-      });
+      const { data } = await api.post(`/api/bots/${encodeURIComponent(name)}/web-access/set-token`, { web_token: custom || null });
       toast.success(`Access code ${custom ? "set" : "regenerated"}: ${data.web_token}`);
       setEditToken(false);
       setCustomToken("");
@@ -438,228 +753,17 @@ function OverviewTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
     if (typeof ts === "string") return ts;
     return new Date(ts * 1000).toLocaleString();
   };
-  const timeSince = (ts: number) => {
-    if (!ts) return "";
-    const secs = Math.floor(Date.now() / 1000 - ts);
-    if (secs < 60) return "just now";
-    if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
-    if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
-    return `${Math.floor(secs / 86400)}d ago`;
-  };
-
-  // ── Derived metrics ──
-  const sent = stats?.lifetime_sent || 0;
-  const failed = stats?.lifetime_failed || 0;
-  const totalPosts = sent + failed;
-  const successRate = totalPosts ? Math.round((sent / totalPosts) * 100) : 0;
-  const cycles = stats?.cycles || 0;
-  const sessionsCount = bot.sessions_count || 0;
-  const sessionStats: Record<string, any> = stats?.session_stats || {};
-
-  const daysLeft: number | null = (() => {
-    try {
-      const raw = bot.valid_till || "";
-      const iso = raw.includes("/") ? ddmmyyyyToIso(raw) : raw;
-      if (!iso) return null;
-      const d = new Date(iso);
-      if (isNaN(d.getTime())) return null;
-      return Math.ceil((d.getTime() - Date.now()) / 86400000);
-    } catch { return null; }
-  })();
-
-  const perfData = Object.entries(sessionStats).map(([s, v]) => ({
-    name: s.replace(".session", "").slice(0, 8),
-    sent: v.lifetime_sent || v.sent || 0,
-    failed: v.lifetime_failed || v.failed || 0,
-  })).slice(0, 12);
-
-  const donutData = totalPosts > 0
-    ? [{ name: "Sent", value: sent }, { name: "Failed", value: failed }]
-    : [{ name: "None", value: 1 }];
-  const donutColors = totalPosts > 0 ? ["#7C5CFF", "#EF4444"] : ["#242433"];
-
-  const details: [string, any][] = [
-    ["Mode", bot.mode],
-    ["Plan", bot.plan_name || "—"],
-    ["Owner", bot.owner_id || "Admin"],
-    ["Cycle", `${bot.cycle}s`],
-    ["Gap", `${bot.gap}s`],
-    ["Group File", bot.group_file || "—"],
-    ["Valid Until", formatDate(bot.valid_till)],
-    ["Created", formatDate(bot.created_at)],
-  ];
 
   return (
-    <div className="space-y-5">
-      {/* Stat tiles */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatTile label="Total Sent" value={sent.toLocaleString()} icon={CheckCircle2} tone="success" sub={`${cycles.toLocaleString()} cycles`} />
-        <StatTile label="Success Rate" value={`${successRate}%`} icon={TrendingUp} tone="accent" sub={`${failed.toLocaleString()} failed`} />
-        <StatTile label="Sessions" value={sessionsCount} icon={HardDrive} tone="warning" sub={`${Object.keys(sessionStats).length} active`} />
-        <StatTile label="Days Left" value={daysLeft === null ? "—" : Math.max(daysLeft, 0)} icon={Calendar} tone={daysLeft !== null && daysLeft <= 3 ? "danger" : "accent"} sub={formatDate(bot.valid_till)} />
-      </div>
-
-      {/* Performance + Delivery */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Performance bars */}
-        <HqCard className="p-5 lg:col-span-2">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h3 className="text-[15px] font-semibold text-hq-text">Session Performance</h3>
-              <p className="text-[12px] text-hq-muted mt-0.5">Messages sent per session</p>
-            </div>
-            <span className="text-[11px] text-hq-muted px-2.5 py-1 rounded-lg border border-hq-border">Lifetime</span>
-          </div>
-          {perfData.length === 0 ? (
-            <div className="h-[220px] flex items-center justify-center text-[13px] text-hq-muted">No posting activity yet</div>
-          ) : (
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={perfData} barCategoryGap="28%">
-                <XAxis dataKey="name" tick={{ fill: "#64748B", fontSize: 11 }} axisLine={false} tickLine={false} />
-                <Tooltip
-                  cursor={{ fill: "rgba(255,255,255,0.03)" }}
-                  contentStyle={{ background: "#1E1E2E", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, color: "#fff", fontSize: 12 }}
-                  labelStyle={{ color: "#94A3B8" }}
-                />
-                <Bar dataKey="sent" name="Sent" radius={[6, 6, 0, 0]} fill="#7C5CFF" maxBarSize={40} />
-                <Bar dataKey="failed" name="Failed" radius={[6, 6, 0, 0]} fill="#EF4444" maxBarSize={40} />
-              </BarChart>
-            </ResponsiveContainer>
-          )}
-        </HqCard>
-
-        {/* Delivery donut */}
-        <HqCard className="p-5">
-          <h3 className="text-[15px] font-semibold text-hq-text mb-1">Delivery</h3>
-          <p className="text-[12px] text-hq-muted">Sent vs failed</p>
-          <div className="relative h-[168px] mt-2">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={donutData} dataKey="value" innerRadius={58} outerRadius={80} paddingAngle={totalPosts > 0 ? 3 : 0} stroke="none">
-                  {donutData.map((_, i) => <Cell key={i} fill={donutColors[i]} />)}
-                </Pie>
-              </PieChart>
-            </ResponsiveContainer>
-            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-              <span className="text-[24px] font-semibold text-hq-text leading-none tabular-nums">{totalPosts > 0 ? `${successRate}%` : "—"}</span>
-              <span className="text-[11px] text-hq-muted mt-1">Success</span>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3 mt-3">
-            <LegendRow color="#7C5CFF" label="Sent" value={sent.toLocaleString()} />
-            <LegendRow color="#EF4444" label="Failed" value={failed.toLocaleString()} />
-            <LegendRow color="#00D4FF" label="Sessions" value={sessionsCount} />
-            <LegendRow color="#22C55E" label="Cycles" value={cycles.toLocaleString()} />
-          </div>
-        </HqCard>
-      </div>
-
-      {/* Session Health + Quick Actions */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <HqCard className="p-5 lg:col-span-2">
-          <HqTitle sub="Delivery success per account">Session Health</HqTitle>
-          {Object.keys(sessionStats).length === 0 ? (
-            <div className="py-8 text-center text-[13px] text-hq-muted">No session activity yet</div>
-          ) : (
-            <div className="space-y-3">
-              {Object.entries(sessionStats).slice(0, 8).map(([sess, v]: [string, any]) => {
-                const s = v.lifetime_sent || v.sent || 0;
-                const f = v.lifetime_failed || v.failed || 0;
-                const rate = s + f > 0 ? Math.round((s / (s + f)) * 100) : 0;
-                const col = rate >= 80 ? "#22C55E" : rate >= 50 ? "#F59E0B" : "#EF4444";
-                return (
-                  <div key={sess} className="flex items-center gap-3">
-                    <span className="w-8 h-8 rounded-full bg-hq-elev border border-hq-border flex items-center justify-center text-[11px] font-semibold text-hq-sub shrink-0">
-                      {sess.replace(".session", "").slice(0, 2).toUpperCase()}
-                    </span>
-                    <span className="text-[12px] font-mono text-hq-sub w-24 truncate shrink-0">{sess.replace(".session", "")}</span>
-                    <div className="flex-1 h-1.5 rounded-full bg-hq-bg overflow-hidden">
-                      <div className="h-full rounded-full transition-all duration-700" style={{ width: `${rate}%`, background: col }} />
-                    </div>
-                    <span className="text-[12px] font-semibold tabular-nums w-10 text-right" style={{ color: col }}>{s + f > 0 ? `${rate}%` : "—"}</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </HqCard>
-
-        <HqCard className="p-5">
-          <HqTitle sub="One-click operations">Quick Actions</HqTitle>
-          <div className="space-y-2">
-            {[
-              { label: "Restart Bot", icon: RotateCw, run: () => api.post(`/api/bots/${encodeURIComponent(name)}/restart`), ok: "Restart queued" },
-              { label: "Validate Sessions", icon: ShieldCheck, run: () => api.post(`/api/bots/${encodeURIComponent(name)}/sessions/validate-all`), ok: "Sessions validated" },
-              { label: "Fix Config", icon: FileText, run: () => api.post(`/api/bots/${encodeURIComponent(name)}/repair/config`), ok: "Config repaired" },
-              { label: "Fix Log Group", icon: MessageSquare, run: () => api.post(`/api/bots/${encodeURIComponent(name)}/repair/log-group`, {}, { timeout: 180000 }), ok: "Log group checked" },
-            ].map((a) => (
-              <QuickActionRow key={a.label} label={a.label} icon={a.icon} run={a.run} ok={a.ok} onDone={onUpdate} />
-            ))}
-          </div>
-        </HqCard>
-      </div>
-
-      {/* Details + Status */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <HqCard className="p-5 lg:col-span-2">
-          <h3 className="text-[15px] font-semibold text-hq-text mb-4">Details</h3>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-4">
-            {details.map(([k, v]) => (
-              <div key={k} className="min-w-0">
-                <p className="text-[11px] text-hq-muted uppercase tracking-wide">{k}</p>
-                <p className="text-[13px] text-hq-text font-medium mt-1 truncate" title={String(v)}>{String(v)}</p>
-              </div>
-            ))}
-          </div>
-          {bot.log_group && (
-            <div className="mt-4 pt-4 border-t border-hq-border">
-              <p className="text-[11px] text-hq-muted uppercase tracking-wide mb-1">Log Group</p>
-              <a href={bot.log_group} target="_blank" rel="noreferrer" className="text-[13px] text-hq-accent hover:underline break-all inline-flex items-center gap-1">
-                {bot.log_group} <ExternalLink className="w-3 h-3" />
-              </a>
-            </div>
-          )}
-        </HqCard>
-
-        <HqCard className="p-5">
-          <h3 className="text-[15px] font-semibold text-hq-text mb-4">Status</h3>
-          <div className="space-y-3">
-            {[
-              { label: "Posting", ok: bot.running, okText: "Running", failText: "Stopped" },
-              { label: "Frozen", ok: !bot.frozen, okText: "No", failText: "Frozen" },
-              { label: "Suspended", ok: !bot.suspended, okText: "No", failText: "Suspended" },
-            ].map((r) => (
-              <div key={r.label} className="flex items-center justify-between">
-                <span className="text-[13px] text-hq-sub">{r.label}</span>
-                <span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${r.ok ? "text-hq-success" : "text-hq-danger"}`}>
-                  <span className={`w-1.5 h-1.5 rounded-full ${r.ok ? "bg-hq-success" : "bg-hq-danger"}`} />
-                  {r.ok ? r.okText : r.failText}
-                </span>
-              </div>
-            ))}
-            {bot.plan && (
-              <div className="pt-3 mt-1 border-t border-hq-border space-y-2.5">
-                {([["Plan Sessions", bot.plan.sessions], ["Plan Cycle", `${bot.plan.cycle}s`], ["Plan Gap", `${bot.plan.gap}s`]] as [string, any][]).map(([k, v]) => (
-                  <div key={k} className="flex items-center justify-between">
-                    <span className="text-[13px] text-hq-sub">{k}</span>
-                    <span className="text-[13px] text-hq-text font-medium tabular-nums">{String(v)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </HqCard>
-      </div>
-
-      {/* Web Access */}
+    <div className="space-y-4">
       <HqCard className="p-5">
         <div className="flex items-center gap-2 mb-4">
-          <Key className="h-4 w-4 text-hq-sub" strokeWidth={1.75} />
-          <h3 className="text-[15px] font-semibold text-hq-text">Web Access</h3>
+          <KeyRound className="h-4 w-4 text-hq-sub" strokeWidth={1.75} />
+          <h3 className="text-[15px] font-semibold text-hq-text">Web access</h3>
         </div>
         <div className="space-y-4">
           <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-[13px] text-hq-sub w-24 shrink-0">Access Code</span>
+            <span className="text-[13px] text-hq-sub w-24 shrink-0">Access code</span>
             <div className="flex items-center gap-2 flex-1 min-w-0">
               <code className="rounded-[10px] bg-hq-elev border border-hq-border px-3 py-1.5 text-[13px] font-mono text-hq-accent select-all">
                 {showToken ? (bot.web_token || "not set") : "••••••••"}
@@ -674,12 +778,8 @@ function OverviewTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
           </div>
 
           <div className="flex flex-wrap gap-2 items-center">
-            <Button variant="secondary" size="sm" onClick={() => resetToken()} loading={tokenLoading && !editToken}>
-              <RefreshCw className="h-3 w-3" /> Regenerate
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => setEditToken(!editToken)}>
-              <Edit className="h-3 w-3" /> Set Custom
-            </Button>
+            <HqBtn tone="secondary" onClick={() => resetToken()} loading={tokenLoading && !editToken} icon={RefreshCw}>Regenerate</HqBtn>
+            <HqBtn tone="ghost" onClick={() => setEditToken(!editToken)} icon={Edit}>Set custom</HqBtn>
           </div>
 
           {editToken && (
@@ -691,60 +791,182 @@ function OverviewTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
                 onChange={(e) => setCustomToken(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && customToken.trim() && resetToken(customToken.trim())}
               />
-              <Button size="sm" onClick={() => resetToken(customToken.trim())} loading={tokenLoading} disabled={!customToken.trim()}>
-                <Save className="h-3 w-3" /> Set
-              </Button>
-            </div>
-          )}
-
-          <div className="border-t border-hq-border pt-3 space-y-2">
-            <p className="text-[11px] text-hq-muted font-medium uppercase tracking-wider">Last Web Login</p>
-            {lastLogin ? (
-              <div className="flex items-center gap-4 flex-wrap text-[13px]">
-                <span className="inline-flex items-center gap-2 text-hq-sub"><Clock className="h-3.5 w-3.5 text-hq-muted" />{formatTs(lastLogin.ts || lastLogin.time)} <span className="text-[10px] text-hq-muted">({timeSince(lastLogin.time)})</span></span>
-                <span className="inline-flex items-center gap-2 text-hq-sub"><Globe className="h-3.5 w-3.5 text-hq-muted" /><span className="font-mono text-xs">{lastLogin.ip}</span></span>
-              </div>
-            ) : (
-              <p className="text-[13px] text-hq-muted">Never logged in</p>
-            )}
-          </div>
-
-          {loginHistory.length > 0 && (
-            <div>
-              <button onClick={() => setShowHistory(!showHistory)} className="flex items-center gap-1.5 text-[12px] text-hq-muted hover:text-hq-sub transition-colors">
-                {showHistory ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                Login History ({loginHistory.length})
-              </button>
-              {showHistory && (
-                <div className="mt-2 rounded-[14px] bg-hq-bg border border-hq-border p-3 max-h-48 overflow-y-auto space-y-1">
-                  {[...loginHistory].reverse().map((h: any, i: number) => (
-                    <div key={i} className="flex items-center gap-3 text-xs py-1 border-b border-hq-border/60 last:border-0">
-                      <span className="text-hq-muted w-36 shrink-0">{formatTs(h.ts || h.time)}</span>
-                      <span className="font-mono text-hq-sub">{h.ip}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <HqBtn onClick={() => resetToken(customToken.trim())} loading={tokenLoading} disabled={!customToken.trim()} icon={Save}>Set</HqBtn>
             </div>
           )}
         </div>
       </HqCard>
 
-      {/* Activity */}
-      {bot.history?.length > 0 && (
-        <HqCard className="p-5">
-          <h3 className="text-[15px] font-semibold text-hq-text mb-4">Recent Activity</h3>
-          <div className="max-h-64 overflow-y-auto space-y-1">
-            {bot.history.slice(-20).reverse().map((h: any, i: number) => (
-              <div key={i} className="flex items-center gap-3 text-[12px] py-2 border-b border-hq-border/60 last:border-0">
-                <span className="text-hq-muted w-28 shrink-0">{formatDateTime(h.ts)}</span>
-                <Badge status={h.action} />
-                <span className="text-hq-sub truncate">{h.detail || ""}</span>
+      <HqCard className="p-5">
+        <h3 className="text-[15px] font-semibold text-hq-text mb-4">Login history</h3>
+        <div className="mb-4 rounded-[12px] bg-hq-elev border border-hq-border px-3.5 py-3">
+          <p className="text-[11px] text-hq-muted font-medium uppercase tracking-wider mb-1.5">Last login</p>
+          {lastLogin ? (
+            <div className="flex items-center gap-4 flex-wrap text-[13px]">
+              <span className="inline-flex items-center gap-2 text-hq-sub"><Clock className="h-3.5 w-3.5 text-hq-muted" />{formatTs(lastLogin.ts || lastLogin.time)}</span>
+              {lastLogin.ip && <span className="inline-flex items-center gap-2 text-hq-sub"><Globe className="h-3.5 w-3.5 text-hq-muted" /><span className="font-mono text-xs">{lastLogin.ip}</span></span>}
+            </div>
+          ) : (
+            <p className="text-[13px] text-hq-muted">Never logged in</p>
+          )}
+        </div>
+        {loginHistory.length === 0 ? (
+          <EmptyState icon={Globe} title="No login history yet" />
+        ) : (
+          <div className="rounded-[12px] bg-hq-bg border border-hq-border divide-y divide-hq-border/50 max-h-72 overflow-y-auto">
+            {[...loginHistory].reverse().map((h: any, i: number) => (
+              <div key={i} className="flex items-center gap-3 text-[12px] px-3.5 py-2.5">
+                <Clock className="h-3.5 w-3.5 text-hq-muted shrink-0" />
+                <span className="text-hq-sub w-44 shrink-0">{formatTs(h.ts || h.time)}</span>
+                <span className="font-mono text-hq-muted truncate">{h.ip}</span>
               </div>
             ))}
           </div>
-        </HqCard>
-      )}
+        )}
+      </HqCard>
+    </div>
+  );
+}
+
+/* ─── PAYMENTS (plan, pricing, renewal history) ─── */
+function PaymentsTab({ name, bot }: { name: string; bot: any }) {
+  const plan = bot.plan || {};
+  const daysLeft = daysUntil(bot.valid_till);
+  const expired = daysLeft !== null && daysLeft < 0;
+  const price = plan.price_month ?? plan.price_week ?? null;
+
+  // history may be a dict { renewals: [...] } or absent
+  const renewals: any[] = Array.isArray(bot.history?.renewals) ? bot.history.renewals
+    : Array.isArray(bot.renewal_history) ? bot.renewal_history : [];
+
+  const rows: [string, ReactNode][] = [
+    ["Plan", fmt(bot.plan_name)],
+    ["Mode", cap(fmt(bot.mode))],
+    ["Sessions", fmt(plan.sessions ?? bot.sessions_count)],
+    ["Cycle", (plan.cycle ?? bot.cycle) != null ? `${plan.cycle ?? bot.cycle}s` : "Not set"],
+    ["Gap", (plan.gap ?? bot.gap) != null ? `${plan.gap ?? bot.gap}s` : "Not set"],
+    ["Monthly price", price != null && price !== "" ? formatUSD(Number(price)) : "Not set"],
+    ["Free replacements", fmt(plan.free_replacements, "Not set")],
+    ["Created", bot.created_at ? formatDate(bot.created_at) : "Not tracked"],
+  ];
+
+  return (
+    <div className="space-y-4">
+      {/* Subscription status banner */}
+      <HqCard className="p-5">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <div className="flex items-center gap-2.5">
+              <h3 className="text-[15px] font-semibold text-hq-text">{fmt(bot.plan_name, "No plan")}</h3>
+              <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold ${expired ? "text-hq-danger bg-hq-danger/10" : "text-hq-success bg-hq-success/10"}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${expired ? "bg-hq-danger" : "bg-hq-success"}`} />
+                {expired ? "Expired" : "Active"}
+              </span>
+            </div>
+            <p className="text-[12px] text-hq-muted mt-1.5">
+              {bot.valid_till
+                ? (expired ? `Expired ${formatDate(bot.valid_till)}` : `${Math.max(daysLeft ?? 0, 0)} days left · renews ${formatDate(bot.valid_till)}`)
+                : "No validity date set"}
+            </p>
+          </div>
+          <div className="text-right">
+            <p className="text-[24px] font-semibold text-hq-text tabular-nums leading-none">{price != null && price !== "" ? formatUSD(Number(price)) : "—"}</p>
+            <p className="text-[11px] text-hq-muted mt-1.5">per month</p>
+          </div>
+        </div>
+      </HqCard>
+
+      <HqCard className="p-5">
+        <h3 className="text-[15px] font-semibold text-hq-text mb-2">Subscription details</h3>
+        <DetailGrid rows={rows} />
+      </HqCard>
+
+      <HqCard className="p-5">
+        <h3 className="text-[15px] font-semibold text-hq-text mb-4">Renewal history</h3>
+        {renewals.length === 0 ? (
+          <EmptyState icon={CreditCard} title="No renewal history" hint="Renewals and orders appear here once recorded." />
+        ) : (
+          <div className="overflow-x-auto -mx-1">
+            <table className="w-full text-[13px] min-w-[420px]">
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-wide text-hq-muted border-b border-hq-border">
+                  {["Date", "Days added", "Order ID", "Source"].map((h) => <th key={h} className="px-2 py-2 font-medium">{h}</th>)}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-hq-border/50">
+                {[...renewals].reverse().map((r: any, i: number) => (
+                  <tr key={i}>
+                    <td className="px-2 py-2.5 text-hq-sub">{r.at ? formatDate(r.at) : "—"}</td>
+                    <td className="px-2 py-2.5 tabular-nums text-hq-text">{r.days ? `+${r.days}d` : "—"}</td>
+                    <td className="px-2 py-2.5 font-mono text-[12px] text-hq-muted">{fmt(r.order_id, "—")}</td>
+                    <td className="px-2 py-2.5 text-hq-muted">{fmt(r.source, "—")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </HqCard>
+    </div>
+  );
+}
+
+/* ─── ACTIONS (bot control + repair + danger zone) ─── */
+function ActionsTab({ name, bot, onUpdate, onDelete }: { name: string; bot: any; onUpdate: () => void; onDelete: () => void }) {
+  const [busy, setBusy] = useState("");
+
+  const control = async (action: string, label: string) => {
+    setBusy(action);
+    try {
+      await api.post(`/api/bots/${encodeURIComponent(name)}/${action}`);
+      toast.success(`${label} — done`);
+      onUpdate();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || `${label} failed`);
+    }
+    setBusy("");
+  };
+
+  const controls = bot.running
+    ? [
+        { id: "stop", label: "Stop", icon: Square, tone: "danger" as const },
+        { id: "restart", label: "Restart", icon: RotateCw, tone: "secondary" as const },
+      ]
+    : [{ id: "start", label: "Start", icon: Play, tone: "primary" as const }];
+
+  return (
+    <div className="space-y-4">
+      {/* Bot control */}
+      <HqCard className="p-5">
+        <HqTitle sub="Runtime state — takes effect immediately">Bot control</HqTitle>
+        <div className="flex flex-wrap gap-2">
+          {controls.map((c) => (
+            <HqBtn key={c.id} tone={c.tone} icon={c.icon} loading={busy === c.id} disabled={!!busy} onClick={() => control(c.id, c.label)}>{c.label}</HqBtn>
+          ))}
+          {bot.suspended
+            ? <HqBtn tone="secondary" icon={PlayCircle} loading={busy === "resume"} disabled={!!busy} onClick={() => control("resume", "Resume")}>Resume</HqBtn>
+            : <HqBtn tone="secondary" icon={Pause} loading={busy === "suspend"} disabled={!!busy} onClick={() => control("suspend", "Suspend")}>Suspend</HqBtn>}
+        </div>
+      </HqCard>
+
+      {/* Repair */}
+      <RepairTab name={name} bot={bot} onUpdate={onUpdate} />
+
+      {/* Danger zone */}
+      <div className="rounded-[16px] border border-hq-danger/25 bg-hq-danger/[0.04] p-5">
+        <div className="flex items-center gap-2 mb-1">
+          <AlertTriangle className="h-4 w-4 text-hq-danger" strokeWidth={1.75} />
+          <h3 className="text-[15px] font-semibold text-hq-danger">Danger zone</h3>
+        </div>
+        <p className="text-[12px] text-hq-muted mb-4">Irreversible. Deleting stops the bot, returns admin sessions to the free pool, and erases all data, logs and stats.</p>
+        <div className="flex items-center justify-between gap-3 rounded-[12px] border border-hq-danger/20 bg-hq-card px-4 py-3 flex-wrap">
+          <div>
+            <p className="text-[13px] font-medium text-hq-text">Delete this AdBot</p>
+            <p className="text-[12px] text-hq-muted">Permanently remove &quot;{name}&quot;.</p>
+          </div>
+          <HqBtn tone="danger" icon={Trash2} onClick={onDelete}>Delete bot</HqBtn>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2694,7 +2916,6 @@ const SETTINGS_SUBTABS = [
   { id: "general", label: "General", icon: Settings },
   { id: "plan", label: "Plan", icon: DollarSign },
   { id: "stats", label: "Stats", icon: TrendingUp },
-  { id: "repair", label: "Repair", icon: Wrench },
 ];
 
 function SettingsTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: () => void }) {
@@ -2724,7 +2945,6 @@ function SettingsTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
       {sub === "general" && <ConfigTab name={name} bot={bot} onUpdate={onUpdate} />}
       {sub === "plan" && <PlanTab name={name} bot={bot} onUpdate={onUpdate} />}
       {sub === "stats" && <StatsTab name={name} />}
-      {sub === "repair" && <RepairTab name={name} bot={bot} onUpdate={onUpdate} />}
     </div>
   );
 }
@@ -2734,18 +2954,6 @@ function RepairTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: 
   const [loading, setLoading] = useState("");
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [tokenModal, setTokenModal] = useState(false);
-
-  // Runtime controls (fire-and-forget, toast only)
-  const control = async (action: string, label: string) => {
-    setLoading(action);
-    try {
-      await api.post(`/api/bots/${name}/${action}`);
-      toast.success(`${label} — done`);
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || `${label} failed`);
-    }
-    setLoading("");
-  };
 
   // Repair ops (may take a while, return a result message)
   const repair = async (path: string, label: string) => {
@@ -2764,12 +2972,6 @@ function RepairTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: 
     }
     setLoading("");
   };
-
-  const runtimeActions = [
-    { id: "restart", label: "Force Restart", desc: "Kill workers and restart fresh", icon: RotateCw, color: "text-hq-accent bg-hq-accent/10" },
-    { id: "stop", label: "Force Stop", desc: "Immediately stop all posting", icon: Square, color: "text-hq-danger bg-hq-danger/10" },
-    { id: "resume", label: "Resume (Unsuspend)", desc: "Clear suspended flag and resume", icon: PlayCircle, color: "text-hq-success bg-hq-success/10" },
-  ];
 
   const repairActions = [
     { id: "config", label: "Fix Config", desc: "Validate & auto-repair the config file (paths, session index, missing fields)", icon: FileText, color: "text-hq-accent bg-hq-accent/10" },
@@ -2815,14 +3017,6 @@ function RepairTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: 
         <div className="mt-3 flex items-start gap-2 rounded-[12px] bg-hq-elev border border-hq-border px-3 py-2">
           <HardDrive className="h-3.5 w-3.5 text-hq-muted shrink-0 mt-0.5" />
           <p className="text-[12px] text-hq-muted">To fix or replace sessions (SpamBot check, swap dead/frozen/limited accounts), use the <span className="text-hq-sub">Sessions</span> tab.</p>
-        </div>
-      </HqCard>
-
-      {/* Runtime controls */}
-      <HqCard className="p-5">
-        <HqTitle>Runtime Controls</HqTitle>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {runtimeActions.map((a) => <ActionCard key={a.id} a={a} onClick={() => control(a.id, a.label)} />)}
         </div>
       </HqCard>
 
