@@ -114,7 +114,7 @@ def _get_renewals_soon(bots: dict, days_ahead: int = 14) -> list:
     """Find bots with valid_till within the next N days."""
     now = datetime.now()
     renewals = []
-    for name, cfg in bots.items():
+    for token, cfg in bots.items():
         vt = cfg.get("valid_till")
         if not vt:
             continue
@@ -125,7 +125,8 @@ def _get_renewals_soon(bots: dict, days_ahead: int = 14) -> list:
         days_left = (exp_date - now).days
         if days_left <= days_ahead:
             renewals.append({
-                "name": name,
+                # bots is keyed by bot_token; show the display name, not the token.
+                "name": cfg.get("name") or token,
                 "valid_till": vt,
                 "days_left": max(days_left, 0),
                 "plan_name": cfg.get("plan_name", ""),
@@ -143,12 +144,16 @@ async def dashboard_stats():
     pool = await wrappers.load_pool()
 
     bots = data.get("bots", {})
-    bot_states = {"total": 0, "running": 0, "stopped": 0, "expired": 0, "dead": 0}
+    bot_states = {"total": 0, "running": 0, "stopped": 0, "expired": 0, "dead": 0, "frozen": 0, "suspended": 0}
     for cfg in bots.values():
         bot_states["total"] += 1
         state = cfg.get("state", "stopped")
         if state in bot_states:
             bot_states[state] += 1
+        if cfg.get("frozen") and state != "frozen":
+            bot_states["frozen"] += 1
+        if cfg.get("suspended") and state != "suspended":
+            bot_states["suspended"] += 1
 
     free = len(pool.get("free_sessions", []))
     dead = len(pool.get("dead_sessions", []))
@@ -192,6 +197,7 @@ async def dashboard_stats():
 
     _pending_states = {"payment_waiting", "confirming", "paid", "pending_creation", "creating"}
     revenue_today = revenue_month = pending_value = 0.0
+    paid_today_count = pending_count = expired_count = failed_count = 0
     for o in all_orders:
         amt = float(o.get("amount_usd") or 0)
         st = o.get("status")
@@ -200,10 +206,16 @@ async def dashboard_stats():
             if t is not None:
                 if t >= _today0:
                     revenue_today += amt
+                    paid_today_count += 1
                 if t >= _month0:
                     revenue_month += amt
         elif st in _pending_states:
             pending_value += amt
+            pending_count += 1
+        elif st in ("expired", "cancelled"):
+            expired_count += 1
+        elif st in ("failed", "error"):
+            failed_count += 1
 
     # Recent orders (last 10)
     sorted_orders = sorted(all_orders, key=lambda o: o.get("created_at", ""), reverse=True)
@@ -256,6 +268,10 @@ async def dashboard_stats():
             "revenue_today": round(revenue_today, 2),
             "revenue_month": round(revenue_month, 2),
             "pending_value": round(pending_value, 2),
+            "paid_today_count": paid_today_count,
+            "pending_count": pending_count,
+            "expired_count": expired_count,
+            "failed_count": failed_count,
         },
         "system": {
             "cpu_percent": cpu_percent,
@@ -306,14 +322,18 @@ async def dashboard_analytics(
     if end - start > max_span:
         start = end - max_span
 
-    # load_adbot() keys bots by bot_token, but log files are named by display name
-    # (data/logs/<name>.log). Resolve names, deduped by their sanitized filename so
-    # two configs that map to the same log aren't double-counted.
-    from code.utils import name_to_filename
     data = await wrappers.load_adbot()
-    bots = data.get("bots") or {}
+    bot_names = _resolve_bot_names(data.get("bots") or {})
+    return await asyncio.to_thread(compute_range_analytics, bot_names, start, end)
+
+
+def _resolve_bot_names(bots: dict) -> list[str]:
+    """load_adbot() keys bots by bot_token, but log/stats files are named by display
+    name. Return the display names, deduped by sanitized filename so two configs that
+    map to the same file aren't double-counted."""
+    from code.utils import name_to_filename
     seen: set[str] = set()
-    bot_names: list[str] = []
+    names: list[str] = []
     for cfg in bots.values():
         nm = (cfg.get("name") or "").strip()
         if not nm:
@@ -322,8 +342,126 @@ async def dashboard_analytics(
         if key in seen:
             continue
         seen.add(key)
-        bot_names.append(nm)
-    return await asyncio.to_thread(compute_range_analytics, bot_names, start, end)
+        names.append(nm)
+    return names
+
+
+def _build_bot_health(bots: dict) -> list[dict]:
+    """Per-bot operational rows: status, session health, 24h posting, last cycle,
+    and a derived 'main issue'. Reads each bot's stats file directly."""
+    from code.utils import load_stats
+    now = time.time()
+    cutoff_24h = int((now - 86400) // 3600)
+    rows: list[dict] = []
+
+    for cfg in bots.values():
+        name = (cfg.get("name") or "").strip()
+        if not name:
+            continue
+        state = cfg.get("state", "stopped")
+        running = state == "running"
+        frozen = bool(cfg.get("frozen"))
+        suspended = bool(cfg.get("suspended"))
+        cycle_sec = int(cfg.get("cycle", 0) or 0)
+        sessions = cfg.get("sessions", []) or []
+        sessions_count = len(sessions)
+
+        st = load_stats(name) or {}
+        sent_24 = failed_24 = 0
+        for b in (st.get("last24h_buckets") or []):
+            if int(b.get("hour_ts", 0)) >= cutoff_24h:
+                sent_24 += int(b.get("sent", 0))
+                failed_24 += int(b.get("failed", 0))
+
+        sess_stats = st.get("session_stats") or {}
+        last_cycle_ts = int(st.get("last_cycle_ts", 0) or 0)
+        failing = 0
+        for s in sessions:
+            sf = s.get("file") if isinstance(s, dict) else s
+            entry = sess_stats.get(sf) or {}
+            spam = str(entry.get("_last_spam_status", "") or "").upper()
+            if spam in ("DEAD", "FROZEN", "HARD_LIMITED", "BANNED"):
+                failing += 1
+            lct = int(entry.get("last_cycle_ts", 0) or 0)
+            if lct > last_cycle_ts:
+                last_cycle_ts = lct
+
+        # Derive the single most important issue for this bot.
+        vt = cfg.get("valid_till")
+        days_left = None
+        if vt:
+            try:
+                days_left = (datetime.strptime(vt, "%d/%m/%Y") - datetime.now()).days
+            except (ValueError, TypeError):
+                days_left = None
+
+        issue = None
+        attempted_24 = sent_24 + failed_24
+        stale = running and cycle_sec and last_cycle_ts and (now - last_cycle_ts) > max(2 * cycle_sec, 1800)
+        if days_left is not None and days_left < 0:
+            issue = {"severity": "critical", "label": "Plan expired"}
+        elif frozen:
+            issue = {"severity": "critical", "label": "Frozen"}
+        elif suspended:
+            issue = {"severity": "warning", "label": "Suspended"}
+        elif failing > 0:
+            issue = {"severity": "warning", "label": f"{failing} session{'s' if failing != 1 else ''} failing"}
+        elif stale:
+            issue = {"severity": "warning", "label": "Posting stalled"}
+        elif attempted_24 >= 20 and failed_24 / attempted_24 > 0.3:
+            issue = {"severity": "warning", "label": "High failure rate"}
+        elif not running and state == "stopped":
+            issue = {"severity": "info", "label": "Stopped"}
+
+        rows.append({
+            "name": name,
+            "owner_id": cfg.get("owner_id"),
+            "plan_name": cfg.get("plan_name", ""),
+            "state": state,
+            "running": running,
+            "frozen": frozen,
+            "suspended": suspended,
+            "sessions_count": sessions_count,
+            "failing_sessions": failing,
+            "cycle_sec": cycle_sec,
+            "last_cycle_ts": last_cycle_ts,
+            "sent_24h": sent_24,
+            "failed_24h": failed_24,
+            "valid_till": vt or "",
+            "days_left": days_left,
+            "issue": issue,
+        })
+
+    # Worst first: critical > warning > info > healthy, then by 24h failures.
+    sev_rank = {"critical": 0, "warning": 1, "info": 2}
+    rows.sort(key=lambda r: (sev_rank.get((r["issue"] or {}).get("severity"), 3), -r["failed_24h"]))
+    return rows
+
+
+@router.get("/bot-health")
+async def dashboard_bot_health():
+    """Per-bot operational health table for the admin dashboard."""
+    import asyncio
+    data = await wrappers.load_adbot()
+    rows = await asyncio.to_thread(_build_bot_health, data.get("bots") or {})
+    return {"bots": rows}
+
+
+_FAILURE_RANGES = {"1h": 3600, "6h": 6 * 3600, "24h": 86400, "7d": 7 * 86400}
+
+
+@router.get("/failure-reasons")
+async def dashboard_failure_reasons(range: str = Query("24h")):
+    """Categorized posting-failure breakdown across all bots for the given window."""
+    import asyncio
+    from api.services.log_stats import compute_failure_reasons
+    window = _FAILURE_RANGES.get(range, _FAILURE_RANGES["24h"])
+    since = time.time() - window
+    data = await wrappers.load_adbot()
+    bot_names = _resolve_bot_names(data.get("bots") or {})
+    result = await asyncio.to_thread(compute_failure_reasons, bot_names, since)
+    result["range"] = range if range in _FAILURE_RANGES else "24h"
+    return result
 
 
 @router.get("/alerts")

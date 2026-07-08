@@ -189,3 +189,99 @@ def compute_range_analytics(bot_names: list[str], start_ts: float, end_ts: float
         "per_bot": per_bot,
         "generated_at": time.time(),
     }
+
+
+# ── Failure-reason breakdown ────────────────────────────────────────────────
+_FAIL_LINE_RE = re.compile(
+    r"^\s*(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})\s+.*?\[(POST_FAILURE|FLOOD_WAIT)\]\s*(.*)$"
+)
+_ACCOUNT_RE = re.compile(r"account=([^\s]+)")
+
+# category key -> human label, in the order we want them surfaced.
+FAILURE_LABELS: dict[str, str] = {
+    "flood_wait": "Flood wait",
+    "peer_flood": "Peer flood",
+    "banned": "Banned",
+    "private": "Channel private",
+    "no_permission": "No permission",
+    "topic_closed": "Topic closed",
+    "payment_required": "Payment required",
+    "auth": "Auth expired",
+    "frozen": "Frozen",
+    "unknown": "Unknown",
+}
+
+
+def _categorize_failure(text: str) -> str:
+    m = (text or "").lower()
+    if "flood" in m and "wait" in m:
+        return "flood_wait"
+    if "peer_flood" in m or "peer flood" in m:
+        return "peer_flood"
+    if "channel_private" in m or "channel private" in m or "channelprivate" in m:
+        return "private"
+    if "banned" in m or "userbanned" in m or "user_banned" in m:
+        return "banned"
+    if (
+        "write forbidden" in m or "chat_write_forbidden" in m or "chatwriteforbidden" in m
+        or "can't write" in m or "cant write" in m or "send message forbidden" in m
+    ):
+        return "no_permission"
+    if "topic_closed" in m or "topic closed" in m or "topic_deleted" in m:
+        return "topic_closed"
+    if "payment_required" in m or "allow_payment_required" in m or "paid" in m and "post" in m:
+        return "payment_required"
+    if "auth" in m or "unauthorized" in m or "revoked" in m or "unregistered" in m:
+        return "auth"
+    if "frozen" in m:
+        return "frozen"
+    return "unknown"
+
+
+def compute_failure_reasons(bot_names: list[str], since_ts: float) -> dict:
+    """Tally `[POST_FAILURE]`/`[FLOOD_WAIT]` log lines since ``since_ts`` across all bots,
+    grouped by categorized reason with the affected accounts for each."""
+    counts: dict[str, int] = {}
+    sessions: dict[str, set[str]] = {}
+    total = 0
+
+    for name in bot_names:
+        path = _resolve_log_path(name)
+        if path is None:
+            continue
+        try:
+            fh = path.open("r", encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                if "[POST_FAILURE]" not in line and "[FLOOD_WAIT]" not in line:
+                    continue
+                m = _FAIL_LINE_RE.match(line)
+                if not m:
+                    continue
+                try:
+                    dt = datetime.strptime(f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+                if dt.timestamp() < since_ts:
+                    continue
+                tag, rest = m.group(3), m.group(4)
+                cat = "flood_wait" if tag == "FLOOD_WAIT" else _categorize_failure(rest)
+                counts[cat] = counts.get(cat, 0) + 1
+                total += 1
+                acc = _ACCOUNT_RE.search(rest)
+                if acc:
+                    sessions.setdefault(cat, set()).add(acc.group(1))
+
+    reasons = [
+        {
+            "key": key,
+            "label": FAILURE_LABELS.get(key, key.title()),
+            "count": counts[key],
+            "sessions": sorted(sessions.get(key, set()))[:12],
+        }
+        for key in counts
+    ]
+    reasons.sort(key=lambda r: r["count"], reverse=True)
+    return {"total": total, "reasons": reasons, "generated_at": time.time()}

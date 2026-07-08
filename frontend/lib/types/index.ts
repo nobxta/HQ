@@ -18,6 +18,8 @@ export interface DashboardStats {
     stopped: number;
     expired: number;
     dead: number;
+    frozen?: number;
+    suspended?: number;
   };
   sessions: {
     total: number;
@@ -36,6 +38,10 @@ export interface DashboardStats {
     revenue_today?: number;
     revenue_month?: number;
     pending_value?: number;
+    paid_today_count?: number;
+    pending_count?: number;
+    expired_count?: number;
+    failed_count?: number;
   };
   system: {
     cpu_percent: number;
@@ -95,6 +101,32 @@ export interface RangeAnalytics {
   total_failed: number;
   bots_with_data: number;
   per_bot: Array<{ name: string; sent: number; failed: number }>;
+  generated_at: number;
+}
+
+export interface BotHealthRow {
+  name: string;
+  owner_id?: number | null;
+  plan_name: string;
+  state: string;
+  running: boolean;
+  frozen: boolean;
+  suspended: boolean;
+  sessions_count: number;
+  failing_sessions: number;
+  cycle_sec: number;
+  last_cycle_ts: number;
+  sent_24h: number;
+  failed_24h: number;
+  valid_till: string;
+  days_left?: number | null;
+  issue?: { severity: "critical" | "warning" | "info"; label: string } | null;
+}
+
+export interface FailureReasons {
+  total: number;
+  range: string;
+  reasons: Array<{ key: string; label: string; count: number; sessions: string[] }>;
   generated_at: number;
 }
 

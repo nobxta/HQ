@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useDashboard, useAlerts } from "@/lib/hooks/useDashboard";
 import Badge from "@/components/ui/Badge";
 import { PageSkeleton } from "@/components/ui/Skeleton";
@@ -9,16 +9,16 @@ import {
 } from "recharts";
 import {
   Bot, DollarSign, Cpu, AlertCircle,
-  Zap, Shield, CheckCircle2, XCircle, Snowflake,
-  Lock, Send, TrendingDown, Clock, Users,
-  CalendarClock, ShoppingCart, Activity,
-  ArrowRightLeft, Loader2, Play, Trash2, RefreshCw,
-  HelpCircle, MessageSquare, AlertTriangle, HardDrive,
-  ExternalLink, Hammer, Square, CheckSquare, ChevronDown,
-  Power, PauseCircle, Wrench,
+  Shield, CheckCircle2, XCircle,
+  Send, Clock, Users,
+  ShoppingCart, Activity, Server,
+  ArrowRightLeft, Loader2, Play, RefreshCw,
+  AlertTriangle, HardDrive,
+  ExternalLink, Hammer, Square, CheckSquare, ChevronDown, ChevronRight,
+  PauseCircle, Wrench, MoreVertical, Layers, Gauge,
 } from "lucide-react";
-import { formatDateTime, timeAgo } from "@/lib/utils";
-import type { RangeAnalytics } from "@/lib/types";
+import { timeAgo } from "@/lib/utils";
+import type { RangeAnalytics, BotHealthRow, FailureReasons } from "@/lib/types";
 import useSWR from "swr";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
@@ -54,7 +54,18 @@ type ReplQueueData = {
   total_awaiting: number;
 };
 
+type Issue = {
+  id: string;
+  severity: "critical" | "warning" | "info";
+  title: string;
+  impact: string;
+  affected?: string;
+  action?: { label: string; href?: string; onClick?: () => void };
+};
+
 const replFetcher = (url: string) => api.get(url).then(r => r.data);
+
+const ACT_RANGES: Record<string, number> = { "1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800 };
 
 /* Tiny dependency-free sparkline. */
 function Sparkline({ values, color = "#34d399", width = 96, height = 26 }: {
@@ -79,6 +90,26 @@ function humanizeAction(a: string): string {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : "Action";
 }
 
+function fmtActLabel(ts: number, bs: number): string {
+  const d = new Date(ts * 1000);
+  if (bs >= 86400) return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  if (bs >= 3600) return d.toLocaleTimeString([], { hour: "numeric" });
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function fmtCycle(s: number): string {
+  if (!s) return "—";
+  if (s >= 3600) return `${Math.round(s / 3600)}h`;
+  if (s >= 60) return `${Math.round(s / 60)}m`;
+  return `${s}s`;
+}
+
+const sevChip: Record<string, string> = {
+  critical: "bg-red-500/12 text-red-400 border-red-500/25",
+  warning: "bg-amber-500/12 text-amber-400 border-amber-500/25",
+  info: "bg-accent/10 text-accent border-accent/20",
+};
+
 export default function DashboardPage() {
   const { data, isLoading } = useDashboard();
   const { data: alertsData } = useAlerts();
@@ -88,9 +119,15 @@ export default function DashboardPage() {
   const { data: supportData } = useSWR<{ tickets: any[]; total: number; open: number }>(
     "/api/portal/admin/support-tickets", replFetcher, { refreshInterval: 15000 }
   );
+  const { data: botHealth } = useSWR<{ bots: BotHealthRow[] }>(
+    "/api/dashboard/bot-health", replFetcher, { refreshInterval: 15000, keepPreviousData: true }
+  );
   const [processing, setProcessing] = useState(false);
   const [cancelling, setCancelling] = useState<string | null>(null);
   const [stuckOpen, setStuckOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [activityRange, setActivityRange] = useState<"1h" | "6h" | "24h" | "7d">("24h");
+  const [failRange, setFailRange] = useState<"1h" | "6h" | "24h" | "7d">("24h");
 
   // ── System controls: maintenance state, real worker heartbeats, emergency actions ──
   const { data: maint, mutate: mutateMaint } = useSWR<{ maintenance_enabled: boolean }>(
@@ -101,6 +138,7 @@ export default function DashboardPage() {
   );
   const [sysBusy, setSysBusy] = useState("");
   const [confirmStop, setConfirmStop] = useState(false);
+  const [confirmResume, setConfirmResume] = useState(false);
 
   const maintenanceOn = !!maint?.maintenance_enabled;
 
@@ -114,6 +152,7 @@ export default function DashboardPage() {
     }
     setSysBusy("");
     setConfirmStop(false);
+    setConfirmResume(false);
   };
 
   const toggleMaintenance = async () => {
@@ -158,6 +197,20 @@ export default function DashboardPage() {
     return { delta, spark };
   })();
 
+  // ── Merged posting activity (range-based, log-derived) ──
+  const { data: activity } = useSWR<RangeAnalytics>(
+    `/api/dashboard/analytics?start=${trendNow - ACT_RANGES[activityRange]}&end=${trendNow}`,
+    replFetcher, { refreshInterval: 30000, keepPreviousData: true }
+  );
+  const actChart = (activity?.points || []).map((p) => ({
+    label: fmtActLabel(p.ts, activity?.bucket_seconds || 3600), sent: p.sent, failed: p.failed,
+  }));
+
+  // ── Failure reasons ──
+  const { data: failData } = useSWR<FailureReasons>(
+    `/api/dashboard/failure-reasons?range=${failRange}`, replFetcher, { refreshInterval: 30000, keepPreviousData: true }
+  );
+
   // ── Recent admin actions (audit log) ──
   const { data: auditData } = useSWR<{ entries: any[]; total: number }>(
     "/api/system/audit?limit=15", replFetcher, { refreshInterval: 20000 }
@@ -198,66 +251,79 @@ export default function DashboardPage() {
     setRecreateTarget(null);
   };
 
+  // Track last successful refresh for the status strip.
+  const [lastUpdate, setLastUpdate] = useState(Date.now());
+  useEffect(() => { if (data) setLastUpdate(Date.now()); }, [data]);
+
   if (isLoading) return <PageSkeleton />;
 
-  const b = data?.bots || { total: 0, running: 0, stopped: 0, expired: 0, dead: 0 };
+  const b = data?.bots || { total: 0, running: 0, stopped: 0, expired: 0, dead: 0, frozen: 0, suspended: 0 };
   const s = data?.sessions || { total: 0, assigned: 0, free: 0, dead: 0, frozen: 0, limited: 0, unauth: 0 };
   const o = data?.orders || { total: 0, completed: 0, pending: 0, revenue_usd: 0 };
   const sys = data?.system || { cpu_percent: 0, memory_percent: 0, memory_used_mb: 0, memory_total_mb: 0, uptime_seconds: 0 };
   const workers = data?.workers || { create_worker_ok: false, payment_worker_ok: false };
   const posting = data?.posting || { total_sent: 0, total_failed: 0, today_sent: 0, today_failed: 0, hourly: [] };
   const renewals = data?.renewals_soon || [];
-  const topFailing = data?.top_failing || [];
   const recentOrders = data?.recent_orders || [];
   const alerts = alertsData?.items || [];
   const openTickets = supportData?.tickets?.filter((t: any) => t.status === "open") || [];
-  const lowSessions = s.free <= 3;
+  const rows = botHealth?.bots || [];
 
   const postsToday = posting.today_sent + posting.today_failed;
-  const successRate = postsToday > 0
-    ? ((posting.today_sent / postsToday) * 100).toFixed(1)
-    : null;
+  const successRate = postsToday > 0 ? ((posting.today_sent / postsToday) * 100).toFixed(1) : null;
+  const avgPerHour = Math.round(posting.today_sent / 24);
   const diskPct = sys.disk_percent;
-  const diskWarn = diskPct != null && diskPct >= 85;
 
-  const hourlyChart = posting.hourly.map((h) => {
-    const date = new Date(h.hour_ts * 3600 * 1000);
-    return {
-      time: date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      sent: h.sent,
-      failed: h.failed,
-    };
-  });
+  // Worker health (real heartbeat first, fall back to boolean).
+  const cw = workerHb?.create_worker_heartbeat;
+  const pw = workerHb?.payment_worker_heartbeat;
+  const cwHealthy = cw ? cw.healthy : workers.create_worker_ok;
+  const pwHealthy = pw ? pw.healthy : workers.payment_worker_ok;
+  const workersHealthy = (cwHealthy ? 1 : 0) + (pwHealthy ? 1 : 0);
+  const deadFrozen = s.dead + s.frozen;
 
-  const clayStats = [
-    {
-      title: "Total Users", value: b.total, subtitle: `${b.running} running · ${b.stopped} stopped`,
-      icon: Users, tone: "accent" as const,
-    },
-    {
-      title: "Posts Today", value: posting.today_sent.toLocaleString(),
-      subtitle: `${posting.today_failed} failed · ${successRate === null ? "—" : successRate + "%"} success (24h)`,
-      icon: Send, tone: "info" as const, live: true,
-      delta: trend.delta, spark: trend.spark,
-    },
-    {
-      title: "Total Revenue",
-      value: `$${(o.revenue_usd || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-      subtitle: `$${(o.revenue_today || 0).toFixed(2)} today · $${(o.revenue_month || 0).toFixed(2)} mo · $${(o.pending_value || 0).toFixed(2)} pending`,
-      icon: DollarSign, tone: "success" as const,
-    },
-    {
-      title: "CPU / RAM", value: `${sys.cpu_percent?.toFixed(0) || 0}% / ${sys.memory_percent?.toFixed(0) || 0}%`,
-      subtitle: `${Math.round(sys.memory_used_mb)}MB · Disk ${diskPct != null ? diskPct.toFixed(0) + "%" : "—"}`,
-      icon: Cpu, tone: "warning" as const,
-    },
-  ];
-  const toneMap: Record<string, string> = {
-    accent: "clay-tone-accent", info: "clay-tone-info", success: "clay-tone-success", warning: "clay-tone-warning",
+  // ── Needs Attention: derive real issues, worst first ──
+  const issues: Issue[] = [];
+  if (pw && !pw.healthy) issues.push({ id: "pw", severity: "critical", title: `Payment worker offline (${fmtAge(pw.age_sec)})`, impact: "New payments are not being processed.", action: { label: "View Logs", href: "/admin/logs" } });
+  if (cw && !cw.healthy) issues.push({ id: "cw", severity: "critical", title: `Create worker offline (${fmtAge(cw.age_sec)})`, impact: "New bot creation is stalled.", action: { label: "View Logs", href: "/admin/logs" } });
+  if (diskPct != null && diskPct >= 85) issues.push({ id: "disk", severity: diskPct >= 95 ? "critical" : "warning", title: `Disk ${diskPct.toFixed(0)}% full`, impact: `Posting halts if the disk fills — per-bot logs never rotate${sys.logs_size_mb != null ? ` (data/logs is ${sys.logs_size_mb.toLocaleString()} MB)` : ""}.`, action: { label: "View Logs", href: "/admin/logs" } });
+  if (s.free <= 3) issues.push({ id: "pool", severity: s.free === 0 ? "critical" : "warning", title: `Only ${s.free} free session${s.free !== 1 ? "s" : ""} in pool`, impact: "New users can't be assigned sessions and replacements will stall.", action: { label: "Upload Sessions", href: "/admin/sessions" } });
+  if (deadFrozen > 0) issues.push({ id: "deadsess", severity: "warning", title: `${deadFrozen} dead/frozen session${deadFrozen !== 1 ? "s" : ""}`, impact: "Affected bots run under capacity until replaced.", action: { label: "View Sessions", href: "/admin/sessions" } });
+  if (replQueue && replQueue.total_awaiting > 0) issues.push({ id: "repl", severity: "warning", title: `${replQueue.total_awaiting} replacement${replQueue.total_awaiting !== 1 ? "s" : ""} waiting for sessions`, impact: "Users are waiting for working accounts.", action: { label: "Upload Sessions", href: "/admin/sessions" } });
+  if (stuckOrders.length > 0) issues.push({ id: "stuck", severity: "warning", title: `${stuckOrders.length} paid order${stuckOrders.length !== 1 ? "s" : ""} stuck in queue`, impact: "Payment received but the bot was not created.", action: { label: "View Payments", href: "/admin/payments" } });
+  if (b.expired > 0) issues.push({ id: "expired", severity: "warning", title: `${b.expired} expired bot${b.expired !== 1 ? "s" : ""}`, impact: "These bots stopped posting when their plan lapsed.", action: { label: "Open AdBots", href: "/admin/adbots" } });
+  if (openTickets.length > 0) issues.push({ id: "tickets", severity: "info", title: `${openTickets.length} open support ticket${openTickets.length !== 1 ? "s" : ""}`, impact: "Users are waiting for a response.", action: { label: "View Support", href: "/admin/support" } });
+  if (maintenanceOn) issues.push({ id: "maint", severity: "info", title: "Maintenance mode is ON", impact: "User-facing actions (purchases, renewals, replacements) are paused.", action: { label: "Turn Off", onClick: toggleMaintenance } });
+  const sevRank = { critical: 0, warning: 1, info: 2 } as const;
+  issues.sort((a, c) => sevRank[a.severity] - sevRank[c.severity]);
+
+  const platform = issues.some(i => i.severity === "critical")
+    ? { label: "Critical", cls: "text-red-400", dot: "bg-red-400" }
+    : issues.some(i => i.severity === "warning")
+      ? { label: "Warning", cls: "text-amber-400", dot: "bg-amber-400" }
+      : { label: "Operational", cls: "text-emerald-400", dot: "bg-emerald-400" };
+
+  const botStatus = (r: BotHealthRow) => {
+    if (r.frozen) return { t: "Frozen", c: "text-red-400 bg-red-500/10" };
+    if (r.state === "expired" || (r.days_left != null && r.days_left < 0)) return { t: "Expired", c: "text-red-400 bg-red-500/10" };
+    if (r.suspended) return { t: "Suspended", c: "text-amber-400 bg-amber-500/10" };
+    if (r.running) return { t: "Running", c: "text-emerald-400 bg-emerald-500/10" };
+    return { t: "Stopped", c: "text-dark-400 bg-dark-700/40" };
   };
 
+  const rangeBtns = (val: string, set: (v: any) => void) => (
+    <div className="flex items-center gap-1">
+      {(["1h", "6h", "24h", "7d"] as const).map((r) => (
+        <button key={r} onClick={() => set(r)}
+          className={`px-2 py-1 text-[10px] font-bold rounded-lg uppercase tracking-wide transition-all ${
+            val === r ? "bg-accent/20 text-accent" : "text-dark-500 hover:text-white"
+          }`}>{r}</button>
+      ))}
+    </div>
+  );
+
   return (
-    <div className="clay-root space-y-6 animate-fade-in">
+    <div className="clay-root space-y-4 sm:space-y-5 animate-fade-in">
       <style jsx>{`
         .clay-root { position: relative; isolation: isolate; }
         .clay-root::before {
@@ -268,9 +334,8 @@ export default function DashboardPage() {
             radial-gradient(55% 55% at 88% 108%, rgba(219,39,119,0.10), transparent 70%);
           filter: blur(14px);
         }
-        /* Raised clay surface */
         .clay-card {
-          position: relative; border-radius: 26px;
+          position: relative; border-radius: 22px;
           background: linear-gradient(152deg, #23232f 0%, #17171f 100%);
           border: 1px solid rgba(255,255,255,0.05); overflow: hidden;
           box-shadow:
@@ -279,37 +344,25 @@ export default function DashboardPage() {
             inset 1px 1px 1px rgba(255,255,255,0.06),
             inset 0 -9px 18px rgba(0,0,0,0.30);
         }
-        /* Depth-only (keeps a coloured tint for alert surfaces) */
         .clay-raise {
-          border-radius: 22px;
+          border-radius: 18px;
           box-shadow:
             10px 12px 26px rgba(0,0,0,0.5),
             -7px -7px 18px rgba(255,255,255,0.02),
             inset 1px 1px 1px rgba(255,255,255,0.06);
         }
-        /* Stat tile */
         .clay-stat {
-          position: relative; border-radius: 24px; overflow: hidden;
+          position: relative; border-radius: 20px; overflow: hidden;
           background: linear-gradient(152deg, #25252f 0%, #171720 100%);
           border: 1px solid rgba(255,255,255,0.055);
           box-shadow:
-            10px 12px 26px rgba(0,0,0,0.52),
-            -7px -7px 18px rgba(255,255,255,0.025),
-            inset 1px 1px 1px rgba(255,255,255,0.07),
-            inset 0 -8px 16px rgba(0,0,0,0.28);
-          transition: transform .25s cubic-bezier(.16,1,.3,1), box-shadow .25s cubic-bezier(.16,1,.3,1);
+            8px 10px 22px rgba(0,0,0,0.5),
+            -6px -6px 16px rgba(255,255,255,0.022),
+            inset 1px 1px 1px rgba(255,255,255,0.06),
+            inset 0 -7px 14px rgba(0,0,0,0.26);
         }
-        .clay-stat:hover {
-          transform: translateY(-4px);
-          box-shadow:
-            16px 20px 38px rgba(0,0,0,0.58),
-            -7px -7px 20px rgba(255,255,255,0.03),
-            inset 1px 1px 1px rgba(255,255,255,0.08),
-            inset 0 -8px 16px rgba(0,0,0,0.26);
-        }
-        /* Squishy icon pill (embossed) */
         .clay-pill {
-          border-radius: 18px;
+          border-radius: 14px;
           box-shadow:
             inset 2px 2px 5px rgba(0,0,0,0.45),
             inset -2px -2px 6px rgba(255,255,255,0.07),
@@ -319,14 +372,13 @@ export default function DashboardPage() {
         .clay-tone-info     { background: linear-gradient(150deg,#74b9ff,#3d7bd6); color:#fff; }
         .clay-tone-success  { background: linear-gradient(150deg,#2fe0c4,#00a89f); color:#04241f; }
         .clay-tone-warning  { background: linear-gradient(150deg,#ffd479,#e5a900); color:#3a2600; }
-        /* Recessed inset (tracks, tiles) */
+        .clay-tone-danger   { background: linear-gradient(150deg,#ff8080,#d64545); color:#fff; }
         .clay-inset {
-          border-radius: 14px; background: #131319;
+          border-radius: 12px; background: #131319;
           box-shadow: inset 3px 3px 7px rgba(0,0,0,0.55), inset -2px -2px 5px rgba(255,255,255,0.03);
         }
-        /* Buttons */
         .clay-btn-primary {
-          border-radius: 16px; color:#fff;
+          border-radius: 14px; color:#fff;
           background: linear-gradient(150deg,#8b6cff,#5a45d6);
           box-shadow:
             5px 6px 14px rgba(0,0,0,0.45), -3px -3px 9px rgba(255,255,255,0.05),
@@ -337,7 +389,7 @@ export default function DashboardPage() {
         .clay-btn-primary:active { transform: scale(0.95); }
         .clay-btn-primary:disabled { opacity: .55; }
         .clay-btn-soft {
-          border-radius: 14px;
+          border-radius: 12px;
           background: linear-gradient(150deg,#26262f,#181820);
           box-shadow: 4px 4px 10px rgba(0,0,0,0.42), -3px -3px 8px rgba(255,255,255,0.03), inset 1px 1px 1px rgba(255,255,255,0.05);
           transition: transform .15s cubic-bezier(.16,1,.3,1), filter .15s;
@@ -345,124 +397,217 @@ export default function DashboardPage() {
         .clay-btn-soft:hover { filter: brightness(1.2); }
         .clay-btn-soft:active { transform: scale(0.93); }
         @media (prefers-reduced-motion: reduce) {
-          .clay-stat, .clay-btn-primary, .clay-btn-soft { transition: none; }
+          .clay-btn-primary, .clay-btn-soft { transition: none; }
         }
       `}</style>
 
-      {/* ────── System Control Bar ────── */}
-      <div className="clay-card flex flex-col gap-3 px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-2.5">
-          <span className="flex h-9 w-9 items-center justify-center rounded-xl clay-pill bg-accent/15 text-accent shrink-0">
-            <Shield className="h-4 w-4" />
+      {/* ══════════ STATUS STRIP ══════════ */}
+      <div className="clay-card px-4 py-2.5 flex items-center gap-x-5 gap-y-2 flex-wrap">
+        <div className="flex items-center gap-2 shrink-0">
+          <span className={`relative flex h-2.5 w-2.5`}>
+            <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${platform.dot} opacity-60`} />
+            <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${platform.dot}`} />
           </span>
-          <div>
-            <p className="text-sm font-bold text-white leading-tight">System Controls</p>
-            <p className="text-[11px] text-dark-500">
-              {maintenanceOn ? "Maintenance mode is ON" : "All systems operational"}
-            </p>
-          </div>
+          <span className={`text-sm font-bold ${platform.cls}`}>{platform.label}</span>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={toggleMaintenance}
-            disabled={sysBusy === "maint"}
-            className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl transition-all disabled:opacity-50 ${
-              maintenanceOn
-                ? "bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500/25"
-                : "clay-btn-soft text-dark-300 hover:text-white"
-            }`}
-          >
-            {sysBusy === "maint" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wrench className="h-4 w-4" />}
-            Maintenance: {maintenanceOn ? "On" : "Off"}
+        <div className="h-4 w-px bg-white/10 hidden sm:block" />
+        <div className="flex items-center gap-x-5 gap-y-1 flex-wrap text-[12px] text-dark-300">
+          <span><b className="text-white">{b.running}</b><span className="text-dark-500">/{b.total}</span> bots</span>
+          <span><b className="text-white">{s.assigned}</b> sessions <span className={s.free <= 3 ? "text-red-400 font-bold" : "text-dark-500"}>({s.free} free)</span></span>
+          <span className={posting.today_failed > 0 ? "text-red-400" : ""}><b className={posting.today_failed > 0 ? "text-red-400" : "text-white"}>{posting.today_failed}</b> failed 24h</span>
+          <span className={workersHealthy < 2 ? "text-red-400" : ""}>workers <b className={workersHealthy < 2 ? "text-red-400" : "text-white"}>{workersHealthy}/2</b></span>
+          <span className="text-dark-500">updated {timeAgo((Date.now() - lastUpdate) / 1000)}</span>
+        </div>
+        <div className="ml-auto relative shrink-0">
+          <button onClick={() => setActionsOpen(v => !v)} aria-label="System actions"
+            className="clay-btn-soft flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-dark-300 hover:text-white">
+            <MoreVertical className="h-4 w-4" /> Actions
           </button>
-          <button
-            onClick={() => doEmergency("resume")}
-            disabled={sysBusy === "resume"}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl bg-emerald-500/12 text-emerald-400 border border-emerald-500/25 hover:bg-emerald-500/20 transition-all disabled:opacity-50"
-          >
-            {sysBusy === "resume" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-            Resume All
-          </button>
-          <button
-            onClick={() => setConfirmStop(true)}
-            disabled={sysBusy === "stop"}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl bg-red-500/12 text-red-400 border border-red-500/30 hover:bg-red-500/20 transition-all disabled:opacity-50"
-          >
-            {sysBusy === "stop" ? <Loader2 className="h-4 w-4 animate-spin" /> : <PauseCircle className="h-4 w-4" />}
-            Emergency Stop
-          </button>
+          {actionsOpen && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setActionsOpen(false)} />
+              <div className="absolute right-0 mt-2 w-56 z-20 clay-card p-1.5">
+                <button onClick={() => { toggleMaintenance(); }} disabled={sysBusy === "maint"}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold text-dark-200 hover:bg-white/[0.04] disabled:opacity-50">
+                  <Wrench className="h-4 w-4 text-amber-400" /> Maintenance: {maintenanceOn ? "On" : "Off"}
+                </button>
+                <button onClick={() => { setActionsOpen(false); setConfirmResume(true); }}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold text-dark-200 hover:bg-white/[0.04]">
+                  <Play className="h-4 w-4 text-emerald-400" /> Resume Paused Bots
+                </button>
+                <button onClick={() => { setActionsOpen(false); setConfirmStop(true); }}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold text-red-400 hover:bg-red-500/10">
+                  <PauseCircle className="h-4 w-4" /> Emergency Stop
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Maintenance banner */}
-      {maintenanceOn && (
-        <div className="clay-raise border border-amber-500/30 bg-amber-500/[0.07] px-4 py-3 flex items-center gap-3">
-          <div className="h-10 w-10 rounded-full clay-pill bg-amber-500/20 flex items-center justify-center shrink-0">
-            <Wrench className="h-5 w-5 text-amber-400" />
+      {/* ══════════ NEEDS ATTENTION ══════════ */}
+      {issues.length === 0 ? (
+        <div className="clay-raise border border-emerald-500/20 bg-emerald-500/[0.04] px-4 py-2.5 flex items-center gap-2.5">
+          <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+          <p className="text-sm font-semibold text-emerald-400">All systems operational — nothing needs attention.</p>
+        </div>
+      ) : (
+        <div className="clay-card overflow-hidden">
+          <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-dark-800/50">
+            <AlertTriangle className="h-4 w-4 text-amber-400" />
+            <h3 className="text-sm font-bold text-white">Needs Attention</h3>
+            <span className="text-[10px] font-bold text-dark-400 bg-dark-800/60 rounded-full px-2 py-0.5">{issues.length}</span>
           </div>
-          <div className="flex-1">
-            <p className="text-sm font-bold text-amber-400">Maintenance Mode Active</p>
-            <p className="text-xs text-amber-400/70 mt-0.5">User-facing actions are paused. Turn it off in System Controls when done.</p>
+          <div className="divide-y divide-dark-800/30">
+            {issues.map((iss) => (
+              <div key={iss.id} className="flex items-center gap-3 px-4 py-2.5">
+                <span className={`text-[9px] font-bold uppercase tracking-wide px-2 py-0.5 rounded border shrink-0 ${sevChip[iss.severity]}`}>
+                  {iss.severity}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[13px] font-semibold text-dark-100 truncate">{iss.title}</p>
+                  <p className="text-[11px] text-dark-500 truncate">{iss.impact}</p>
+                </div>
+                {iss.action && (
+                  iss.action.href ? (
+                    <Link href={iss.action.href} className="clay-btn-soft shrink-0 px-3 py-1.5 text-[11px] font-bold text-dark-200 hover:text-white flex items-center gap-1">
+                      {iss.action.label}<ChevronRight className="h-3 w-3" />
+                    </Link>
+                  ) : (
+                    <button onClick={iss.action.onClick} className="clay-btn-soft shrink-0 px-3 py-1.5 text-[11px] font-bold text-dark-200 hover:text-white">
+                      {iss.action.label}
+                    </button>
+                  )
+                )}
+              </div>
+            ))}
           </div>
         </div>
       )}
 
-      {/* Disk-almost-full banner (per-bot logs never rotate) */}
-      {diskWarn && (
-        <div className="clay-raise border border-red-500/30 bg-red-500/[0.07] px-4 py-3 flex items-center gap-3">
-          <div className="h-10 w-10 rounded-full clay-pill bg-red-500/20 flex items-center justify-center shrink-0">
-            <HardDrive className="h-5 w-5 text-red-400" />
+      {/* ══════════ COMPACT METRIC CARDS ══════════ */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
+
+        {/* Posting Health */}
+        <div className="clay-stat p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="flex h-8 w-8 items-center justify-center clay-pill clay-tone-info shrink-0"><Send className="h-4 w-4" /></span>
+              <span className="text-[10px] font-bold text-dark-500 uppercase tracking-widest truncate">Posting</span>
+            </div>
+            {trend.spark.length > 1 && <Sparkline values={trend.spark} color={trend.delta != null && trend.delta < 0 ? "#f87171" : "#34d399"} width={48} height={18} />}
           </div>
-          <div className="flex-1">
-            <p className="text-sm font-bold text-red-400">Disk {diskPct?.toFixed(0)}% full</p>
-            <p className="text-xs text-red-400/70 mt-0.5">
-              Posting halts if the disk fills. Per-bot logs never rotate
-              {sys.logs_size_mb != null ? ` — data/logs is ${sys.logs_size_mb.toLocaleString()} MB` : ""}. Clear old logs to reclaim space.
-            </p>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+            <div><p className="text-xl font-bold text-white tabular-nums leading-none">{posting.today_sent.toLocaleString()}</p><p className="text-[9px] font-bold uppercase text-dark-600 mt-1">Sent 24h</p></div>
+            <div><p className={`text-xl font-bold tabular-nums leading-none ${posting.today_failed > 0 ? "text-red-400" : "text-white"}`}>{posting.today_failed.toLocaleString()}</p><p className="text-[9px] font-bold uppercase text-dark-600 mt-1">Failed</p></div>
+            <div><p className="text-sm font-bold text-emerald-400 tabular-nums leading-none">{successRate === null ? "—" : `${successRate}%`}</p><p className="text-[9px] font-bold uppercase text-dark-600 mt-1">Success</p></div>
+            <div><p className="text-sm font-bold text-dark-200 tabular-nums leading-none">{avgPerHour}<span className="text-[10px] text-dark-500">/h</span></p><p className="text-[9px] font-bold uppercase text-dark-600 mt-1">{trend.delta != null ? <span className={trend.delta >= 0 ? "text-emerald-400" : "text-red-400"}>{trend.delta >= 0 ? "▲" : "▼"}{Math.abs(trend.delta)}% vs 24h</span> : "avg rate"}</p></div>
           </div>
         </div>
-      )}
 
-      {/* ────── Paid-but-stuck orders — collapsed notification; click to reveal who ────── */}
+        {/* Session Pool */}
+        <div className="clay-stat p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="flex h-8 w-8 items-center justify-center clay-pill clay-tone-accent shrink-0"><Layers className="h-4 w-4" /></span>
+              <span className="text-[10px] font-bold text-dark-500 uppercase tracking-widest truncate">Sessions</span>
+            </div>
+            <Link href="/admin/sessions" className="text-[10px] font-bold text-accent hover:text-accent-300 flex items-center">Upload<ChevronRight className="h-3 w-3" /></Link>
+          </div>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+            <div><p className="text-xl font-bold text-white tabular-nums leading-none">{s.total}</p><p className="text-[9px] font-bold uppercase text-dark-600 mt-1">Total</p></div>
+            <div><p className={`text-xl font-bold tabular-nums leading-none ${s.free <= 3 ? "text-red-400" : "text-emerald-400"}`}>{s.free}</p><p className="text-[9px] font-bold uppercase text-dark-600 mt-1">Free</p></div>
+            <div><p className="text-sm font-bold text-dark-200 tabular-nums leading-none">{s.assigned}</p><p className="text-[9px] font-bold uppercase text-dark-600 mt-1">Assigned</p></div>
+            <div><p className={`text-sm font-bold tabular-nums leading-none ${deadFrozen > 0 ? "text-red-400" : "text-dark-200"}`}>{deadFrozen}<span className="text-dark-600 text-[10px]"> · {s.limited}L</span></p><p className="text-[9px] font-bold uppercase text-dark-600 mt-1">Dead/Frozen</p></div>
+          </div>
+        </div>
+
+        {/* Bots Overview */}
+        <div className="clay-stat p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="flex h-8 w-8 items-center justify-center clay-pill clay-tone-success shrink-0"><Bot className="h-4 w-4" /></span>
+              <span className="text-[10px] font-bold text-dark-500 uppercase tracking-widest truncate">Bots</span>
+            </div>
+            <Link href="/admin/adbots" className="text-[10px] font-bold text-accent hover:text-accent-300 flex items-center">Open<ChevronRight className="h-3 w-3" /></Link>
+          </div>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+            <div><p className="text-xl font-bold text-emerald-400 tabular-nums leading-none">{b.running}</p><p className="text-[9px] font-bold uppercase text-dark-600 mt-1">Running</p></div>
+            <div><p className="text-xl font-bold text-dark-200 tabular-nums leading-none">{b.stopped}</p><p className="text-[9px] font-bold uppercase text-dark-600 mt-1">Stopped</p></div>
+            <div><p className={`text-sm font-bold tabular-nums leading-none ${b.expired ? "text-red-400" : "text-dark-200"}`}>{b.expired}</p><p className="text-[9px] font-bold uppercase text-dark-600 mt-1">Expired</p></div>
+            <div><p className={`text-sm font-bold tabular-nums leading-none ${renewals.length ? "text-amber-400" : "text-dark-200"}`}>{renewals.length}</p><p className="text-[9px] font-bold uppercase text-dark-600 mt-1">Expiring</p></div>
+          </div>
+        </div>
+
+        {/* Orders */}
+        <div className="clay-stat p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="flex h-8 w-8 items-center justify-center clay-pill clay-tone-success shrink-0"><DollarSign className="h-4 w-4" /></span>
+              <span className="text-[10px] font-bold text-dark-500 uppercase tracking-widest truncate">Orders</span>
+            </div>
+            <Link href="/admin/payments" className="text-[10px] font-bold text-accent hover:text-accent-300 flex items-center">View<ChevronRight className="h-3 w-3" /></Link>
+          </div>
+          {(o.revenue_today || 0) > 0 && (
+            <p className="text-xl font-bold text-white tabular-nums leading-none mb-2">${(o.revenue_today || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}<span className="text-[10px] text-dark-500 font-medium"> today</span></p>
+          )}
+          <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+            <div><p className="text-sm font-bold text-emerald-400 tabular-nums leading-none">{o.paid_today_count || 0}</p><p className="text-[9px] font-bold uppercase text-dark-600 mt-1">Paid today</p></div>
+            <div><p className={`text-sm font-bold tabular-nums leading-none ${o.pending_count ? "text-amber-400" : "text-dark-200"}`}>{o.pending_count || 0}</p><p className="text-[9px] font-bold uppercase text-dark-600 mt-1">Pending</p></div>
+            <div><p className="text-sm font-bold text-dark-200 tabular-nums leading-none">{o.expired_count || 0}</p><p className="text-[9px] font-bold uppercase text-dark-600 mt-1">Expired</p></div>
+            <div><p className={`text-sm font-bold tabular-nums leading-none ${o.failed_count ? "text-red-400" : "text-dark-200"}`}>{o.failed_count || 0}</p><p className="text-[9px] font-bold uppercase text-dark-600 mt-1">Failed</p></div>
+          </div>
+        </div>
+
+        {/* Worker Health */}
+        <div className="clay-stat p-4 col-span-2 lg:col-span-1">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="flex h-8 w-8 items-center justify-center clay-pill clay-tone-warning shrink-0"><Server className="h-4 w-4" /></span>
+              <span className="text-[10px] font-bold text-dark-500 uppercase tracking-widest truncate">Workers</span>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            {[{ label: "Create", h: cw, ok: cwHealthy }, { label: "Payment", h: pw, ok: pwHealthy }].map((w) => (
+              <div key={w.label} className="flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-[11px] text-dark-300">
+                  <span className={`w-1.5 h-1.5 rounded-full ${w.ok ? "bg-emerald-400" : "bg-red-400 animate-pulse"}`} />{w.label}
+                </span>
+                <span className={`text-[10px] font-medium ${w.ok ? "text-dark-500" : "text-red-400"}`}>{w.h ? fmtAge(w.h.age_sec) : (w.ok ? "healthy" : "no signal")}</span>
+              </div>
+            ))}
+            <div className="flex items-center justify-between pt-1.5 mt-1 border-t border-white/[0.04]">
+              <span className="flex items-center gap-1.5 text-[11px] text-dark-300"><Gauge className="h-3 w-3 text-dark-500" />CPU/RAM</span>
+              <span className="text-[10px] font-medium text-dark-400">{sys.cpu_percent?.toFixed(0) || 0}% / {sys.memory_percent?.toFixed(0) || 0}%{diskPct != null ? ` · ${diskPct.toFixed(0)}%💽` : ""}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ════════ Paid-but-stuck orders (inline recreate) ════════ */}
       {stuckOrders.length > 0 && (
         <div className="clay-raise border border-warning/30 bg-warning/5 overflow-hidden">
-          <div className="flex items-center justify-between gap-3 px-4 sm:px-5 py-3">
-            <button
-              type="button"
-              onClick={() => setStuckOpen((v) => !v)}
-              aria-expanded={stuckOpen}
-              className="flex items-center gap-2.5 min-w-0 text-left group"
-            >
-              <span className="flex h-8 w-8 items-center justify-center rounded-full clay-pill bg-warning/20 text-warning shrink-0">
-                <AlertTriangle className="h-4 w-4" />
+          <div className="flex items-center justify-between gap-3 px-4 py-2.5">
+            <button type="button" onClick={() => setStuckOpen((v) => !v)} aria-expanded={stuckOpen}
+              className="flex items-center gap-2.5 min-w-0 text-left group">
+              <AlertTriangle className="h-4 w-4 text-warning shrink-0" />
+              <span className="text-sm font-semibold text-warning truncate">
+                {stuckOrders.length} paid order{stuckOrders.length > 1 ? "s" : ""} stuck — tap to recreate
               </span>
-              <span className="min-w-0">
-                <span className="block text-sm font-semibold text-warning truncate">
-                  {stuckOrders.length} order{stuckOrders.length > 1 ? "s" : ""} paid but stuck in queue
-                </span>
-                <span className="block text-[11px] text-dark-500 truncate">
-                  {stuckOpen ? "Tap to collapse" : "Tap to see exactly who — and recreate them"}
-                </span>
-              </span>
-              <ChevronDown className={`h-4 w-4 text-warning/80 shrink-0 transition-transform duration-200 ${stuckOpen ? "rotate-180" : ""}`} />
+              <ChevronDown className={`h-4 w-4 text-warning/80 shrink-0 transition-transform ${stuckOpen ? "rotate-180" : ""}`} />
             </button>
             <Link href="/admin/payments" className="text-[11px] text-dark-400 hover:text-dark-200 flex items-center gap-1 shrink-0">
-              <span className="hidden sm:inline">View all in Payments</span>
-              <span className="sm:hidden">All</span>
-              <ExternalLink className="h-3 w-3" />
+              <span className="hidden sm:inline">Payments</span><ExternalLink className="h-3 w-3" />
             </Link>
           </div>
-
           {stuckOpen && (
-            <div className="border-t border-warning/20 divide-y divide-warning/10 max-h-72 overflow-y-auto custom-scrollbar animate-slide-down">
+            <div className="border-t border-warning/20 divide-y divide-warning/10 max-h-72 overflow-y-auto custom-scrollbar">
               {stuckOrders.slice(0, 12).map((o: any) => (
-                <div key={o.order_id} className="flex items-center justify-between gap-3 px-4 sm:px-5 py-3">
+                <div key={o.order_id} className="flex items-center justify-between gap-3 px-4 py-2.5">
                   <div className="min-w-0">
                     <p className="text-xs font-mono text-dark-200 truncate">{o.order_id}</p>
                     <p className="text-[11px] text-dark-500 truncate mt-0.5">
-                      {o.plan_name || "—"} {o.amount_usd ? `· $${o.amount_usd}` : ""}
-                      {o.user_id ? ` · User ${o.user_id}` : ""}
-                      {o.creation_step ? ` — ${o.creation_step}` : ""}
+                      {o.plan_name || "—"} {o.amount_usd ? `· $${o.amount_usd}` : ""}{o.user_id ? ` · User ${o.user_id}` : ""}{o.creation_step ? ` — ${o.creation_step}` : ""}
                     </p>
                   </div>
                   <Button variant="secondary" size="sm" className="shrink-0" onClick={() => openRecreate(o)}>
@@ -470,749 +615,377 @@ export default function DashboardPage() {
                   </Button>
                 </div>
               ))}
-              {stuckOrders.length > 12 && (
-                <div className="px-5 py-2.5 text-[11px] text-dark-500">
-                  +{stuckOrders.length - 12} more —{" "}
-                  <Link href="/admin/payments" className="text-warning hover:underline">open Payments</Link>
-                </div>
-              )}
             </div>
           )}
         </div>
       )}
 
-      {/* ────── Stat Cards (claymorphism) ────── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
-        {clayStats.map((st) => {
-          const Icon = st.icon;
-          const delta = (st as any).delta as number | null | undefined;
-          const spark = (st as any).spark as number[] | undefined;
-          const hasTrend = delta != null || (spark && spark.length > 1);
-          return (
-            <div key={st.title} className="clay-stat p-5">
-              <div className="flex items-center justify-between mb-4">
-                <div className={`flex h-12 w-12 items-center justify-center clay-pill ${toneMap[st.tone]}`}>
-                  <Icon className="h-5 w-5" />
-                </div>
-                {st.live && (
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-emerald-400 text-xs font-bold">Live</span>
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  </div>
-                )}
-              </div>
-              <p className="text-[10px] font-bold text-dark-500 uppercase tracking-widest mb-1.5">{st.title}</p>
-              <p className="text-2xl sm:text-[30px] font-bold text-white tracking-tight leading-none">{st.value}</p>
-              {hasTrend && (
-                <div className="flex items-center justify-between gap-2 mt-2.5">
-                  {delta != null ? (
-                    <span className={`inline-flex items-center gap-1 text-[11px] font-bold ${delta >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                      {delta >= 0 ? "▲" : "▼"} {Math.abs(delta)}%
-                      <span className="text-dark-600 font-medium">vs prev 24h</span>
-                    </span>
-                  ) : <span className="text-[11px] text-dark-600">— vs prev 24h</span>}
-                  {spark && spark.length > 1 && (
-                    <Sparkline values={spark} color={delta != null && delta < 0 ? "#f87171" : "#34d399"} width={72} height={22} />
-                  )}
-                </div>
-              )}
-              {st.subtitle && <p className="text-[11px] text-dark-500 mt-2.5">{st.subtitle}</p>}
+      {/* ══════════ BOT HEALTH TABLE ══════════ */}
+      <div className="clay-card flex flex-col">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-dark-800/50">
+          <div className="flex items-center gap-2.5">
+            <Activity className="h-4 w-4 text-accent" />
+            <h3 className="text-sm font-bold text-white">Bot Health</h3>
+            <span className="text-[10px] font-bold text-dark-400 bg-dark-800/60 rounded-full px-2 py-0.5">{rows.length}</span>
+          </div>
+          <Link href="/admin/adbots" className="text-[11px] font-bold text-accent hover:underline flex items-center gap-0.5">Open AdBots<ChevronRight className="h-3 w-3" /></Link>
+        </div>
+
+        {rows.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-10 text-dark-500">
+            <Bot className="h-9 w-9 text-dark-700 mb-2" />
+            <p className="text-sm text-dark-400">No bots yet. Create one from AdBots.</p>
+          </div>
+        ) : (
+          <>
+            {/* Desktop table */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-left">
+                <thead className="bg-dark-900/40 border-b border-dark-800/40">
+                  <tr>
+                    {["Bot", "Owner", "Plan", "Status", "Sessions", "Cycle", "Last post", "Sent 24h", "Failed 24h", "Issue", ""].map((h) => (
+                      <th key={h} className="px-3 py-2 text-[10px] font-bold text-dark-500 uppercase tracking-wider whitespace-nowrap">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-dark-800/20">
+                  {rows.map((r) => {
+                    const st = botStatus(r);
+                    const attempted = r.sent_24h + r.failed_24h;
+                    const failRate = attempted > 0 ? (r.failed_24h / attempted) * 100 : 0;
+                    return (
+                      <tr key={r.name} className={`hover:bg-white/[0.03] transition-colors ${r.issue?.severity === "critical" ? "bg-red-500/[0.04]" : r.issue?.severity === "warning" ? "bg-amber-500/[0.03]" : ""}`}>
+                        <td className="px-3 py-2.5 text-sm font-semibold text-white whitespace-nowrap">{r.name}</td>
+                        <td className="px-3 py-2.5 text-xs text-dark-400 whitespace-nowrap">{r.owner_id ?? "—"}</td>
+                        <td className="px-3 py-2.5 text-xs text-dark-400 whitespace-nowrap">{r.plan_name || "—"}</td>
+                        <td className="px-3 py-2.5 whitespace-nowrap"><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${st.c}`}>{st.t}</span></td>
+                        <td className="px-3 py-2.5 text-xs whitespace-nowrap">
+                          <span className={r.failing_sessions ? "text-red-400 font-bold" : "text-dark-300"}>{r.failing_sessions}</span>
+                          <span className="text-dark-600"> / {r.sessions_count}</span>
+                        </td>
+                        <td className="px-3 py-2.5 text-xs text-dark-400 whitespace-nowrap">{fmtCycle(r.cycle_sec)}</td>
+                        <td className="px-3 py-2.5 text-xs text-dark-400 whitespace-nowrap">{r.last_cycle_ts ? timeAgo(Date.now() / 1000 - r.last_cycle_ts) : "—"}</td>
+                        <td className="px-3 py-2.5 text-xs text-dark-200 tabular-nums whitespace-nowrap">{r.sent_24h.toLocaleString()}</td>
+                        <td className={`px-3 py-2.5 text-xs tabular-nums whitespace-nowrap ${r.failed_24h > 0 ? "text-red-400 font-semibold" : "text-dark-400"}`}>{r.failed_24h.toLocaleString()}{failRate > 0 ? ` (${failRate.toFixed(0)}%)` : ""}</td>
+                        <td className="px-3 py-2.5 whitespace-nowrap">
+                          {r.issue ? (
+                            <span className={`text-[11px] font-semibold ${r.issue.severity === "critical" ? "text-red-400" : r.issue.severity === "warning" ? "text-amber-400" : "text-dark-400"}`}>{r.issue.label}</span>
+                          ) : <span className="text-[11px] text-emerald-400">Healthy</span>}
+                        </td>
+                        <td className="px-3 py-2.5 whitespace-nowrap"><Link href="/admin/adbots" className="text-accent hover:underline text-[11px] font-bold">Open</Link></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-          );
-        })}
+
+            {/* Mobile stacked cards */}
+            <div className="md:hidden divide-y divide-dark-800/30">
+              {rows.map((r) => {
+                const st = botStatus(r);
+                return (
+                  <div key={r.name} className="px-4 py-3">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-sm font-bold text-white truncate">{r.name}</span>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 ${st.c}`}>{st.t}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-dark-400">
+                      <span>Sent <b className="text-dark-200">{r.sent_24h}</b></span>
+                      <span className={r.failed_24h > 0 ? "text-red-400" : ""}>Failed <b className={r.failed_24h > 0 ? "text-red-400" : "text-dark-200"}>{r.failed_24h}</b></span>
+                      <span>Sess <b className={r.failing_sessions ? "text-red-400" : "text-dark-200"}>{r.failing_sessions}</b>/{r.sessions_count}</span>
+                      <span>Last {r.last_cycle_ts ? timeAgo(Date.now() / 1000 - r.last_cycle_ts) : "—"}</span>
+                    </div>
+                    {r.issue && <p className={`text-[11px] font-semibold mt-1 ${r.issue.severity === "critical" ? "text-red-400" : "text-amber-400"}`}>⚠ {r.issue.label}</p>}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
       </div>
 
-      {/* ────── Alert Banners (side by side like Stitch) ────── */}
-      {(lowSessions || openTickets.length > 0) && (
-        <div className={`grid gap-4 ${lowSessions && openTickets.length > 0 ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1"}`}>
-          {lowSessions && (
-            <div className="clay-raise border border-red-500/30 bg-red-500/[0.07] px-4 py-3 flex items-center gap-3">
-              <div className="h-10 w-10 rounded-full clay-pill bg-red-500/20 flex items-center justify-center shrink-0">
-                <AlertTriangle className="h-5 w-5 text-red-400" />
-              </div>
-              <div className="flex-1">
-                <p className="text-sm font-bold text-red-400">Low Session Pool</p>
-                <p className="text-xs text-red-400/70 mt-0.5">
-                  Only <span className="font-bold text-red-300">{s.free}</span> free session{s.free !== 1 ? "s" : ""} remaining.
-                  {replQueue && replQueue.total_awaiting > 0 && ` ${replQueue.total_awaiting} replacement(s) waiting.`}
-                </p>
-              </div>
-              <Link href="/admin/sessions"
-                className="px-3 py-1.5 bg-red-500 text-white font-bold text-[11px] rounded-lg hover:brightness-110 transition-all shrink-0 uppercase tracking-wide">
-                Upload
-              </Link>
-            </div>
-          )}
-          {openTickets.length > 0 && (
-            <div className="clay-raise border border-amber-500/30 bg-amber-900/20 px-4 py-3 flex items-center gap-3">
-              <div className="h-10 w-10 rounded-full clay-pill bg-amber-500/20 flex items-center justify-center shrink-0">
-                <HelpCircle className="h-5 w-5 text-amber-500" />
-              </div>
-              <div className="flex-1">
-                <p className="text-sm font-bold text-amber-500">
-                  {openTickets.length} Open Support Ticket{openTickets.length !== 1 ? "s" : ""}
-                </p>
-                <p className="text-xs text-amber-500/70 mt-0.5">
-                  Users need help — check and respond.
-                </p>
-              </div>
-              <Link href="/admin/support"
-                className="px-3 py-1.5 bg-amber-600 text-white font-bold text-[11px] rounded-lg hover:brightness-110 transition-all shrink-0 uppercase tracking-wide">
-                View All
-              </Link>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ────── Replacement Queue ────── */}
-      {replQueue && (replQueue.total_pending > 0 || (replQueue.total_awaiting_payment || 0) > 0 || replQueue.completed_recent?.length > 0) && (() => {
+      {/* ══════════ Replacement Queue (kept, compact) ══════════ */}
+      {replQueue && (replQueue.total_pending > 0 || (replQueue.total_awaiting_payment || 0) > 0) && (() => {
         const pending = replQueue.queue || [];
         const awaiting = replQueue.awaiting_sessions || [];
         const awaitingPayment = replQueue.awaiting_payment || [];
-        const completed = replQueue.completed_recent || [];
 
         const handleProcess = async () => {
           setProcessing(true);
           try {
             const { data: result } = await api.post("/api/system/replacements/process");
-            if (result.processed > 0) {
-              toast.success(`Processed ${result.processed} replacement(s) successfully`);
-            } else if (result.error) {
-              toast.error(result.error);
-            } else if (result.failed > 0) {
-              const reasons = (result.errors || []).filter(Boolean).join("; ");
-              toast.error(`${result.failed} replacement(s) failed: ${reasons || "session validation failed"}`);
-            } else if (result.message) {
-              toast(result.message);
-            } else {
-              toast.error("No replacements could be processed");
-            }
+            if (result.processed > 0) toast.success(`Processed ${result.processed} replacement(s)`);
+            else if (result.error) toast.error(result.error);
+            else if (result.failed > 0) toast.error(`${result.failed} failed: ${(result.errors || []).filter(Boolean).join("; ") || "validation failed"}`);
+            else if (result.message) toast(result.message);
+            else toast.error("No replacements could be processed");
             mutateRepl();
           } catch (e: any) {
             toast.error(e?.response?.data?.detail || "Failed to process queue");
           }
           setProcessing(false);
         };
-
         const handleCancel = async (entryId: string) => {
           setCancelling(entryId);
-          try {
-            await api.post(`/api/system/replacements/${entryId}/cancel`);
-            toast.success("Cancelled replacement request");
-            mutateRepl();
-          } catch (e: any) {
-            toast.error(e?.response?.data?.detail || "Failed to cancel");
-          }
+          try { await api.post(`/api/system/replacements/${entryId}/cancel`); toast.success("Cancelled"); mutateRepl(); }
+          catch (e: any) { toast.error(e?.response?.data?.detail || "Failed to cancel"); }
           setCancelling(null);
         };
 
-        const statusBadge = (status: string) => {
-          switch (status) {
-            case "awaiting_session":
-              return <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-400 uppercase">Awaiting</span>;
-            case "ready":
-              return <span className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-2 py-0.5 text-[10px] font-bold text-blue-400 uppercase">Ready</span>;
-            case "pending_payment":
-              return <span className="inline-flex items-center gap-1 rounded bg-purple-500/15 px-2 py-0.5 text-[10px] font-bold text-purple-400 uppercase">Payment</span>;
-            case "completed":
-              return <span className="inline-flex items-center gap-1 rounded bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-400 uppercase">Done</span>;
-            case "cancelled":
-              return <span className="inline-flex items-center gap-1 rounded bg-dark-700 px-2 py-0.5 text-[10px] font-bold text-dark-400 uppercase">Cancelled</span>;
-            default:
-              return <Badge status={status} />;
-          }
-        };
-
         return (
-          <div className={`overflow-hidden ${
-            awaiting.length > 0
-              ? "clay-raise border-2 border-amber-500/30 bg-amber-500/[0.05]"
-              : "clay-card"
-          }`}>
-            <div className={`flex items-center justify-between px-5 py-4 border-b border-dark-800/50 ${
-              awaiting.length > 0 ? "bg-amber-500/[0.04]" : ""
-            }`}>
-              <div className="flex items-center gap-3">
-                <ArrowRightLeft className={`h-5 w-5 ${awaiting.length > 0 ? "text-amber-400" : "text-accent"}`} />
-                <h3 className="text-sm font-semibold text-white">Replacement Queue</h3>
-                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                  awaiting.length > 0
-                    ? "bg-amber-500/20 text-amber-400"
-                    : "bg-accent/20 text-accent"
-                }`}>
-                  {pending.length} Pending
-                </span>
+          <div className={`clay-card overflow-hidden ${awaiting.length > 0 ? "border border-amber-500/25" : ""}`}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-dark-800/50">
+              <div className="flex items-center gap-2.5">
+                <ArrowRightLeft className={`h-4 w-4 ${awaiting.length > 0 ? "text-amber-400" : "text-accent"}`} />
+                <h3 className="text-sm font-bold text-white">Replacement Queue</h3>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${awaiting.length > 0 ? "bg-amber-500/20 text-amber-400" : "bg-accent/20 text-accent"}`}>{pending.length} pending</span>
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={() => mutateRepl()} className="clay-btn-soft text-dark-400 hover:text-white p-2">
-                  <RefreshCw className="h-3.5 w-3.5" />
-                </button>
+                <button onClick={() => mutateRepl()} className="clay-btn-soft text-dark-400 hover:text-white p-2"><RefreshCw className="h-3.5 w-3.5" /></button>
                 {(awaiting.length > 0 || pending.some(e => e.status === "ready")) && (
-                  <button
-                    onClick={handleProcess}
-                    disabled={processing}
-                    className="clay-btn-primary inline-flex items-center gap-1.5 px-4 py-2 text-sm font-bold"
-                  >
-                    {processing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                    Process Queue
+                  <button onClick={handleProcess} disabled={processing} className="clay-btn-primary inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold">
+                    {processing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} Process
                   </button>
                 )}
               </div>
             </div>
-
-            {/* Awaiting warning */}
             {awaiting.length > 0 && (
-              <div className="mx-5 mt-4 rounded-xl bg-amber-500/10 border border-amber-500/20 px-4 py-3">
-                <div className="flex items-start gap-2">
-                  <AlertCircle className="h-4 w-4 text-amber-400 mt-0.5 shrink-0" />
-                  <div>
-                    <p className="text-sm font-semibold text-amber-300">
-                      {awaiting.length} replacement{awaiting.length > 1 ? "s" : ""} waiting — no free sessions in pool
-                    </p>
-                    <p className="text-xs text-amber-400/70 mt-0.5">
-                      Upload sessions to the free pool on the <Link href="/admin/sessions" className="underline hover:text-amber-300">Sessions page</Link>, then click &quot;Process Queue&quot;
-                    </p>
-                  </div>
-                </div>
+              <div className="mx-4 mt-3 rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2 flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 text-amber-400 mt-0.5 shrink-0" />
+                <p className="text-xs text-amber-300">{awaiting.length} waiting — no free sessions. <Link href="/admin/sessions" className="underline">Upload</Link>, then Process.</p>
               </div>
             )}
-
-            {/* Awaiting payment — not actionable until the buyer pays */}
             {awaitingPayment.length > 0 && (
-              <div className="mx-5 mt-4 rounded-xl bg-purple-500/10 border border-purple-500/20 px-4 py-3">
-                <div className="flex items-start gap-2">
-                  <AlertCircle className="h-4 w-4 text-purple-400 mt-0.5 shrink-0" />
-                  <div>
-                    <p className="text-sm font-semibold text-purple-300">
-                      {awaitingPayment.length} replacement{awaitingPayment.length > 1 ? "s" : ""} awaiting payment
-                    </p>
-                    <p className="text-xs text-purple-400/70 mt-0.5">
-                      These are not ready to process — they&apos;re queued until the buyer&apos;s invoice clears. They&apos;ll appear above automatically once paid.
-                    </p>
-                  </div>
-                </div>
+              <div className="mx-4 mt-3 rounded-lg bg-purple-500/10 border border-purple-500/20 px-3 py-2 flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 text-purple-400 mt-0.5 shrink-0" />
+                <p className="text-xs text-purple-300">{awaitingPayment.length} awaiting payment — queued until the invoice clears.</p>
               </div>
             )}
-
-            {/* Table */}
             {pending.length > 0 && (
               <div className="overflow-x-auto">
                 <table className="w-full text-left">
-                  <thead className="bg-dark-900/50 border-b border-dark-700/30">
-                    <tr>
-                      <th className="px-5 py-2.5 text-[11px] font-bold text-dark-500 uppercase tracking-wider">Bot</th>
-                      <th className="px-5 py-2.5 text-[11px] font-bold text-dark-500 uppercase tracking-wider">Session</th>
-                      <th className="px-5 py-2.5 text-[11px] font-bold text-dark-500 uppercase tracking-wider">Reason</th>
-                      <th className="px-5 py-2.5 text-[11px] font-bold text-dark-500 uppercase tracking-wider">Type</th>
-                      <th className="px-5 py-2.5 text-[11px] font-bold text-dark-500 uppercase tracking-wider">Status</th>
-                      <th className="px-5 py-2.5 text-[11px] font-bold text-dark-500 uppercase tracking-wider">Requested</th>
-                      <th className="px-5 py-2.5 text-[11px] font-bold text-dark-500 uppercase tracking-wider w-20">Action</th>
-                    </tr>
+                  <thead className="bg-dark-900/40 border-b border-dark-800/40">
+                    <tr>{["Bot", "Session", "Reason", "Type", "Status", ""].map(h => <th key={h} className="px-4 py-2 text-[10px] font-bold text-dark-500 uppercase tracking-wider">{h}</th>)}</tr>
                   </thead>
                   <tbody className="divide-y divide-dark-800/20">
                     {pending.map((entry) => (
-                      <tr key={entry.id} className="hover:bg-white/[0.03] transition-colors">
-                        <td className="px-5 py-3 font-medium text-white text-sm">{entry.bot_name}</td>
-                        <td className="px-5 py-3 font-mono text-xs text-accent">{entry.real_name || entry.session_file}</td>
-                        <td className="px-5 py-3">
-                          <span className={`text-xs font-medium ${
-                            entry.spam_status === "FROZEN" || entry.spam_status === "DEAD" ? "text-red-400" :
-                            entry.spam_status === "HARD_LIMITED" ? "text-red-400" :
-                            entry.spam_status === "TEMP_LIMITED" ? "text-amber-400" : "text-dark-400"
-                          }`}>
-                            {entry.spam_status || "Unknown"}
-                          </span>
-                          {entry.failure_rate != null && entry.failure_rate > 0 && (
-                            <span className="text-[10px] text-dark-500 ml-1">
-                              ({(entry.failure_rate * 100).toFixed(0)}% fail)
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-5 py-3">
-                          <span className={`text-xs font-medium ${entry.free_replacement ? "text-emerald-400" : "text-purple-400"}`}>
-                            {entry.free_replacement ? "Free" : `$${(entry.price_usd || 0).toFixed(2)}`}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3">{statusBadge(entry.status)}</td>
-                        <td className="px-5 py-3">
-                          <span className="text-xs text-dark-500">
-                            {entry.created_at ? timeAgo((Date.now() - new Date(entry.created_at).getTime()) / 1000) : "—"}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3">
-                          <button
-                            onClick={() => handleCancel(entry.id)}
-                            disabled={cancelling === entry.id}
-                            className="text-accent hover:underline text-xs font-bold transition-colors"
-                          >
-                            {cancelling === entry.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "CANCEL"}
-                          </button>
-                        </td>
+                      <tr key={entry.id} className="hover:bg-white/[0.03]">
+                        <td className="px-4 py-2.5 text-sm font-medium text-white">{entry.bot_name}</td>
+                        <td className="px-4 py-2.5 font-mono text-xs text-accent">{entry.real_name || entry.session_file}</td>
+                        <td className="px-4 py-2.5 text-xs text-dark-400">{entry.spam_status || "Unknown"}{entry.failure_rate ? <span className="text-dark-500 ml-1">({(entry.failure_rate * 100).toFixed(0)}%)</span> : ""}</td>
+                        <td className="px-4 py-2.5 text-xs"><span className={entry.free_replacement ? "text-emerald-400" : "text-purple-400"}>{entry.free_replacement ? "Free" : `$${(entry.price_usd || 0).toFixed(2)}`}</span></td>
+                        <td className="px-4 py-2.5"><Badge status={entry.status} /></td>
+                        <td className="px-4 py-2.5"><button onClick={() => handleCancel(entry.id)} disabled={cancelling === entry.id} className="text-accent hover:underline text-xs font-bold">{cancelling === entry.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Cancel"}</button></td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
             )}
-
-            {/* Recently completed */}
-            {completed.length > 0 && pending.length === 0 && (
-              <div className="px-5 py-4">
-                <p className="text-[10px] font-bold text-dark-500 uppercase tracking-widest mb-2">Recently Completed</p>
-                <div className="space-y-1.5">
-                  {completed.slice(-5).reverse().map((entry) => (
-                    <div key={entry.id} className="flex items-center justify-between rounded-lg bg-dark-800/30 px-3 py-2">
-                      <div className="flex items-center gap-3">
-                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-                        <span className="text-xs text-dark-300">{entry.bot_name}</span>
-                        <span className="text-[10px] text-dark-500 font-mono">{entry.real_name || entry.session_file}</span>
-                        <span className="text-[10px] text-dark-600">→</span>
-                        <span className="text-[10px] text-emerald-400 font-mono">{entry.new_session_file || "—"}</span>
-                      </div>
-                      <span className="text-[10px] text-dark-600">{entry.completed_at ? timeAgo((Date.now() - new Date(entry.completed_at).getTime()) / 1000) : "—"}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
         );
       })()}
 
-      {/* ────── Posting Activity Chart ────── */}
-      <div className="clay-card">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-dark-800/50">
-          <h3 className="text-sm font-semibold text-white">Posting Activity (24h)</h3>
-          <div className="flex gap-4">
-            <div className="flex items-center gap-1.5">
-              <span className="w-3 h-3 rounded-full bg-emerald-400" />
-              <span className="text-[11px] text-dark-500 font-bold uppercase tracking-tight">Sent</span>
+      {/* ══════════ Posting Activity + Failure Reasons ══════════ */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Posting Activity */}
+        <div className="clay-card lg:col-span-2 flex flex-col">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-dark-800/50">
+            <div className="flex items-center gap-2.5">
+              <Activity className="h-4 w-4 text-accent" />
+              <h3 className="text-sm font-bold text-white">Posting Activity</h3>
+              <div className="flex gap-3 ml-2">
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-400" /><span className="text-[10px] text-dark-500 font-bold uppercase">Sent</span></span>
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-400" /><span className="text-[10px] text-dark-500 font-bold uppercase">Failed</span></span>
+              </div>
             </div>
-            <div className="flex items-center gap-1.5">
-              <span className="w-3 h-3 rounded-full bg-red-400" />
-              <span className="text-[11px] text-dark-500 font-bold uppercase tracking-tight">Failed</span>
-            </div>
+            {rangeBtns(activityRange, setActivityRange)}
           </div>
-        </div>
-        <div className="px-5 pt-3 pb-2">
-          <div className="h-[160px]">
-            {hourlyChart.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-dark-500">
-                <Activity className="h-12 w-12 text-dark-700 mb-3" />
-                <p className="text-sm font-medium text-dark-400">No posting data yet</p>
-                <p className="text-xs text-dark-600 mt-1">Chart will populate as bots send messages</p>
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={hourlyChart}>
-                  <defs>
-                    <linearGradient id="sentGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#34d399" stopOpacity={0.3} />
-                      <stop offset="100%" stopColor="#34d399" stopOpacity={0} />
-                    </linearGradient>
-                    <linearGradient id="failGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#f87171" stopOpacity={0.2} />
-                      <stop offset="100%" stopColor="#f87171" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e1e30" vertical={false} />
-                  <XAxis dataKey="time" stroke="#4a4a5a" fontSize={10} tickLine={false} axisLine={false} />
-                  <YAxis stroke="#4a4a5a" fontSize={10} tickLine={false} axisLine={false} />
-                  <Tooltip
-                    contentStyle={{
-                      background: "#252533", border: "1px solid rgba(52,211,153,0.2)",
-                      borderRadius: "12px", fontSize: "12px", padding: "10px 14px",
-                      boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
-                    }}
-                    labelStyle={{ color: "#acacbe", marginBottom: "4px" }}
-                  />
-                  <Area type="monotone" dataKey="sent" stroke="#34d399" strokeWidth={2} fill="url(#sentGrad)" dot={false} />
-                  <Area type="monotone" dataKey="failed" stroke="#f87171" strokeWidth={2} fill="url(#failGrad)" dot={false} />
-                </AreaChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* ────── Top Failing + Renewals + Support Tickets ────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-
-        {/* Top Failing Bots */}
-        <div className="clay-card flex flex-col max-h-[400px]">
-          <div className="px-5 py-4 border-b border-dark-800/50 flex items-center justify-between shrink-0">
-            <h3 className="text-sm font-bold text-white">Top Failing Bots</h3>
-            <TrendingDown className="h-4 w-4 text-dark-500" />
-          </div>
-          <div className="flex-1 overflow-y-auto custom-scrollbar">
-            {topFailing.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-10">
-                <CheckCircle2 className="h-10 w-10 text-emerald-500/30 mb-2" />
-                <p className="text-sm text-dark-400">No failures in 24h</p>
-              </div>
-            ) : (
-              <div className="p-4 space-y-2">
-                {topFailing.map((bot, i) => {
-                  const total = bot.today_sent + bot.today_failed;
-                  const failRate = total > 0 ? ((bot.today_failed / total) * 100).toFixed(1) : "0";
-                  return (
-                    <div key={bot.name} className="flex items-center justify-between hover:bg-dark-800/40 p-2 rounded-lg transition-colors cursor-pointer">
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-lg bg-red-500/10 flex items-center justify-center text-red-400 font-bold text-[10px]">
-                          #{i + 1}
-                        </div>
-                        <div>
-                          <p className="text-[13px] font-medium text-white">{bot.name}</p>
-                          <p className="text-[11px] text-dark-500">
-                            {bot.today_sent} sent · {bot.today_failed} failed
-                          </p>
-                        </div>
-                      </div>
-                      <span className="text-xs font-bold text-red-400">{failRate}%</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Upcoming Renewals */}
-        <div className="clay-card flex flex-col max-h-[400px]">
-          <div className="px-5 py-4 border-b border-dark-800/50 flex items-center justify-between shrink-0">
-            <h3 className="text-sm font-bold text-white">Upcoming Renewals</h3>
-            <CalendarClock className="h-4 w-4 text-dark-500" />
-          </div>
-          <div className="flex-1 overflow-y-auto custom-scrollbar">
-            {renewals.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-10">
-                <CalendarClock className="h-10 w-10 text-dark-700 mb-2" />
-                <p className="text-sm text-dark-400">No upcoming renewals</p>
-              </div>
-            ) : (
-              <div className="p-4 space-y-3">
-                {renewals.map((r) => {
-                  const parts = r.valid_till ? r.valid_till.split("/") : null; // DD/MM/YYYY
-                  const d = parts && parts.length === 3 ? new Date(+parts[2], +parts[1] - 1, +parts[0]) : null;
-                  const month = d ? d.toLocaleString("en-US", { month: "short" }).toUpperCase() : "—";
-                  const day = d ? d.getDate() : "—";
-                  return (
-                    <div key={r.name} className="flex items-center gap-3">
-                      <div className={`w-10 h-10 rounded-lg flex flex-col items-center justify-center shrink-0 border ${
-                        r.expired ? "bg-red-500/10 border-red-500/20" :
-                        r.days_left <= 3 ? "bg-amber-500/10 border-amber-500/20" :
-                        "bg-dark-800 border-dark-700/30"
-                      }`}>
-                        <span className="text-[9px] font-bold text-dark-500 leading-none">{month}</span>
-                        <span className={`text-sm font-bold leading-none ${
-                          r.expired ? "text-red-400" : r.days_left <= 3 ? "text-amber-400" : "text-white"
-                        }`}>{day}</span>
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-[13px] font-medium text-white truncate">{r.name}</p>
-                        <p className={`text-[11px] font-bold ${
-                          r.expired ? "text-red-400" : r.days_left <= 3 ? "text-amber-400" : "text-dark-500"
-                        }`}>
-                          {r.expired ? "EXPIRED" : `$${r.renewal_price || 0} · ${r.days_left}d left`}
-                        </p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Support Tickets */}
-        <div className="clay-card flex flex-col max-h-[400px]">
-          <div className="px-5 py-4 border-b border-dark-800/50 flex items-center justify-between shrink-0">
-            <h3 className="text-sm font-bold text-white">Support Tickets</h3>
-            <MessageSquare className="h-4 w-4 text-dark-500" />
-          </div>
-          <div className="flex-1 overflow-y-auto custom-scrollbar">
-            {openTickets.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-10">
-                <CheckCircle2 className="h-10 w-10 text-emerald-500/30 mb-2" />
-                <p className="text-sm text-dark-400">No open tickets</p>
-              </div>
-            ) : (
-              <div className="p-4 space-y-3">
-                {openTickets.slice(0, 8).map((t: any) => (
-                  <Link key={t.id} href="/admin/support" className="block">
-                    <div className="border-l-2 border-accent pl-3 py-1 hover:bg-dark-800/30 rounded-r-lg transition-colors">
-                      <p className="text-[13px] font-bold text-white truncate">
-                        {t.session_name || t.session_file}
-                      </p>
-                      <p className="text-[11px] text-dark-500">
-                        {t.bot_name} · {t.issue_type?.replace(/_/g, " ")} · {t.created_at ? timeAgo((Date.now() / 1000) - t.created_at) : "—"}
-                      </p>
-                    </div>
-                  </Link>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* ────── Recent Orders + Session Pool ────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-
-        {/* Recent Orders */}
-        <div className="clay-card lg:col-span-2 flex flex-col max-h-[420px]">
-          <div className="px-5 py-4 border-b border-dark-800/50 flex items-center justify-between shrink-0">
-            <h3 className="text-sm font-semibold text-white">Recent Orders</h3>
-            <Link href="/admin/payments" className="text-xs font-bold text-accent hover:underline uppercase">
-              View Report
-            </Link>
-          </div>
-          <div className="flex-1 overflow-y-auto custom-scrollbar p-3">
-            {recentOrders.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-10">
-                <ShoppingCart className="h-10 w-10 text-dark-700 mb-2" />
-                <p className="text-sm text-dark-400">No orders yet</p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {recentOrders.map((order) => (
-                  <div key={order.order_id} className="flex items-center justify-between p-3 clay-inset hover:brightness-125 transition-all">
-                    <div className="flex items-center gap-3">
-                      <div className={`h-10 w-10 rounded-full clay-pill flex items-center justify-center shrink-0 ${
-                        order.status === "completed" ? "bg-emerald-500/10" :
-                        order.status === "cancelled" ? "bg-red-500/10" : "bg-amber-500/10"
-                      }`}>
-                        {order.status === "completed" ? <CheckCircle2 className="h-4 w-4 text-emerald-400" /> :
-                         order.status === "cancelled" ? <XCircle className="h-4 w-4 text-red-400" /> :
-                         <Clock className="h-4 w-4 text-amber-400" />}
-                      </div>
-                      <div>
-                        <p className="text-sm font-bold text-white">{order.plan_name || order.order_type}</p>
-                        <p className="text-xs text-dark-500">
-                          {order.order_type} · User {order.user_id || "?"} · {order.created_at ? new Date(order.created_at).toLocaleDateString() : "—"}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-sm font-bold text-white">${order.amount_usd.toFixed(2)}</p>
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                        order.status === "completed" ? "bg-emerald-500/20 text-emerald-400" :
-                        order.status === "cancelled" ? "bg-red-500/20 text-red-400" :
-                        "bg-amber-500/20 text-amber-400"
-                      }`}>
-                        {order.status === "completed" ? "Success" : order.status}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Session Pool */}
-        <div className="clay-card flex flex-col">
-          <div className="px-5 py-4 border-b border-dark-800/50 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-white">Session Pool</h3>
-            {s.dead > 0 && (
-              <span className="inline-flex items-center gap-1.5 text-[10px] font-bold text-red-400">
-                <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />{s.dead} dead
-              </span>
-            )}
-          </div>
-          <div className="p-5 space-y-5 flex-1">
-            {[
-              { label: "ASSIGNED", val: s.assigned, total: s.total, color: "bg-accent", textColor: "text-white" },
-              { label: "FREE / AVAILABLE", val: s.free, total: s.total, color: "bg-emerald-400", textColor: "text-emerald-400" },
-              { label: "DEAD / FROZEN", val: s.dead + s.frozen, total: s.total, color: "bg-red-500", textColor: "text-red-400" },
-            ].map((row) => {
-              const pct = row.total > 0 ? (row.val / row.total) * 100 : 0;
-              return (
-                <div key={row.label}>
-                  <div className="flex justify-between text-xs font-bold mb-1">
-                    <span className="text-dark-500">{row.label}</span>
-                    <span className={row.textColor}>{row.val}</span>
-                  </div>
-                  <div className="h-2.5 w-full clay-inset overflow-hidden">
-                    <div className={`h-full rounded-full ${row.color} transition-all duration-700`}
-                      style={{ width: `${Math.max(pct, pct > 0 ? 2 : 0)}%` }} />
-                  </div>
+          <div className="px-4 pt-3 pb-2">
+            <div className="h-[180px]">
+              {(activity?.total_sent || 0) + (activity?.total_failed || 0) === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-dark-500">
+                  <Activity className="h-9 w-9 text-dark-700 mb-2" />
+                  <p className="text-sm text-dark-400">No posting in this window</p>
                 </div>
-              );
-            })}
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={actChart}>
+                    <defs>
+                      <linearGradient id="sentGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#34d399" stopOpacity={0.3} /><stop offset="100%" stopColor="#34d399" stopOpacity={0} /></linearGradient>
+                      <linearGradient id="failGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#f87171" stopOpacity={0.25} /><stop offset="100%" stopColor="#f87171" stopOpacity={0} /></linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1e1e30" vertical={false} />
+                    <XAxis dataKey="label" stroke="#4a4a5a" fontSize={10} tickLine={false} axisLine={false} minTickGap={24} />
+                    <YAxis stroke="#4a4a5a" fontSize={10} tickLine={false} axisLine={false} />
+                    <Tooltip contentStyle={{ background: "#252533", border: "1px solid rgba(52,211,153,0.2)", borderRadius: "12px", fontSize: "12px", padding: "8px 12px" }} labelStyle={{ color: "#acacbe", marginBottom: "4px" }} />
+                    <Area type="monotone" dataKey="sent" stroke="#34d399" strokeWidth={2} fill="url(#sentGrad)" dot={false} />
+                    <Area type="monotone" dataKey="failed" stroke="#f87171" strokeWidth={2} fill="url(#failGrad)" dot={false} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </div>
+        </div>
 
-            {/* Detailed counts */}
-            <div className="grid grid-cols-3 gap-2 pt-2">
-              {[
-                { label: "Limited", val: s.limited, color: "text-amber-400" },
-                { label: "Unauth", val: s.unauth, color: "text-dark-400" },
-                { label: "Total", val: s.total, color: "text-white" },
-              ].map((item) => (
-                <div key={item.label} className="clay-inset p-2.5 text-center">
-                  <p className={`text-sm font-bold ${item.color}`}>{item.val}</p>
-                  <p className="text-[9px] text-dark-600 font-bold uppercase tracking-wider">{item.label}</p>
+        {/* Failure Reasons */}
+        <div className="clay-card flex flex-col">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-dark-800/50">
+            <div className="flex items-center gap-2.5"><AlertTriangle className="h-4 w-4 text-amber-400" /><h3 className="text-sm font-bold text-white">Failure Reasons</h3></div>
+            {rangeBtns(failRange, setFailRange)}
+          </div>
+          <div className="flex-1 overflow-y-auto custom-scrollbar p-3 max-h-[220px]">
+            {(failData?.reasons?.length || 0) === 0 ? (
+              <div className="flex flex-col items-center justify-center py-8 text-dark-500">
+                <CheckCircle2 className="h-8 w-8 text-emerald-500/30 mb-1.5" />
+                <p className="text-xs text-dark-400">No failures in this window</p>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {(failData?.reasons || []).map((r) => (
+                  <div key={r.key} className="flex items-center justify-between clay-inset px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-dark-200">{r.label}</p>
+                      {r.sessions.length > 0 && <p className="text-[10px] text-dark-500 truncate">{r.sessions.length} account{r.sessions.length !== 1 ? "s" : ""}: {r.sessions.slice(0, 3).join(", ")}{r.sessions.length > 3 ? "…" : ""}</p>}
+                    </div>
+                    <span className="text-sm font-bold text-red-400 tabular-nums shrink-0 ml-2">{r.count}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ══════════ Recent Orders + Recent Admin Actions ══════════ */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Recent Orders / Queue */}
+        <div className="clay-card flex flex-col">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-dark-800/50">
+            <h3 className="text-sm font-bold text-white">Recent Orders</h3>
+            <Link href="/admin/payments" className="text-[11px] font-bold text-accent hover:underline uppercase">View report</Link>
+          </div>
+          {recentOrders.length === 0 ? (
+            <div className="px-4 py-3 flex items-center gap-2 text-xs text-dark-500"><ShoppingCart className="h-4 w-4 text-dark-700" />No orders yet. New purchases appear here.</div>
+          ) : (
+            <div className="max-h-[300px] overflow-y-auto custom-scrollbar divide-y divide-dark-800/20">
+              {recentOrders.map((order) => (
+                <div key={order.order_id} className="flex items-center justify-between px-4 py-2.5 hover:bg-white/[0.02]">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    {order.status === "completed" ? <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" /> : order.status === "cancelled" ? <XCircle className="h-4 w-4 text-red-400 shrink-0" /> : <Clock className="h-4 w-4 text-amber-400 shrink-0" />}
+                    <div className="min-w-0">
+                      <p className="text-[13px] font-semibold text-white truncate">{order.plan_name || order.order_type}</p>
+                      <p className="text-[11px] text-dark-500 truncate">User {order.user_id || "?"} · {order.created_at ? new Date(order.created_at).toLocaleDateString() : "—"}</p>
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0 ml-2">
+                    <p className="text-[13px] font-bold text-white">${order.amount_usd.toFixed(2)}</p>
+                    <span className={`text-[10px] font-bold uppercase ${order.status === "completed" ? "text-emerald-400" : order.status === "cancelled" ? "text-red-400" : "text-amber-400"}`}>{order.status === "completed" ? "Paid" : order.status}</span>
+                  </div>
                 </div>
               ))}
             </div>
-          </div>
+          )}
+        </div>
 
-          {/* Worker heartbeats (real age from /api/system/workers) */}
-          <div className="px-5 py-3 border-t border-dark-800/50">
-            <p className="text-[10px] font-bold text-dark-500 uppercase tracking-widest mb-2">Worker Health</p>
-            <div className="space-y-1.5">
-              {[
-                { key: "create_worker_heartbeat", label: "Create Worker", fallback: workers.create_worker_ok },
-                { key: "payment_worker_heartbeat", label: "Payment Worker", fallback: workers.payment_worker_ok },
-              ].map((w) => {
-                const h = workerHb?.[w.key];
-                const healthy = h ? h.healthy : w.fallback;
+        {/* Recent Admin Actions */}
+        <div className="clay-card flex flex-col">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-dark-800/50">
+            <div className="flex items-center gap-2.5"><Shield className="h-4 w-4 text-dark-400" /><h3 className="text-sm font-bold text-white">Recent Admin Actions</h3></div>
+            <span className="text-[11px] text-dark-500">{auditData?.total || 0} logged</span>
+          </div>
+          {auditEntries.length === 0 ? (
+            <div className="px-4 py-3 text-xs text-dark-500">No admin actions logged yet.</div>
+          ) : (
+            <div className="max-h-[300px] overflow-y-auto custom-scrollbar divide-y divide-dark-800/20">
+              {auditEntries.map((e: any, i: number) => {
+                const ts = e.ts ? new Date(e.ts) : null;
+                const valid = ts && !isNaN(ts.getTime());
                 return (
-                  <div key={w.key} className="flex items-center justify-between">
-                    <span className="flex items-center gap-2 text-xs text-dark-300">
-                      <span className={`w-2 h-2 rounded-full ${healthy ? "bg-emerald-400" : "bg-red-400 animate-pulse"}`} />
-                      {w.label}
-                    </span>
-                    <span className={`text-[11px] font-medium ${healthy ? "text-dark-500" : "text-red-400"}`}>
-                      {h ? fmtAge(h.age_sec) : (healthy ? "healthy" : "no signal")}
-                    </span>
+                  <div key={i} className="px-4 py-2 flex items-center gap-2.5 hover:bg-white/[0.02]">
+                    <span className="text-[10px] font-mono text-dark-500 shrink-0 w-16">{valid ? timeAgo((Date.now() - ts!.getTime()) / 1000) : "—"}</span>
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase shrink-0 bg-accent/10 text-accent">{humanizeAction(e.action)}</span>
+                    <p className="text-[12px] text-dark-300 truncate flex-1">{e.target ? <span className="font-mono text-dark-400">{e.target}</span> : <span className="text-dark-600">—</span>}</p>
+                    <span className="text-[10px] text-dark-500 shrink-0">{e.admin_id != null ? `by ${e.admin_id}` : ""}</span>
                   </div>
                 );
               })}
             </div>
-          </div>
-        </div>
-      </div>
-
-      {/* ────── Recent Admin Actions (audit log) ────── */}
-      <div className="clay-card flex flex-col max-h-[360px]">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-dark-800/50 shrink-0">
-          <div className="flex items-center gap-2.5">
-            <Activity className="h-4 w-4 text-accent" />
-            <h3 className="text-sm font-semibold text-white">Recent Admin Actions</h3>
-          </div>
-          <span className="text-[11px] text-dark-500">{auditData?.total || 0} logged</span>
-        </div>
-        <div className="flex-1 overflow-y-auto custom-scrollbar divide-y divide-dark-800/20">
-          {auditEntries.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-10">
-              <Activity className="h-10 w-10 text-dark-700 mb-2" />
-              <p className="text-sm text-dark-400">No admin actions logged yet</p>
-            </div>
-          ) : (
-            auditEntries.map((e: any, i: number) => {
-              const ts = e.ts ? new Date(e.ts) : null;
-              const valid = ts && !isNaN(ts.getTime());
-              return (
-                <div key={i} className="px-5 py-3 flex items-center gap-3 hover:bg-white/[0.03] transition-colors">
-                  <span className="text-[11px] font-mono text-dark-500 shrink-0 w-24">
-                    {valid ? timeAgo((Date.now() - ts!.getTime()) / 1000) : "—"}
-                  </span>
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0 bg-accent/10 text-accent">
-                    {humanizeAction(e.action)}
-                  </span>
-                  <p className="text-[13px] text-dark-300 truncate flex-1">
-                    {e.target ? <span className="font-mono text-dark-400">{e.target}</span> : <span className="text-dark-600">—</span>}
-                  </p>
-                  <span className="text-[11px] text-dark-500 shrink-0">{e.admin_id != null ? `by ${e.admin_id}` : ""}</span>
-                </div>
-              );
-            })
           )}
         </div>
       </div>
 
-      {/* ────── System Log / Alerts ────── */}
+      {/* ══════════ System Security Log (secondary) ══════════ */}
       {alerts.length > 0 && (
         <div className="clay-card flex flex-col">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-dark-800/50 shrink-0">
-            <h3 className="text-sm font-semibold text-white">System Security Log</h3>
-            <span className="text-[11px] text-dark-500">Real-time update active</span>
+          <div className="flex items-center justify-between px-4 py-3 border-b border-dark-800/50">
+            <h3 className="text-sm font-bold text-white">System Security Log</h3>
+            <span className="text-[11px] text-dark-500">live</span>
           </div>
-          <div className="max-h-[300px] overflow-y-auto custom-scrollbar divide-y divide-dark-800/20">
+          <div className="max-h-[240px] overflow-y-auto custom-scrollbar divide-y divide-dark-800/20">
             {alerts.slice(0, 15).map((a: any, i: number) => (
-              <div key={i} className="px-5 py-3 flex items-center gap-3 hover:bg-white/[0.03] transition-colors">
-                <span className="text-xs font-mono text-dark-500 shrink-0 w-16">
-                  {a.ts ? new Date(a.ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—"}
-                </span>
-                <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0 ${
-                  a.type === "error" || a.type === "critical" ? "bg-red-500/10 text-red-400" :
-                  a.type === "warning" || a.type === "pending_creation" || a.type === "queue_sessions" ? "bg-amber-500/10 text-amber-400" :
-                  a.type === "bot" ? "bg-accent/10 text-accent" :
-                  "bg-emerald-500/10 text-emerald-400"
-                }`}>
-                  {a.type || "INFO"}
-                </span>
-                <p className="text-[13px] text-dark-300 truncate">{a.msg}</p>
+              <div key={i} className="px-4 py-2 flex items-center gap-2.5 hover:bg-white/[0.02]">
+                <span className="text-[11px] font-mono text-dark-500 shrink-0 w-14">{a.ts ? new Date(a.ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}</span>
+                <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase shrink-0 ${a.type === "error" || a.type === "critical" ? "bg-red-500/10 text-red-400" : a.type === "warning" ? "bg-amber-500/10 text-amber-400" : a.type === "bot" ? "bg-accent/10 text-accent" : "bg-emerald-500/10 text-emerald-400"}`}>{a.type || "info"}</span>
+                <p className="text-[12px] text-dark-300 truncate">{a.msg}</p>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* Recreate modal — pick which steps to skip */}
+      {/* Recreate modal */}
       <Modal open={!!recreateTarget} onClose={() => setRecreateTarget(null)} title="Recreate Bot" size="sm">
         {recreateTarget && (
           <div className="space-y-4">
             <p className="text-xs text-dark-400">
               Rebuild the bot for order <span className="font-mono text-dark-200">{recreateTarget.order_id}</span>.
-              {recreateTarget.creation_step && (
-                <span className="block mt-2 rounded-lg bg-warning/10 border border-warning/20 px-2.5 py-2 text-[11px] text-warning">
-                  {recreateTarget.creation_step}
-                </span>
-              )}
+              {recreateTarget.creation_step && (<span className="block mt-2 rounded-lg bg-warning/10 border border-warning/20 px-2.5 py-2 text-[11px] text-warning">{recreateTarget.creation_step}</span>)}
             </p>
             <div className="space-y-2">
               <p className="text-[11px] font-medium text-dark-500 uppercase tracking-wider">Skip steps</p>
-              <button type="button" onClick={() => setRecreateSkipHealth((v) => !v)}
-                className={`w-full flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-all ${
-                  recreateSkipHealth ? "border-warning/40 bg-warning/5" : "border-dark-700 bg-dark-800 hover:border-dark-600"
-                }`}
-              >
+              <button type="button" onClick={() => setRecreateSkipHealth((v) => !v)} className={`w-full flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-all ${recreateSkipHealth ? "border-warning/40 bg-warning/5" : "border-dark-700 bg-dark-800 hover:border-dark-600"}`}>
                 {recreateSkipHealth ? <CheckSquare className="h-4 w-4 text-warning shrink-0 mt-0.5" /> : <Square className="h-4 w-4 text-dark-500 shrink-0 mt-0.5" />}
-                <span>
-                  <span className={`block text-xs font-medium ${recreateSkipHealth ? "text-warning" : "text-dark-300"}`}>Skip session health check</span>
-                  <span className="block text-[11px] text-dark-500 mt-0.5">Use sessions even if they'd normally fail validation (lets bad/dead sessions through).</span>
-                </span>
+                <span><span className={`block text-xs font-medium ${recreateSkipHealth ? "text-warning" : "text-dark-300"}`}>Skip session health check</span><span className="block text-[11px] text-dark-500 mt-0.5">Use sessions even if they'd normally fail validation.</span></span>
               </button>
-              <button type="button" onClick={() => setRecreateSkipChatlist((v) => !v)}
-                className={`w-full flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-all ${
-                  recreateSkipChatlist ? "border-warning/40 bg-warning/5" : "border-dark-700 bg-dark-800 hover:border-dark-600"
-                }`}
-              >
+              <button type="button" onClick={() => setRecreateSkipChatlist((v) => !v)} className={`w-full flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-all ${recreateSkipChatlist ? "border-warning/40 bg-warning/5" : "border-dark-700 bg-dark-800 hover:border-dark-600"}`}>
                 {recreateSkipChatlist ? <CheckSquare className="h-4 w-4 text-warning shrink-0 mt-0.5" /> : <Square className="h-4 w-4 text-dark-500 shrink-0 mt-0.5" />}
-                <span>
-                  <span className={`block text-xs font-medium ${recreateSkipChatlist ? "text-warning" : "text-dark-300"}`}>Skip default chatlist auto-join</span>
-                  <span className="block text-[11px] text-dark-500 mt-0.5">Don't auto-join assigned sessions to the mode's default chatlist folders.</span>
-                </span>
+                <span><span className={`block text-xs font-medium ${recreateSkipChatlist ? "text-warning" : "text-dark-300"}`}>Skip default chatlist auto-join</span><span className="block text-[11px] text-dark-500 mt-0.5">Don't auto-join assigned sessions to default chatlist folders.</span></span>
               </button>
             </div>
             <div className="flex gap-2 pt-1">
               <Button variant="ghost" size="sm" className="flex-1" onClick={() => setRecreateTarget(null)}>Cancel</Button>
-              <Button variant="primary" size="sm" className="flex-1" loading={recreating} onClick={confirmRecreate}>
-                <Hammer className="h-3.5 w-3.5" /> Recreate
-              </Button>
+              <Button variant="primary" size="sm" className="flex-1" loading={recreating} onClick={confirmRecreate}><Hammer className="h-3.5 w-3.5" /> Recreate</Button>
             </div>
           </div>
         )}
       </Modal>
 
       {/* Emergency Stop confirmation */}
-      <Modal open={confirmStop} onClose={() => setConfirmStop(false)} title="Emergency Stop" size="sm">
+      <Modal open={confirmStop} onClose={() => setConfirmStop(false)} title="Stop all bots?" size="sm">
         <div className="space-y-4">
           <div className="flex items-start gap-3">
-            <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/20 shrink-0">
-              <PauseCircle className="h-6 w-6 text-red-400" />
-            </div>
-            <p className="text-sm text-dark-300">
-              This immediately stops <b className="text-white">every running bot</b>. Users can restart their own bots afterward, or use <b className="text-emerald-400">Resume All</b> to bring them back. Continue?
-            </p>
+            <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/20 shrink-0"><PauseCircle className="h-6 w-6 text-red-400" /></div>
+            <p className="text-sm text-dark-300">This immediately halts posting for all <b className="text-white">{b.running} running bots</b>. Users can restart their own, or use <b className="text-emerald-400">Resume Paused</b>. This does not delete anything.</p>
           </div>
           <div className="flex gap-2 pt-1">
             <Button variant="ghost" size="sm" className="flex-1" onClick={() => setConfirmStop(false)}>Cancel</Button>
-            <Button variant="danger" size="sm" className="flex-1" loading={sysBusy === "stop"} onClick={() => doEmergency("stop")}>
-              <PauseCircle className="h-3.5 w-3.5" /> Stop All Bots
-            </Button>
+            <Button variant="danger" size="sm" className="flex-1" loading={sysBusy === "stop"} onClick={() => doEmergency("stop")}><PauseCircle className="h-3.5 w-3.5" /> Stop All Bots</Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Resume confirmation */}
+      <Modal open={confirmResume} onClose={() => setConfirmResume(false)} title="Resume paused bots?" size="sm">
+        <div className="space-y-4">
+          <div className="flex items-start gap-3">
+            <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 shrink-0"><Play className="h-6 w-6 text-emerald-400" /></div>
+            <p className="text-sm text-dark-300">Restarts bots that were emergency-stopped. Bots stopped by their owners stay stopped.</p>
+          </div>
+          <div className="flex gap-2 pt-1">
+            <Button variant="ghost" size="sm" className="flex-1" onClick={() => setConfirmResume(false)}>Cancel</Button>
+            <Button variant="success" size="sm" className="flex-1" loading={sysBusy === "resume"} onClick={() => doEmergency("resume")}><Play className="h-3.5 w-3.5" /> Resume</Button>
           </div>
         </div>
       </Modal>
