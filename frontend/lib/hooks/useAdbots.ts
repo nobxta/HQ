@@ -35,6 +35,36 @@ export function useAdbotStats(name: string) {
   });
 }
 
+export interface SessionOverview {
+  bot: { name: string; token_masked: string | null; state: string; running: boolean };
+  range: string;
+  summary: { total: number; active: number; disabled: number; dead: number; sent: number; failed: number; flood: number };
+  sessions: Array<{
+    index: number;
+    file: string;
+    display_name: string;
+    telegram_user_id: number | null;
+    phone_from_file: string | null;
+    status: string;
+    enabled: boolean;
+    last_active_at: number | null;
+    last_validated_at: number | null;
+    validation_status: string;
+    validation_reason: string | null;
+    last_error: string | null;
+    last_error_at: number | null;
+    stats: { sent: number; failed: number; flood: number; success_rate: number | null };
+  }>;
+}
+
+export function useSessionsOverview(name: string, range: string) {
+  return useSWR<SessionOverview | null>(
+    name ? `/api/bots/${encodeURIComponent(name)}/sessions/overview?range=${range}` : null,
+    silentFetcher,
+    { refreshInterval: 15000, shouldRetryOnError: false, keepPreviousData: true }
+  );
+}
+
 export function useAdbotLogs(name: string, lines = 100) {
   return useSWR<{ lines: string[]; total_lines: number }>(
     name ? `/api/bots/${name}/logs?lines=${lines}` : null, silentFetcher, {

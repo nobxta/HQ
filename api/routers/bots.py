@@ -1,6 +1,7 @@
 """Bot management endpoints: CRUD, start/stop, stats, logs, session management."""
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -652,6 +653,172 @@ async def get_sessions_detail(name: str):
     return {"sessions": results}
 
 
+# Time-range keys accepted by the sessions overview → window length in seconds.
+# "all" → None (lifetime).
+_RANGE_SECONDS: dict[str, Optional[int]] = {
+    "1h": 3600,
+    "6h": 6 * 3600,
+    "24h": 24 * 3600,
+    "7d": 7 * 86400,
+    "all": None,
+}
+
+
+def _derive_session_status(
+    file: str,
+    *,
+    disabled: bool,
+    validation_status: str,
+    bot_running: bool,
+    pause_until: dict,
+    cooldown_until: dict,
+    now: float,
+) -> str:
+    """Single source of truth for a session's operational status, from real cfg state."""
+    if disabled:
+        return "disabled"
+    if validation_status == "invalid":
+        return "dead"
+    if float(pause_until.get(file, 0) or 0) > now:
+        return "floodwait"
+    if float(cooldown_until.get(file, 0) or 0) > now:
+        return "paused"
+    if bot_running:
+        return "running"
+    return "stopped"
+
+
+@router.get("/{name}/sessions/overview")
+async def get_sessions_overview(name: str, range: str = Query("24h")):
+    """Real, compact per-session operational view for the admin Sessions page.
+
+    Merges the bot's assigned sessions (identity), persisted validation state, the
+    admin Enable/Disable flags, and posting activity (sent/failed/flood) parsed from
+    the durable log for the requested time window. No mock data, no live Telethon —
+    this is a fast read used for the card grid and summary. Live checks stay on the
+    explicit Validate / Check Info actions.
+    """
+    from api.services.log_stats import compute_session_activity
+
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    range_key = range if range in _RANGE_SECONDS else "24h"
+    window = _RANGE_SECONDS[range_key]
+    now = time.time()
+    since_ts = 0.0 if window is None else (now - window)
+
+    token = await wrappers.get_token_by_name(name)
+    stats = await wrappers.get_stats_for_display(token) if token else {}
+    session_stats = (stats or {}).get("session_stats") or {}
+
+    activity = await asyncio.to_thread(compute_session_activity, name, since_ts)
+
+    sessions_cfg = cfg.get("sessions") or []
+    disabled_set = {(f or "").strip() for f in (cfg.get("disabled_sessions") or []) if (f or "").strip()}
+    pause_until = cfg.get("session_pause_until") or {}
+    cooldown_until = cfg.get("session_cooldown_until") or {}
+    bot_running = cfg.get("state") in ("running", "activating")
+
+    out_sessions = []
+    sum_sent = sum_failed = sum_flood = 0
+    n_active = n_disabled = n_dead = 0
+
+    for i, s in enumerate(sessions_cfg):
+        fn = (s.get("file") or "").strip()
+        act = activity.get(fn) or {}
+        sstat = session_stats.get(fn) or {}
+
+        is_disabled = fn in disabled_set
+        validation_status = s.get("validation_status", "unknown")
+
+        # Sent/failed within the window come from the log; "all" prefers the durable
+        # lifetime counter (logs may have rotated), flood always from the log.
+        if window is None:
+            sent = int(sstat.get("lifetime_sent", 0)) or int(act.get("sent", 0))
+            failed = int(sstat.get("lifetime_failed", 0)) or int(act.get("failed", 0))
+        else:
+            sent = int(act.get("sent", 0))
+            failed = int(act.get("failed", 0))
+        flood = int(act.get("flood", 0))
+        total = sent + failed
+        success_rate = round(sent / total * 100, 1) if total else None
+
+        # Last active: newest of log activity or the recorded last cycle timestamp.
+        last_active_ts = max(
+            float(act.get("last_active_ts", 0) or 0),
+            float(sstat.get("last_cycle_ts", 0) or 0),
+        )
+
+        status = _derive_session_status(
+            fn,
+            disabled=is_disabled,
+            validation_status=validation_status,
+            bot_running=bot_running,
+            pause_until=pause_until,
+            cooldown_until=cooldown_until,
+            now=now,
+        )
+        if status == "disabled":
+            n_disabled += 1
+        elif status == "dead":
+            n_dead += 1
+        else:
+            n_active += 1
+
+        sum_sent += sent
+        sum_failed += failed
+        sum_flood += flood
+
+        # Phone number is NOT verified from Telegram here — only derivable from the
+        # session file name. Labeled as such on the client so it isn't shown as a
+        # real phone number.
+        digits = "".join(ch for ch in fn.replace(".session", "") if ch.isdigit())
+
+        out_sessions.append({
+            "index": s.get("index") if s.get("index") is not None else i + 1,
+            "file": fn,
+            "display_name": s.get("real_name") or "",
+            "telegram_user_id": s.get("user_id") or None,
+            "phone_from_file": digits or None,
+            "status": status,
+            "enabled": not is_disabled,
+            "last_active_at": last_active_ts or None,
+            "last_validated_at": s.get("last_validated_at") or None,
+            "validation_status": validation_status,
+            "validation_reason": s.get("validation_reason") or None,
+            "last_error": act.get("last_error") or None,
+            "last_error_at": (act.get("last_error_ts") or None) if act.get("last_error") else None,
+            "stats": {
+                "sent": sent,
+                "failed": failed,
+                "flood": flood,
+                "success_rate": success_rate,
+            },
+        })
+
+    return {
+        "bot": {
+            "name": cfg.get("name", name),
+            "token_masked": (f"{token.split(':')[0]}:****" if token and ":" in token else None),
+            "state": cfg.get("state", "stopped"),
+            "running": bot_running,
+        },
+        "range": range_key,
+        "summary": {
+            "total": len(sessions_cfg),
+            "active": n_active,
+            "disabled": n_disabled,
+            "dead": n_dead,
+            "sent": sum_sent,
+            "failed": sum_failed,
+            "flood": sum_flood,
+        },
+        "sessions": out_sessions,
+    }
+
+
 class SessionProfileUpdate(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
@@ -740,7 +907,8 @@ async def validate_bot_session(name: str, session_file: str):
         raise HTTPException(404, f"Bot '{name}' not found")
 
     sessions = cfg.get("sessions") or []
-    if not any(s.get("file") == session_file for s in sessions):
+    entry = next((s for s in sessions if s.get("file") == session_file), None)
+    if not entry:
         raise HTTPException(404, f"Session '{session_file}' not assigned to '{name}'")
 
     from code.config import resolve_session_path
@@ -750,10 +918,14 @@ async def validate_bot_session(name: str, session_file: str):
     valid, reason = await validate_session_with_reason(path)
     status = "valid" if valid else "invalid"
 
-    # If invalid, update session list (it may have been moved to dead)
-    if not valid:
-        cfg["sessions"] = [s for s in cfg.get("sessions", []) if s.get("file") != session_file]
-        await wrappers.save_user_data(name, cfg)
+    # Persist the outcome onto the session entry so the Sessions page can show the
+    # last validation status/reason/time without a fresh live check. The session
+    # stays assigned even when invalid — Remove/Replace are the explicit operator
+    # actions for returning it to the pool; the worker skips dead sessions at spawn.
+    entry["validation_status"] = status
+    entry["validation_reason"] = "" if valid else (reason or "")
+    entry["last_validated_at"] = time.time()
+    await wrappers.save_user_data(name, cfg)
 
     return {"file": session_file, "status": status, "reason": reason}
 
@@ -860,6 +1032,13 @@ async def validate_all_sessions(name: str):
                 info["status"] = "dead"
                 info["reason"] = str(e)[:150]
                 dead_files.append(fn)
+
+        # Persist validation outcome onto surviving entries (dead ones are removed
+        # below, so only record for those that stay assigned).
+        if info["status"] != "dead":
+            s["validation_status"] = "valid" if info["status"] == "active" else "unknown"
+            s["validation_reason"] = info["reason"] or ""
+            s["last_validated_at"] = time.time()
 
         results.append(info)
 

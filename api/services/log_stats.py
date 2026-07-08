@@ -285,3 +285,97 @@ def compute_failure_reasons(bot_names: list[str], since_ts: float) -> dict:
     ]
     reasons.sort(key=lambda r: r["count"], reverse=True)
     return {"total": total, "reasons": reasons, "generated_at": time.time()}
+
+
+# ── Per-session activity (Admin → AdBot → Sessions) ─────────────────────────
+# Every posting attempt is logged as `[TAG] account=<file-without-.session> ...`
+# (see code/users.py). We parse those lines to derive real per-account counters
+# (sent / failed / flood) within a time window, plus the lifetime last-active and
+# last-error, keyed by session file — the stable identifier for a session.
+_SESSION_LINE_RE = re.compile(
+    r"^\s*(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})\s+.*?"
+    r"\[(POST_SUCCESS|POST_FAILURE|FLOOD_WAIT|POST_SKIPPED)\]\s+account=(\S+)(.*)$"
+)
+_ERROR_RE = re.compile(r"error=(.+)$")
+
+
+def _new_session_activity() -> dict:
+    return {
+        "sent": 0,
+        "failed": 0,
+        "flood": 0,
+        "skipped": 0,
+        "last_active_ts": 0.0,
+        "last_error": "",
+        "last_error_ts": 0.0,
+    }
+
+
+def compute_session_activity(bot_name: str, since_ts: float) -> dict[str, dict]:
+    """Parse a bot's log once and return per-account activity.
+
+    Windowed counters (``sent`` / ``failed`` / ``flood`` / ``skipped``) only tally
+    lines at or after ``since_ts`` (pass 0 for "all time"). ``last_active_ts`` and
+    ``last_error`` are always the most-recent seen across the whole file, so the
+    card can show the true last error/activity regardless of the selected range.
+
+    Keys are the session **file name** including the ``.session`` suffix, matching
+    ``cfg["sessions"][i]["file"]``.
+    """
+    out: dict[str, dict] = {}
+    path = _resolve_log_path(bot_name)
+    if path is None:
+        return out
+    try:
+        fh = path.open("r", encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+
+    with fh:
+        for line in fh:
+            if "] account=" not in line:
+                continue
+            m = _SESSION_LINE_RE.match(line)
+            if not m:
+                continue
+            try:
+                dt = datetime.strptime(
+                    f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H:%M:%S"
+                ).replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            ts = dt.timestamp()
+            tag, account, rest = m.group(3), m.group(4), m.group(5)
+            # Normalize account -> session file name (log strips the .session suffix).
+            fn = account if account.endswith(".session") else f"{account}.session"
+            entry = out.get(fn)
+            if entry is None:
+                entry = out[fn] = _new_session_activity()
+
+            in_window = ts >= since_ts
+            if tag == "POST_SUCCESS":
+                if in_window:
+                    entry["sent"] += 1
+                if ts > entry["last_active_ts"]:
+                    entry["last_active_ts"] = ts
+            elif tag == "POST_FAILURE":
+                if in_window:
+                    entry["failed"] += 1
+                if ts > entry["last_active_ts"]:
+                    entry["last_active_ts"] = ts
+                if ts >= entry["last_error_ts"]:
+                    em = _ERROR_RE.search(rest)
+                    reason = (em.group(1).strip() if em else rest.strip())[:200]
+                    # Strip the surrounding repr() quotes the logger adds.
+                    if len(reason) >= 2 and reason[0] in "'\"" and reason[-1] == reason[0]:
+                        reason = reason[1:-1]
+                    entry["last_error"] = reason
+                    entry["last_error_ts"] = ts
+            elif tag == "FLOOD_WAIT":
+                if in_window:
+                    entry["flood"] += 1
+            elif tag == "POST_SKIPPED":
+                if in_window:
+                    entry["skipped"] += 1
+
+    return out

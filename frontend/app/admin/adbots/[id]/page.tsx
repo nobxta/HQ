@@ -2,7 +2,7 @@
 import { useState, useRef, useEffect, useCallback, forwardRef, type ReactNode, type InputHTMLAttributes } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { getSession } from "next-auth/react";
-import { useAdbot, useAdbotStats, useAdbotLogs } from "@/lib/hooks/useAdbots";
+import { useAdbot, useAdbotStats, useAdbotLogs, useSessionsOverview } from "@/lib/hooks/useAdbots";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
@@ -218,25 +218,6 @@ function daysUntil(valid?: string): number | null {
     if (isNaN(d.getTime())) return null;
     return Math.ceil((d.getTime() - Date.now()) / 86400000);
   } catch { return null; }
-}
-
-/* SVG progress ring (Figma HealthRing) */
-function HealthRing({ value, size = 52 }: { value: number; size?: number }) {
-  const r = (size - 8) / 2;
-  const circ = 2 * Math.PI * r;
-  const offset = circ - (value / 100) * circ;
-  const color = value >= 80 ? "#22C55E" : value >= 50 ? "#F59E0B" : "#EF4444";
-  return (
-    <div className="relative flex items-center justify-center" style={{ width: size, height: size }}>
-      <svg width={size} height={size} style={{ transform: "rotate(-90deg)", position: "absolute" }}>
-        <circle cx={size / 2} cy={size / 2} r={r} strokeWidth={4} stroke="rgba(255,255,255,0.08)" fill="none" />
-        <circle cx={size / 2} cy={size / 2} r={r} strokeWidth={4} stroke={color} fill="none"
-          strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round"
-          style={{ transition: "stroke-dashoffset 1.2s cubic-bezier(.4,0,.2,1)" }} />
-      </svg>
-      <span style={{ fontSize: size * 0.24, fontWeight: 700, color, lineHeight: 1 }}>{value}</span>
-    </div>
-  );
 }
 
 /* Pulsing-dot status pill (Figma StatusBadge) */
@@ -966,9 +947,66 @@ function StatsTab({ name }: { name: string }) {
 }
 
 /* ─── SESSIONS (deep) ─── */
+/* Real operational status → label + colour. No fabricated "health" scores. */
+const SESSION_STATUS: Record<string, { label: string; color: string }> = {
+  running:   { label: "Running",   color: "#22C55E" },
+  disabled:  { label: "Disabled",  color: "#F59E0B" },
+  paused:    { label: "Paused",    color: "#64748B" },
+  floodwait: { label: "FloodWait", color: "#F97316" },
+  dead:      { label: "Dead",      color: "#EF4444" },
+  stopped:   { label: "Stopped",   color: "#64748B" },
+  unknown:   { label: "Unknown",   color: "#64748B" },
+};
+
+function SessionStatusChip({ status }: { status: string }) {
+  const meta = SESSION_STATUS[status] || SESSION_STATUS.unknown;
+  return (
+    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold shrink-0"
+      style={{ color: meta.color, backgroundColor: `${meta.color}1f` }}>
+      <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: meta.color }} />
+      {meta.label}
+    </span>
+  );
+}
+
+/* Deterministic avatar colour from the session file (stable, not random). */
+function avatarColor(seed: string): string {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return AVATAR_GRADIENTS[h % AVATAR_GRADIENTS.length];
+}
+
+/* Compact copy-to-clipboard button. */
+function CopyBtn({ text }: { text: string }) {
+  return (
+    <button onClick={() => { navigator.clipboard.writeText(text); toast.success("Copied"); }}
+      className="text-hq-muted hover:text-hq-text p-0.5 shrink-0" title="Copy">
+      <Copy className="h-3 w-3" />
+    </button>
+  );
+}
+
+function MetricPill({ label, value, tone }: { label: string; value: ReactNode; tone?: string }) {
+  return (
+    <div className="rounded-[10px] px-2 py-1.5 text-center min-w-0" style={{ background: "rgba(255,255,255,0.03)" }}>
+      <div className="text-[12px] font-semibold tabular-nums truncate" style={tone ? { color: tone } : undefined}>{value}</div>
+      <div className="text-[10px] text-hq-muted mt-0.5">{label}</div>
+    </div>
+  );
+}
+
+/* Relative time from a unix seconds timestamp; "Never" when absent. */
+function relTime(ts?: number | null): string {
+  if (!ts) return "Never";
+  const secs = Math.floor(Date.now() / 1000 - ts);
+  if (secs < 0) return "just now";
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
+}
+
 function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate: () => void }) {
-  const [details, setDetails] = useState<any[] | null>(null);
-  const [loadingDetails, setLoadingDetails] = useState(false);
   const [selected, setSelected] = useState<any>(null);
   const [editMode, setEditMode] = useState(false);
   const [editData, setEditData] = useState({ first_name: "", last_name: "", bio: "", username: "" });
@@ -984,18 +1022,16 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
   const [bulkResult, setBulkResult] = useState<any>(null);
   const [spambotResults, setSpambotResults] = useState<Record<string, string>>({});
 
-  const sessions: any[] = bot.sessions || [];
+  // Real, backend-backed session view (no mock data, no live Telethon on load).
+  const [range, setRange] = useState<"1h" | "6h" | "24h" | "7d" | "all">("24h");
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [logsFor, setLogsFor] = useState<string>("");
+  const { data: overview, isLoading: ovLoading, error: ovError, mutate: reloadOverview } =
+    useSessionsOverview(name, range);
 
-  const fetchDetails = async () => {
-    setLoadingDetails(true);
-    try {
-      const { data } = await api.get(`/api/bots/${encodeURIComponent(name)}/sessions/detail`);
-      setDetails(data.sessions);
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || "Failed to load session details");
-    }
-    setLoadingDetails(false);
-  };
+  // Action handlers refresh the real overview (and the parent bot detail via onUpdate).
+  const fetchDetails = async () => { await reloadOverview(); };
 
   const runValidateAll = async () => {
     setBulkAction("validating");
@@ -1003,11 +1039,11 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
     setSpambotResults({});
     try {
       const { data } = await api.post(`/api/bots/${encodeURIComponent(name)}/sessions/validate-all`);
-      setDetails(data.sessions);
       setBulkResult({ type: "validate", active: data.active, dead: data.dead, dead_removed: data.dead_removed });
+      reloadOverview();
+      onUpdate();
       if (data.dead > 0) {
         toast.error(`${data.dead} dead session(s) removed`);
-        onUpdate();
       } else {
         toast.success(`All ${data.active} session(s) are valid`);
       }
@@ -1025,6 +1061,7 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
       const map: Record<string, string> = {};
       for (const s of data.sessions) map[s.file] = s.spambot_status;
       setSpambotResults(map);
+      reloadOverview();
       const movedCount = (data.moved_limited?.length || 0) + (data.moved_frozen?.length || 0);
       setBulkResult({
         type: "spambot", active: data.active, limited: data.limited,
@@ -1044,21 +1081,6 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
     setBulkAction("");
   };
 
-  const runInfoCheck = async () => {
-    setBulkAction("info");
-    setBulkResult(null);
-    setSpambotResults({});
-    try {
-      const { data } = await api.get(`/api/bots/${encodeURIComponent(name)}/sessions/info`);
-      setDetails(data.sessions);
-      setBulkResult({ type: "info" });
-      toast.success("Session info loaded");
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || "Info check failed");
-    }
-    setBulkAction("");
-  };
-
   const fetchFreeSessions = async () => {
     setLoadingFree(true);
     try {
@@ -1069,7 +1091,7 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
   };
 
   const openEdit = (s: any) => {
-    const parts = (s.real_name || "").split(" ");
+    const parts = (s.display_name || s.real_name || "").split(" ");
     setEditData({
       first_name: parts[0] || "",
       last_name: parts.slice(1).join(" ") || "",
@@ -1176,20 +1198,23 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
     setActionLoading("");
   };
 
-  const displaySessions = details || sessions.map((s: any) => ({ ...s, status: "unknown" }));
-  const disabledFiles = new Set<string>(((bot.disabled_sessions as string[]) || []).map((f) => (f || "").trim()));
+  // ── Real data from the overview endpoint ──
+  const summary = overview?.summary;
+  const allSessions = overview?.sessions || [];
+  const filteredSessions = allSessions.filter((s) => {
+    if (statusFilter !== "all" && s.status !== statusFilter) return false;
+    if (!search.trim()) return true;
+    const q = search.trim().toLowerCase();
+    return (
+      (s.display_name || "").toLowerCase().includes(q) ||
+      String(s.telegram_user_id || "").includes(q) ||
+      (s.file || "").toLowerCase().includes(q)
+    );
+  });
+  const deadFiles = allSessions.filter((s) => s.status === "dead").map((s) => s.file);
 
-  const statusBadge = (status: string) => {
-    const map: Record<string, string> = {
-      active: "bg-hq-success/10 text-hq-success",
-      dead: "bg-hq-danger/10 text-hq-danger",
-      error: "bg-hq-warning/10 text-hq-warning",
-      busy: "bg-hq-accent/10 text-hq-accent",
-    };
-    const label = status === "active" ? "Active" : status === "dead" ? "Dead" : status === "error" ? "Error" : status === "busy" ? "Busy" : "Unknown";
-    const Icon = status === "active" ? CheckCircle2 : status === "dead" ? XCircle : status === "error" ? AlertCircle : null;
-    return <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium ${map[status] || "bg-white/[0.05] text-hq-muted"}`}>{Icon && <Icon className="h-3 w-3" />}{label}</span>;
-  };
+  const RANGES: Array<typeof range> = ["1h", "6h", "24h", "7d", "all"];
+  const rangeLabel = (r: string) => (r === "all" ? "All time" : r);
 
   const spambotBadge = (status: string) => {
     const map: Record<string, [string, string]> = {
@@ -1228,14 +1253,83 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
   );
 
   return (
-    <div className="space-y-5">
-      {/* Actions bar */}
+    <div className="space-y-4">
+      {/* Summary tiles — real counts from the backend */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+        {[
+          { label: "Total", value: summary?.total ?? "—", color: undefined },
+          { label: "Active", value: summary?.active ?? "—", color: "#22C55E" },
+          { label: "Disabled", value: summary?.disabled ?? "—", color: "#F59E0B" },
+          { label: "Dead", value: summary?.dead ?? "—", color: "#EF4444" },
+          { label: `Sent · ${rangeLabel(range)}`, value: summary?.sent ?? "—", color: "#22C55E" },
+          { label: `Failed · ${rangeLabel(range)}`, value: summary?.failed ?? "—", color: "#EF4444" },
+        ].map((t) => (
+          <HqCard key={t.label} className="px-3 py-2.5">
+            <div className="text-[20px] leading-none font-semibold tabular-nums" style={t.color ? { color: t.color } : undefined}>
+              {typeof t.value === "number" ? t.value.toLocaleString() : t.value}
+            </div>
+            <div className="text-[11px] text-hq-muted mt-1 truncate">{t.label}</div>
+          </HqCard>
+        ))}
+      </div>
+
+      {/* Filter / search / actions row */}
       <div className="flex flex-wrap items-center gap-2">
-        <HqBtn tone="secondary" onClick={runInfoCheck} loading={bulkAction === "info"} disabled={!!bulkAction} icon={Eye}>Check Info</HqBtn>
-        <HqBtn tone="secondary" onClick={runValidateAll} loading={bulkAction === "validating"} disabled={!!bulkAction} icon={ShieldCheck}>Validate All</HqBtn>
-        <HqBtn tone="secondary" onClick={runSpambotCheck} loading={bulkAction === "spambot"} disabled={!!bulkAction} icon={Shield}>SpamBot Check</HqBtn>
-        <HqBtn tone="primary" onClick={() => { fetchFreeSessions(); setShowAdd(true); }} icon={Plus}>Add Session</HqBtn>
-        <span className="text-[12px] text-hq-muted ml-auto">{sessions.length} assigned</span>
+        <div className="relative flex-1 min-w-[180px]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-hq-muted" />
+          <input
+            className="w-full rounded-[12px] border border-hq-border bg-hq-bg pl-9 pr-3 py-2 text-[13px] text-hq-text placeholder:text-hq-muted focus:outline-none focus:border-hq-accent/60"
+            placeholder="Search name, ID, or session file…"
+            value={search} onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
+          className="rounded-[12px] border border-hq-border bg-hq-bg px-3 py-2 text-[13px] text-hq-text focus:outline-none focus:border-hq-accent/60">
+          <option value="all">All statuses</option>
+          <option value="running">Running</option>
+          <option value="disabled">Disabled</option>
+          <option value="paused">Paused</option>
+          <option value="floodwait">FloodWait</option>
+          <option value="dead">Dead</option>
+          <option value="stopped">Stopped</option>
+        </select>
+        <div className="flex items-center rounded-[12px] border border-hq-border bg-hq-bg p-0.5">
+          {RANGES.map((r) => (
+            <button key={r} onClick={() => setRange(r)}
+              className={`px-2.5 py-1.5 text-[12px] font-medium rounded-[10px] transition-colors ${range === r ? "bg-hq-accent text-white" : "text-hq-muted hover:text-hq-text"}`}>
+              {r === "all" ? "All" : r}
+            </button>
+          ))}
+        </div>
+        <HqBtn tone="secondary" onClick={runValidateAll} loading={bulkAction === "validating"} disabled={!!bulkAction} icon={ShieldCheck}>Bulk Validate</HqBtn>
+        <HqBtn tone="secondary" onClick={runSpambotCheck} loading={bulkAction === "spambot"} disabled={!!bulkAction} icon={Shield}>SpamBot</HqBtn>
+        <HqBtn
+          tone="secondary"
+          icon={ArrowRightLeft}
+          loading={actionLoading === "__bulk_replace_dead"}
+          disabled={deadFiles.length === 0 || !!actionLoading}
+          onClick={async () => {
+            if (deadFiles.length === 0) { toast.error("No dead sessions to replace"); return; }
+            setActionLoading("__bulk_replace_dead");
+            try {
+              const { data } = await api.get(`/api/bots/${encodeURIComponent(name)}/sessions/available`);
+              const pool: string[] = data.sessions || [];
+              if (pool.length === 0) { toast.error("No free sessions available."); setActionLoading(""); return; }
+              let i = 0, done = 0;
+              for (const df of deadFiles) {
+                if (i >= pool.length) break;
+                await api.post(`/api/bots/${encodeURIComponent(name)}/sessions/${encodeURIComponent(df)}/replace`, { new_session_file: pool[i++] });
+                done++;
+              }
+              toast.success(`Replaced ${done} dead session${done === 1 ? "" : "s"}`);
+              reloadOverview(); onUpdate();
+            } catch (e: any) {
+              toast.error(e?.response?.data?.detail || "Bulk replace failed");
+            }
+            setActionLoading("");
+          }}
+        >Replace Dead</HqBtn>
+        <HqBtn tone="primary" onClick={() => { fetchFreeSessions(); setShowAdd(true); }} icon={Plus}>Add</HqBtn>
       </div>
 
       {/* Bulk result summary */}
@@ -1265,84 +1359,89 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
         </div>
       )}
 
-      {/* Session card grid */}
-      {displaySessions.length === 0 ? (
-        <HqCard className="p-10 text-center"><p className="text-[13px] text-hq-muted">No sessions assigned to this bot</p></HqCard>
+      {/* Session card grid — loading / error / empty / data */}
+      {ovError ? (
+        <HqCard className="p-8 text-center">
+          <AlertCircle className="h-6 w-6 text-hq-danger mx-auto mb-2" />
+          <p className="text-[13px] text-hq-text font-medium">Could not load sessions. Check backend logs.</p>
+        </HqCard>
+      ) : ovLoading && !overview ? (
+        <div className="grid gap-3.5" style={{ gridTemplateColumns: "repeat(auto-fill,minmax(360px,1fr))" }}>
+          {[0, 1, 2].map((i) => <HqCard key={i} className="p-4"><Shimmer className="h-4 w-32 mb-3" /><Shimmer className="h-3 w-24 mb-4" /><Shimmer className="h-16 w-full" /></HqCard>)}
+        </div>
+      ) : allSessions.length === 0 ? (
+        <HqCard className="p-10 text-center"><p className="text-[13px] text-hq-muted">No sessions assigned to this AdBot.</p></HqCard>
+      ) : filteredSessions.length === 0 ? (
+        <HqCard className="p-10 text-center"><p className="text-[13px] text-hq-muted">No sessions match your filters.</p></HqCard>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {displaySessions.map((s: any, i: number) => {
-            const health = s.status === "active" ? 100 : s.status === "busy" ? 60 : s.status === "error" ? 40 : s.status === "dead" ? 12 : 55;
-            const isDisabled = disabledFiles.has((s.file || "").trim());
+        <div className="grid gap-3.5" style={{ gridTemplateColumns: "repeat(auto-fill,minmax(360px,1fr))" }}>
+          {filteredSessions.map((s) => {
+            const isDisabled = !s.enabled;
+            const busy = actionLoading === s.file;
+            const st = s.stats;
+            const spambot = spambotResults[s.file];
             return (
-              <HqCard key={s.file || i} className={`p-4 ${isDisabled ? "opacity-60 !border-hq-warning/40" : s.status === "dead" ? "!border-hq-danger/25" : ""}`}>
+              <HqCard key={s.file} className={`p-3.5 flex flex-col ${s.status === "dead" ? "!border-hq-danger/25" : isDisabled ? "!border-hq-warning/30" : ""}`}>
                 {/* Header */}
-                <div className="flex items-start justify-between mb-4">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <span className="w-10 h-10 rounded-[12px] flex items-center justify-center text-[13px] font-bold text-white shrink-0"
-                      style={{ background: `linear-gradient(135deg, ${AVATAR_GRADIENTS[i % AVATAR_GRADIENTS.length]})`, border: "1px solid rgba(124,92,255,0.2)" }}>
-                      {(s.real_name || s.username || String(s.index ?? i + 1)).trim().slice(0, 2).toUpperCase()}
-                    </span>
-                    <div className="min-w-0">
-                      <div className="text-[13px] font-semibold text-hq-text truncate">{s.real_name || "Unknown"}</div>
-                      <div className="text-[11px] text-hq-muted font-mono truncate">{s.username ? `@${s.username}` : s.phone || s.file}</div>
-                    </div>
+                <div className="flex items-center gap-2.5 mb-2.5">
+                  <span className="w-9 h-9 rounded-[10px] flex items-center justify-center text-[12px] font-bold text-white shrink-0"
+                    style={{ background: `linear-gradient(135deg, ${avatarColor(s.file)})` }}>
+                    {(s.display_name || `A${s.index}`).trim().slice(0, 2).toUpperCase()}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[14px] font-semibold text-hq-text truncate leading-tight">{s.display_name || "Unknown Account"}</div>
+                    <div className="text-[12px] text-hq-muted truncate">Account {s.index} · TG ID: {s.telegram_user_id || "N/A"}</div>
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    {isDisabled && <span className="rounded-[8px] bg-hq-warning/15 text-hq-warning px-1.5 py-0.5 text-[10px] font-semibold border border-hq-warning/30">Disabled</span>}
-                    {s.premium && <span title="Premium"><Crown className="h-3.5 w-3.5 text-hq-warning" /></span>}
-                    {s.restricted && <span title="Restricted"><Ban className="h-3.5 w-3.5 text-hq-danger" /></span>}
-                  </div>
+                  <SessionStatusChip status={s.status} />
                 </div>
 
-                {/* Status row */}
-                <div className="flex items-center justify-between mb-4">
-                  {statusBadge(s.status)}
-                  {spambotResults[s.file] ? spambotBadge(spambotResults[s.file]) : <span className="text-[11px] text-hq-muted font-mono">ID {s.user_id || "—"}</span>}
+                {/* Session file */}
+                <div className="flex items-center gap-1.5 mb-2 rounded-[10px] bg-hq-bg border border-hq-border px-2.5 py-1.5">
+                  <span className="text-[12px] font-mono text-hq-sub truncate flex-1">{s.file}</span>
+                  <CopyBtn text={s.file} />
                 </div>
 
-                {/* Info tiles */}
-                <div className="grid grid-cols-3 gap-2 mb-4">
-                  {[
-                    { label: "Phone", value: s.phone ? s.phone.replace(/^(\+?\d{2}).*(\d{2})$/, "$1··$2") : "—" },
-                    { label: "Premium", value: s.premium ? "Yes" : "No" },
-                    { label: "Session", value: (s.file || "").replace(".session", "").slice(-4) || "—" },
-                  ].map((t) => (
-                    <div key={t.label} className="rounded-[12px] px-2 py-2 text-center" style={{ background: "rgba(255,255,255,0.03)" }}>
-                      <div className="text-[12px] font-bold text-hq-text truncate">{t.value}</div>
-                      <div className="text-[10px] text-hq-muted mt-0.5">{t.label}</div>
-                    </div>
-                  ))}
-                </div>
-
-                {s.bio && <p className="text-[11px] text-hq-sub mb-3 line-clamp-2" title={s.bio}>{s.bio}</p>}
-                {(s.error || s.reason) && <div className="rounded-[10px] bg-hq-danger/10 px-2.5 py-1.5 text-[11px] text-hq-danger mb-3">{s.error || s.reason}</div>}
-
-                {/* Footer: validation + health */}
-                <div className="flex items-center justify-between pt-3 mb-3" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
-                  <div>
-                    <div className="text-[10px] text-hq-muted mb-0.5">State</div>
-                    <span className={`text-[11px] font-semibold flex items-center gap-1 ${s.status === "active" ? "text-hq-success" : s.status === "dead" ? "text-hq-danger" : "text-hq-warning"}`}>
-                      {s.status === "active" ? <><Check size={11} />Healthy</> : s.status === "dead" ? <><AlertCircle size={11} />Dead</> : <><AlertCircle size={11} />{s.status || "Unknown"}</>}
+                {/* Meta rows */}
+                <div className="space-y-0.5 mb-2.5 text-[12px]">
+                  <div className="flex justify-between gap-2"><span className="text-hq-muted">Last active</span><span className="text-hq-sub" title={s.last_active_at ? formatDateTime(s.last_active_at) : ""}>{relTime(s.last_active_at)}</span></div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-hq-muted">Last validation</span>
+                    <span style={{ color: s.validation_status === "valid" ? "#22C55E" : s.validation_status === "invalid" ? "#EF4444" : undefined }} className={s.validation_status === "unknown" ? "text-hq-muted" : ""}>
+                      {s.validation_status === "valid" ? "Valid" : s.validation_status === "invalid" ? "Invalid" : "Not validated yet"}
+                      {s.last_validated_at ? ` · ${relTime(s.last_validated_at)}` : ""}
                     </span>
                   </div>
-                  <HealthRing value={health} size={46} />
+                  {spambot && <div className="flex justify-between gap-2"><span className="text-hq-muted">SpamBot</span>{spambotBadge(spambot)}</div>}
+                  {s.phone_from_file && <div className="flex justify-between gap-2"><span className="text-hq-muted">Session file number</span><span className="text-hq-sub font-mono">{s.phone_from_file}</span></div>}
+                </div>
+
+                {(s.last_error || s.validation_reason) && (
+                  <div className="rounded-[8px] bg-hq-danger/10 px-2.5 py-1.5 text-[11px] text-hq-danger mb-2.5 line-clamp-2" title={s.last_error || s.validation_reason || ""}>
+                    {s.last_error || s.validation_reason}
+                  </div>
+                )}
+
+                {/* Metrics */}
+                <div className="grid grid-cols-4 gap-1.5 mb-2.5">
+                  <MetricPill label="Sent" value={st.sent.toLocaleString()} tone="#22C55E" />
+                  <MetricPill label="Failed" value={st.failed.toLocaleString()} tone={st.failed > 0 ? "#EF4444" : undefined} />
+                  <MetricPill label="Flood" value={st.flood.toLocaleString()} tone={st.flood > 0 ? "#F97316" : undefined} />
+                  <MetricPill label="Success" value={st.success_rate === null ? "—" : `${st.success_rate}%`} />
                 </div>
 
                 {/* Actions */}
-                <div className="grid grid-cols-2 gap-1.5">
-                  <HqBtn
-                    tone={isDisabled ? "success" : "secondary"}
-                    onClick={() => toggleSession(s.file, isDisabled)}
-                    loading={actionLoading === s.file}
-                    icon={Power}
-                    className="!py-1.5 !text-[12px] justify-center col-span-2"
-                  >
+                <div className="mt-auto space-y-1.5">
+                  <HqBtn tone={isDisabled ? "success" : "secondary"} onClick={() => toggleSession(s.file, isDisabled)} loading={busy} icon={Power}
+                    className="!py-1.5 !text-[12px] justify-center w-full">
                     {isDisabled ? "Enable (use in ads)" : "Disable (pause in ads)"}
                   </HqBtn>
-                  <HqBtn tone="ghost" onClick={() => openEdit(s)} icon={Edit} className="!py-1.5 !text-[12px] justify-center">Edit</HqBtn>
-                  <HqBtn tone="ghost" onClick={() => validateSession(s.file)} loading={validating === s.file} icon={ShieldCheck} className="!py-1.5 !text-[12px] justify-center">Validate</HqBtn>
-                  <HqBtn tone="ghost" onClick={() => { fetchFreeSessions(); setShowReplace(s.file); }} icon={ArrowRightLeft} className="!py-1.5 !text-[12px] justify-center">Replace</HqBtn>
-                  <HqBtn tone="danger" onClick={() => removeSession(s.file)} loading={actionLoading === s.file} icon={Minus} className="!py-1.5 !text-[12px] justify-center">Remove</HqBtn>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    <HqBtn tone="ghost" onClick={() => validateSession(s.file)} loading={validating === s.file} icon={ShieldCheck} className="!py-1.5 !text-[11px] justify-center">Validate</HqBtn>
+                    <HqBtn tone="ghost" onClick={() => { fetchFreeSessions(); setShowReplace(s.file); }} icon={ArrowRightLeft} className="!py-1.5 !text-[11px] justify-center">Replace</HqBtn>
+                    <HqBtn tone="ghost" onClick={() => openEdit(s)} icon={Edit} className="!py-1.5 !text-[11px] justify-center">Edit</HqBtn>
+                    <HqBtn tone="ghost" onClick={() => setLogsFor(s.file)} icon={Terminal} className="!py-1.5 !text-[11px] justify-center">Logs</HqBtn>
+                  </div>
+                  <HqBtn tone="danger" onClick={() => removeSession(s.file)} loading={busy} icon={Trash2} className="!py-1.5 !text-[12px] justify-center w-full">Remove</HqBtn>
                 </div>
               </HqCard>
             );
@@ -1409,7 +1508,51 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
           </div>
         </Modal>
       )}
+
+      {/* Session Logs Modal — filtered to this session file only */}
+      {logsFor && <SessionLogsModal name={name} file={logsFor} onClose={() => setLogsFor("")} />}
     </div>
+  );
+}
+
+/* Fetches the bot log and shows only the lines for one session (account=<file>). */
+function SessionLogsModal({ name, file, onClose }: { name: string; file: string; onClose: () => void }) {
+  const [lines, setLines] = useState<string[] | null>(null);
+  const [error, setError] = useState(false);
+  const account = file.replace(".session", "");
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { data } = await api.get(`/api/bots/${encodeURIComponent(name)}/logs?lines=1000`);
+        if (!alive) return;
+        const all: string[] = data.lines || [];
+        // Log lines are `[TAG] account=<account> group_name=…` — match on the account token.
+        setLines(all.filter((l) => l.includes(`account=${account} `)));
+      } catch {
+        if (alive) setError(true);
+      }
+    })();
+    return () => { alive = false; };
+  }, [name, file, account]);
+
+  return (
+    <Modal open onClose={onClose} title={`Logs: ${file}`} size="lg">
+      {error ? (
+        <p className="text-[13px] text-hq-danger py-8 text-center">Could not load logs. Check backend logs.</p>
+      ) : lines === null ? (
+        <div className="flex items-center gap-2 py-10 justify-center text-hq-muted text-[13px]"><Loader2 className="h-5 w-5 animate-spin" /> Loading logs…</div>
+      ) : lines.length === 0 ? (
+        <p className="text-[13px] text-hq-muted py-10 text-center">No log activity for this session yet.</p>
+      ) : (
+        <div className="max-h-[60vh] overflow-y-auto rounded-[12px] bg-hq-bg border border-hq-border p-3 space-y-0.5 font-mono text-[11px]">
+          {lines.slice(-500).reverse().map((l, i) => (
+            <div key={i} className={`whitespace-pre-wrap break-all ${l.includes("[POST_FAILURE]") ? "text-hq-danger" : l.includes("[FLOOD_WAIT]") ? "text-hq-warning" : l.includes("[POST_SUCCESS]") ? "text-hq-sub" : "text-hq-muted"}`}>{l}</div>
+          ))}
+        </div>
+      )}
+    </Modal>
   );
 }
 
