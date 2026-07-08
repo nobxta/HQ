@@ -431,7 +431,7 @@ export default function UserLogsPage() {
   // allows (a request for 10000 was seen 422-ing while 1000 succeeded) — rather than hardcode a number
   // that might again exceed whatever the server currently accepts, start generous and step the request
   // size down automatically on a 422 until it succeeds, so the page always shows whatever it can get.
-  const [fetchLines, setFetchLines] = useState(1000);
+  const [fetchLines, setFetchLines] = useState(2500);
   const [displayCount] = useState(1000);  // how many rows to render
   // usePortalSessionValid() reads localStorage, which doesn't exist during SSR — evaluating it
   // immediately would render a different tree on the server vs. the client's first paint and
@@ -654,10 +654,23 @@ export default function UserLogsPage() {
     return { success, failure, flood, total, usingLifetime };
   }, [inRange, accountFilter, range, lifetimeStats, accountList]);
 
-  const systemCount = useMemo(
-    () => inRange.filter((p) => ["system", "cycle_start", "cycle_end", "connect"].includes(p.type)).length,
-    [inRange]
-  );
+  // Counts for the filter chips MUST come from the rows the table can actually show (the fetched
+  // window, honouring the account filter) — NOT the lifetime totals used by the top stat cards.
+  // Otherwise a chip promises "Problems 156" while the fetched log tail holds none, and clicking it
+  // shows "Nothing here". These counts always match what the list renders.
+  const windowCounts = useMemo(() => {
+    const _acct = accountFilter !== "all" ? accountList.find((a) => a.id === accountFilter) : undefined;
+    const src = _acct ? inRange.filter((p) => matchesAccount(p, _acct)) : inRange;
+    let success = 0, failure = 0, flood = 0, system = 0;
+    for (const p of src) {
+      if (p.type === "success") success++;
+      else if (p.type === "failure") failure++;
+      else if (p.type === "flood") flood++;
+      else if (["system", "cycle_start", "cycle_end", "connect"].includes(p.type)) system++;
+    }
+    return { success, failure, flood, system, total: src.length };
+  }, [inRange, accountFilter, accountList]);
+  const systemCount = windowCounts.system;
 
   const refresh = () => {
     setRefreshing(true);
@@ -676,11 +689,11 @@ export default function UserLogsPage() {
   };
 
   const filterOptions: { key: FilterType; label: string; count: number }[] = [
-    { key: "all", label: "All Activity", count: stats.total },
-    { key: "success", label: "Successful", count: stats.success },
-    { key: "failure", label: "Problems", count: stats.failure },
-    { key: "flood", label: "Waiting", count: stats.flood },
-    { key: "system", label: "System Events", count: systemCount },
+    { key: "all", label: "All Activity", count: windowCounts.total },
+    { key: "success", label: "Successful", count: windowCounts.success },
+    { key: "failure", label: "Problems", count: windowCounts.failure },
+    { key: "flood", label: "Waiting", count: windowCounts.flood },
+    { key: "system", label: "System Events", count: windowCounts.system },
   ];
 
   const pct = (n: number) => (stats.total > 0 ? Math.round((n / stats.total) * 100) : 0);
@@ -721,6 +734,14 @@ export default function UserLogsPage() {
             )}
           </div>
           <p className="text-sm text-dark-500 mt-1">Real-time activity from all your accounts</p>
+          {(data?.total_lines ?? 0) > lines.length && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setFetchLines((n) => Math.min(n + 5000, 20000)); }}
+              className="mt-1 text-[11px] font-semibold text-accent hover:text-accent-300 transition-colors"
+            >
+              Showing last {lines.length.toLocaleString()} of {(data?.total_lines ?? 0).toLocaleString()} log lines · Load older
+            </button>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
