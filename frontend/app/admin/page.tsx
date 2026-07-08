@@ -70,6 +70,29 @@ function fmtRangeLabel(ts: number, bucketSeconds: number): string {
   return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
+/* Tiny dependency-free sparkline. */
+function Sparkline({ values, color = "#34d399", width = 96, height = 26 }: {
+  values: number[]; color?: string; width?: number; height?: number;
+}) {
+  if (!values || values.length < 2) return null;
+  const max = Math.max(...values, 1);
+  const min = Math.min(...values, 0);
+  const span = max - min || 1;
+  const step = width / (values.length - 1);
+  const pts = values.map((v, i) => `${(i * step).toFixed(1)},${(height - ((v - min) / span) * height).toFixed(1)}`);
+  return (
+    <svg width={width} height={height} className="overflow-visible" preserveAspectRatio="none">
+      <polyline points={pts.join(" ")} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" opacity={0.9} />
+    </svg>
+  );
+}
+
+/* Humanize an audit action slug, e.g. "emergency_stop" -> "Emergency stop". */
+function humanizeAction(a: string): string {
+  const s = (a || "").replace(/_/g, " ").trim();
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : "Action";
+}
+
 export default function DashboardPage() {
   const { data, isLoading } = useDashboard();
   const { data: alertsData } = useAlerts();
@@ -149,6 +172,34 @@ export default function DashboardPage() {
     if (age < 5400) return `${Math.round(age / 60)}m ago`;
     return `${Math.round(age / 3600)}h ago`;
   };
+
+  // ── Posts trend: last 24h vs prior 24h + sparkline (log-derived, throttled) ──
+  const nowRounded = Math.floor(Date.now() / 1000);
+  const trendNow = nowRounded - (nowRounded % 300); // 5-min steps keep the SWR key stable
+  const { data: postsTrend } = useSWR<RangeAnalytics>(
+    `/api/dashboard/analytics?start=${trendNow - 48 * 3600}&end=${trendNow}`,
+    replFetcher,
+    { refreshInterval: 60000, keepPreviousData: true }
+  );
+  const trend = (() => {
+    const pts = postsTrend?.points || [];
+    if (!postsTrend || pts.length === 0) return { delta: null as number | null, spark: [] as number[] };
+    const cut = postsTrend.end - 24 * 3600;
+    let cur = 0, prev = 0;
+    const spark: number[] = [];
+    for (const p of pts) {
+      if (p.ts >= cut) { cur += p.sent; spark.push(p.sent); }
+      else prev += p.sent;
+    }
+    const delta = prev > 0 ? Math.round(((cur - prev) / prev) * 100) : null;
+    return { delta, spark };
+  })();
+
+  // ── Recent admin actions (audit log) ──
+  const { data: auditData } = useSWR<{ entries: any[]; total: number }>(
+    "/api/system/audit?limit=15", replFetcher, { refreshInterval: 20000 }
+  );
+  const auditEntries = auditData?.entries || [];
 
   // Orders that got paid but are stuck (insufficient/bad sessions, no token, etc.) —
   // payment is already received, so these need attention, not silence.
@@ -236,11 +287,13 @@ export default function DashboardPage() {
       title: "Posts Today", value: posting.today_sent.toLocaleString(),
       subtitle: `${posting.today_failed} failed · ${successRate === null ? "—" : successRate + "%"} success (24h)`,
       icon: Send, tone: "info" as const, live: true,
+      delta: trend.delta, spark: trend.spark,
     },
     {
       title: "Total Revenue",
       value: `$${(o.revenue_usd || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-      subtitle: `${o.completed} completed · ${o.pending} pending`, icon: DollarSign, tone: "success" as const,
+      subtitle: `$${(o.revenue_today || 0).toFixed(2)} today · $${(o.revenue_month || 0).toFixed(2)} mo · $${(o.pending_value || 0).toFixed(2)} pending`,
+      icon: DollarSign, tone: "success" as const,
     },
     {
       title: "CPU / RAM", value: `${sys.cpu_percent?.toFixed(0) || 0}% / ${sys.memory_percent?.toFixed(0) || 0}%`,
@@ -481,6 +534,9 @@ export default function DashboardPage() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
         {clayStats.map((st) => {
           const Icon = st.icon;
+          const delta = (st as any).delta as number | null | undefined;
+          const spark = (st as any).spark as number[] | undefined;
+          const hasTrend = delta != null || (spark && spark.length > 1);
           return (
             <div key={st.title} className="clay-stat p-5">
               <div className="flex items-center justify-between mb-4">
@@ -496,6 +552,19 @@ export default function DashboardPage() {
               </div>
               <p className="text-[10px] font-bold text-dark-500 uppercase tracking-widest mb-1.5">{st.title}</p>
               <p className="text-2xl sm:text-[30px] font-bold text-white tracking-tight leading-none">{st.value}</p>
+              {hasTrend && (
+                <div className="flex items-center justify-between gap-2 mt-2.5">
+                  {delta != null ? (
+                    <span className={`inline-flex items-center gap-1 text-[11px] font-bold ${delta >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                      {delta >= 0 ? "▲" : "▼"} {Math.abs(delta)}%
+                      <span className="text-dark-600 font-medium">vs prev 24h</span>
+                    </span>
+                  ) : <span className="text-[11px] text-dark-600">— vs prev 24h</span>}
+                  {spark && spark.length > 1 && (
+                    <Sparkline values={spark} color={delta != null && delta < 0 ? "#f87171" : "#34d399"} width={72} height={22} />
+                  )}
+                </div>
+              )}
               {st.subtitle && <p className="text-[11px] text-dark-500 mt-2.5">{st.subtitle}</p>}
             </div>
           );
@@ -1199,6 +1268,44 @@ export default function DashboardPage() {
               })}
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* ────── Recent Admin Actions (audit log) ────── */}
+      <div className="clay-card flex flex-col max-h-[360px]">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-dark-800/50 shrink-0">
+          <div className="flex items-center gap-2.5">
+            <Activity className="h-4 w-4 text-accent" />
+            <h3 className="text-sm font-semibold text-white">Recent Admin Actions</h3>
+          </div>
+          <span className="text-[11px] text-dark-500">{auditData?.total || 0} logged</span>
+        </div>
+        <div className="flex-1 overflow-y-auto custom-scrollbar divide-y divide-dark-800/20">
+          {auditEntries.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-10">
+              <Activity className="h-10 w-10 text-dark-700 mb-2" />
+              <p className="text-sm text-dark-400">No admin actions logged yet</p>
+            </div>
+          ) : (
+            auditEntries.map((e: any, i: number) => {
+              const ts = e.ts ? new Date(e.ts) : null;
+              const valid = ts && !isNaN(ts.getTime());
+              return (
+                <div key={i} className="px-5 py-3 flex items-center gap-3 hover:bg-white/[0.03] transition-colors">
+                  <span className="text-[11px] font-mono text-dark-500 shrink-0 w-24">
+                    {valid ? timeAgo((Date.now() - ts!.getTime()) / 1000) : "—"}
+                  </span>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0 bg-accent/10 text-accent">
+                    {humanizeAction(e.action)}
+                  </span>
+                  <p className="text-[13px] text-dark-300 truncate flex-1">
+                    {e.target ? <span className="font-mono text-dark-400">{e.target}</span> : <span className="text-dark-600">—</span>}
+                  </p>
+                  <span className="text-[11px] text-dark-500 shrink-0">{e.admin_id != null ? `by ${e.admin_id}` : ""}</span>
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
 

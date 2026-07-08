@@ -33,6 +33,9 @@ export interface DashboardStats {
     completed: number;
     pending: number;
     revenue_usd: number;
+    revenue_today?: number;
+    revenue_month?: number;
+    pending_value?: number;
   };
   system: {
     cpu_percent: number;

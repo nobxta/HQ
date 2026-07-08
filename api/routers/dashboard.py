@@ -1,7 +1,7 @@
 """Dashboard endpoints: stats, alerts, health."""
 import time
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import psutil
@@ -177,6 +177,34 @@ async def dashboard_stats():
     total_orders = sum(orders_by_status.values())
     revenue = sum(float(o.get("amount_usd") or 0) for o in all_orders if o.get("status") == "completed")
 
+    # Revenue split: today / this month (by paid_at) + value sitting in pending orders.
+    _now = datetime.now(timezone.utc)
+    _today0 = _now.replace(hour=0, minute=0, second=0, microsecond=0)
+    _month0 = _today0.replace(day=1)
+
+    def _parse_iso(s: str):
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s.replace("Z", "").split(".")[0]).replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            return None
+
+    _pending_states = {"payment_waiting", "confirming", "paid", "pending_creation", "creating"}
+    revenue_today = revenue_month = pending_value = 0.0
+    for o in all_orders:
+        amt = float(o.get("amount_usd") or 0)
+        st = o.get("status")
+        if st == "completed":
+            t = _parse_iso(o.get("paid_at") or o.get("created_at"))
+            if t is not None:
+                if t >= _today0:
+                    revenue_today += amt
+                if t >= _month0:
+                    revenue_month += amt
+        elif st in _pending_states:
+            pending_value += amt
+
     # Recent orders (last 10)
     sorted_orders = sorted(all_orders, key=lambda o: o.get("created_at", ""), reverse=True)
     recent_orders = []
@@ -225,6 +253,9 @@ async def dashboard_stats():
             "completed": completed,
             "pending": pending,
             "revenue_usd": round(revenue, 2),
+            "revenue_today": round(revenue_today, 2),
+            "revenue_month": round(revenue_month, 2),
+            "pending_value": round(pending_value, 2),
         },
         "system": {
             "cpu_percent": cpu_percent,
