@@ -28,12 +28,6 @@ import api from "@/lib/api";
 import toast from "react-hot-toast";
 import { formatDate, formatDateTime, timeAgo, formatUSD, ddmmyyyyToIso, isoToDdmmyyyy } from "@/lib/utils";
 import type { BotUpdatePayload } from "@/lib/types";
-import { useAdbotAnalytics, type TimeRange } from "@/lib/hooks/useAdbotAnalytics";
-import { PostingActivityChart } from "@/components/charts/PostingActivityChart";
-import { SessionPerformanceChart } from "@/components/charts/SessionPerformanceChart";
-import { DeliveryBreakdownCard } from "@/components/charts/DeliveryBreakdownCard";
-import { FailureReasonsChart } from "@/components/charts/FailureReasonsChart";
-import { CycleTimingCard } from "@/components/charts/CycleTimingCard";
 
 const tabs = [
   { id: "overview", label: "Overview", icon: Layout },
@@ -526,14 +520,44 @@ function ActionMenu({ items }: { items: MenuItem[] }) {
 
 /* ─── OVERVIEW (read-only) ─── */
 function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavigate: (tab: string) => void }) {
-  const [range, setRange] = useState<TimeRange>("7d");
-  const analytics = useAdbotAnalytics(name, range, bot);
+  const { data: stats } = useAdbotStats(name);
+  const { data: overview } = useSessionsOverview(name, "all");
+
+  const sent = stats?.lifetime_sent || 0;
+  const failed = stats?.lifetime_failed || 0;
+  const totalPosts = sent + failed;
+  const successRate = totalPosts ? Math.round((sent / totalPosts) * 100) : null;
+  const failureRate = totalPosts ? Math.round((failed / totalPosts) * 100) : null;
+  const cycles = stats?.cycles || 0;
+
+  const summary = overview?.summary;
+  const previewSessions = (overview?.sessions || []).slice(0, 5);
+  const activeCount = summary?.active ?? bot.sessions_count ?? 0;
+  const deadCount = summary?.dead ?? 0;
+  const disabledCount = summary?.disabled ?? 0;
+
+  const daysLeft = daysUntil(bot.valid_till);
+  const lastCycleTs = stats?.last_cycle_ts || 0;
+
+  const sessionStats: Record<string, any> = stats?.session_stats || {};
+  const perfData = Object.entries(sessionStats).map(([s, v]) => ({
+    name: s.replace(".session", "").slice(-4),
+    sent: v.lifetime_sent || v.sent || 0,
+    failed: v.lifetime_failed || v.failed || 0,
+  })).slice(0, 12);
+
+  const donutData = totalPosts > 0
+    ? [{ name: "Sent", value: sent }, { name: "Failed", value: failed }]
+    : [{ name: "None", value: 1 }];
+  const donutColors = totalPosts > 0 ? ["#7C5CFF", "#EF4444"] : ["#242A38"];
 
   const botToken = bot.bot_username ? "Connected" : "Not configured";
   const details: [string, ReactNode][] = [
     ["Mode", cap(fmt(bot.mode))],
     ["Plan", fmt(bot.plan_name)],
     ["Owner", fmt(bot.owner_id, "Admin")],
+    ["Cycle", bot.cycle != null ? `${bot.cycle}s` : "Not set"],
+    ["Gap", bot.gap != null ? `${bot.gap}s` : "Not set"],
     ["Group file", fmt(bot.group_file, "Not configured")],
     ["Created", bot.created_at ? formatDate(bot.created_at) : "Not tracked"],
     ["Valid until", bot.valid_till ? formatDate(bot.valid_till) : "Not set"],
@@ -545,34 +569,138 @@ function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavi
 
   const systemRows: [string, ReactNode][] = [
     ["Posting", <span className={bot.running ? "text-hq-success" : "text-hq-muted"}>{bot.running ? "Running" : "Stopped"}</span>],
-    ["Active sessions", analytics.sessions.filter(s => s.status === "active").length],
-    ["Dead sessions", <span className={analytics.sessions.filter(s => s.status === "dead").length > 0 ? "text-hq-danger" : ""}>{analytics.sessions.filter(s => s.status === "dead").length}</span>],
+    ["Active sessions", activeCount],
+    ["Disabled sessions", disabledCount],
+    ["Dead sessions", <span className={deadCount > 0 ? "text-hq-danger" : ""}>{deadCount}</span>],
+    ["Total cycles", cycles > 0 ? cycles.toLocaleString() : "No cycles yet"],
+    ["Last cycle", lastCycleTs ? relTime(lastCycleTs) : "Not tracked"],
+    ["Last session used", fmt(stats?.last_cycle_session?.replace(".session", ""), "Not tracked")],
   ];
 
   return (
     <div className="space-y-4">
-      {/* 1. Full-width main activity chart */}
-      <PostingActivityChart 
-        timeline={analytics.timeline} 
-        range={range} 
-        onRangeChange={setRange} 
-      />
-
-      {/* 2. Split view: 60% Session perf, 40% Delivery + Failures */}
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 items-start">
-        <div className="lg:col-span-3 w-full min-w-0">
-          <SessionPerformanceChart 
-            sessions={analytics.sessions} 
-            onViewAll={() => onNavigate("sessions")} 
-          />
-        </div>
-        <div className="lg:col-span-2 w-full flex flex-col gap-4 min-w-0">
-          <DeliveryBreakdownCard delivery={analytics.delivery} />
-          <FailureReasonsChart reasons={analytics.failureReasons} />
-        </div>
+      {/* Metric cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+        <MetricCard label="Delivery" icon={Send} tone={successRate !== null && successRate < 50 ? "danger" : "success"}
+          value={sent.toLocaleString()}
+          sub={totalPosts ? `${failed.toLocaleString()} failed · ${successRate}% success` : "No posts yet"} />
+        <MetricCard label="Sessions" icon={Server} tone={deadCount > 0 ? "warning" : "accent"}
+          value={activeCount}
+          sub={`${deadCount} dead · ${disabledCount} disabled`} />
+        <MetricCard label="Cycle" icon={Timer} tone="accent"
+          value={bot.cycle != null ? `${bot.cycle}s` : "—"}
+          sub={`Gap ${bot.gap ?? "—"}s · ${cap(fmt(bot.mode, "—"))} mode`} />
+        <MetricCard label="Validity" icon={Calendar} tone={daysLeft !== null && daysLeft <= 3 ? "danger" : "accent"}
+          value={daysLeft === null ? "—" : `${Math.max(daysLeft, 0)}d`}
+          sub={bot.valid_till ? `Expires ${formatDate(bot.valid_till)}` : "Not set"} />
       </div>
 
-      <CycleTimingCard cycle={analytics.cycle} />
+      {/* Operational health strip */}
+      <div className="flex flex-wrap gap-2">
+        <HealthChip label="Posting" value={bot.running ? "Running" : "Stopped"} tone={bot.running ? "success" : "muted"} pulse={bot.running} />
+        <HealthChip label="Frozen" value={bot.frozen ? "Yes" : "No"} tone={bot.frozen ? "danger" : "success"} />
+        <HealthChip label="Suspended" value={bot.suspended ? "Yes" : "No"} tone={bot.suspended ? "warning" : "success"} />
+        <HealthChip label="Web access" value={bot.web_token ? "Enabled" : "Disabled"} tone={bot.web_token ? "success" : "muted"} />
+        <HealthChip label="Last activity" value={lastCycleTs ? relTime(lastCycleTs) : "None"} tone="muted" />
+      </div>
+
+      {/* Performance + Delivery */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3.5">
+        <HqCard className="p-5 lg:col-span-2">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-[15px] font-semibold text-hq-text">Posting performance</h3>
+              <p className="text-[12px] text-hq-muted mt-0.5">Sent vs failed per session (lifetime)</p>
+            </div>
+          </div>
+          {perfData.length === 0 ? (
+            <div className="h-[220px] flex items-center justify-center"><EmptyState icon={BarChart3} title="No posting activity yet" hint="Charts appear once the bot completes a cycle." /></div>
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={perfData} barCategoryGap="28%">
+                <XAxis dataKey="name" tick={{ fill: "#667085", fontSize: 11 }} axisLine={false} tickLine={false} />
+                <Tooltip
+                  cursor={{ fill: "rgba(255,255,255,0.03)" }}
+                  contentStyle={{ background: "#151925", border: "1px solid #242A38", borderRadius: 12, color: "#F4F7FB", fontSize: 12 }}
+                  labelStyle={{ color: "#98A2B3" }}
+                />
+                <Bar dataKey="sent" name="Sent" radius={[5, 5, 0, 0]} fill="#7C5CFF" maxBarSize={36} />
+                <Bar dataKey="failed" name="Failed" radius={[5, 5, 0, 0]} fill="#EF4444" maxBarSize={36} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </HqCard>
+
+        <HqCard className="p-5">
+          <h3 className="text-[15px] font-semibold text-hq-text mb-1">Delivery</h3>
+          <p className="text-[12px] text-hq-muted">Sent vs failed</p>
+          <div className="relative h-[160px] mt-2">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={donutData} dataKey="value" innerRadius={56} outerRadius={78} paddingAngle={totalPosts > 0 ? 3 : 0} stroke="none">
+                  {donutData.map((_, i) => <Cell key={i} fill={donutColors[i]} />)}
+                </Pie>
+              </PieChart>
+            </ResponsiveContainer>
+            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+              <span className="text-[24px] font-semibold text-hq-text leading-none tabular-nums">{successRate === null ? "—" : `${successRate}%`}</span>
+              <span className="text-[11px] text-hq-muted mt-1">Success</span>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3 mt-3">
+            <LegendRow color="#7C5CFF" label="Sent" value={sent.toLocaleString()} />
+            <LegendRow color="#EF4444" label="Failed" value={failed.toLocaleString()} />
+            <LegendRow color="#22C55E" label="Success rate" value={successRate === null ? "—" : `${successRate}%`} />
+            <LegendRow color="#F59E0B" label="Failure rate" value={failureRate === null ? "—" : `${failureRate}%`} />
+          </div>
+        </HqCard>
+      </div>
+
+      {/* Session health preview */}
+      <HqCard className="p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-[15px] font-semibold text-hq-text">Session health</h3>
+            <p className="text-[12px] text-hq-muted mt-0.5">Top {previewSessions.length || 0} of {summary?.total ?? 0} accounts</p>
+          </div>
+          <HqBtn tone="ghost" onClick={() => onNavigate("sessions")} icon={ArrowRightLeft} className="!py-1.5 !text-[12px]">View all</HqBtn>
+        </div>
+        {previewSessions.length === 0 ? (
+          <EmptyState icon={Smartphone} title="No sessions assigned" hint="Assign accounts from the Sessions tab." />
+        ) : (
+          <div className="overflow-x-auto -mx-1">
+            <table className="w-full text-[13px] min-w-[560px]">
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-wide text-hq-muted border-b border-hq-border">
+                  {["Session", "Status", "Sent", "Failed", "Success", "Last used"].map((h) => (
+                    <th key={h} className="px-2 py-2 font-medium whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-hq-border/50">
+                {previewSessions.map((s) => (
+                  <tr key={s.file} className="hover:bg-hq-hover/50 transition-colors">
+                    <td className="px-2 py-2.5">
+                      <div className="text-hq-text font-medium truncate max-w-[160px]">{s.display_name || `Account ${s.index}`}</div>
+                      <div className="text-[11px] text-hq-muted font-mono truncate max-w-[160px]">{s.phone_from_file || s.telegram_user_id || s.file}</div>
+                    </td>
+                    <td className="px-2 py-2.5"><SessionStatusChip status={s.status} /></td>
+                    <td className="px-2 py-2.5 tabular-nums text-hq-success">{s.stats.sent.toLocaleString()}</td>
+                    <td className="px-2 py-2.5 tabular-nums" style={{ color: s.stats.failed > 0 ? "#EF4444" : undefined }}>{s.stats.failed.toLocaleString()}</td>
+                    <td className="px-2 py-2.5 w-32">
+                      <div className="flex items-center gap-2">
+                        <HealthBar pct={s.stats.success_rate} />
+                        <span className="text-[12px] tabular-nums w-9 text-right text-hq-sub">{s.stats.success_rate === null ? "—" : `${s.stats.success_rate}%`}</span>
+                      </div>
+                    </td>
+                    <td className="px-2 py-2.5 text-[12px] text-hq-muted whitespace-nowrap">{relTime(s.last_active_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </HqCard>
 
       {/* Details + System state */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3.5">
