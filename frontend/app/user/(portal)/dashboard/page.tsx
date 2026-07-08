@@ -263,7 +263,7 @@ export default function UserDashboard() {
   );
 
   /* ─── WS ─── */
-  const connectWs = (): Promise<WebSocket> => new Promise((res, rej) => {
+  const connectWs = (act: string): Promise<WebSocket> => new Promise((res, rej) => {
     wsRef.current?.close();
     const base = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/^http/, "ws");
     const ws = new WebSocket(`${base}/ws/control/${encodeURIComponent(bot.name)}?token=${session?.access_token}`);
@@ -276,8 +276,16 @@ export default function UserDashboard() {
         if (m.event === "bot_control") {
           setControlSteps(p => [...p, { message: m.message, status: m.status, time: Date.now() }]);
           if (m.status === "done" || m.status === "failed") {
+            // Optimistically reflect the new state in the cache BEFORE clearing the loading flag, so the
+            // button goes Starting→Stop (or Stopping→Start) directly instead of flashing back to its old
+            // label in the gap before the next poll confirms it. revalidate to reconcile with the server.
+            if (m.status === "done") {
+              const next = act === "start" ? { state: "activating" } : { state: "stopped", running: false };
+              mutate((prev: any) => (prev ? { ...prev, ...next } : prev), { revalidate: true });
+            } else {
+              mutate();
+            }
             setActionLoading("");
-            mutate();
             if (m.status === "done") setTimeout(() => { setControlSteps([]); setControlAction(""); }, 3000);
             setTimeout(() => { ws.close(); wsRef.current = null; }, 500);
           }
@@ -312,7 +320,7 @@ export default function UserDashboard() {
 
     setActionLoading(act); setControlAction(act); setControlSteps([]);
     try {
-      await connectWs();
+      await connectWs(act);
       await portalApi.post(`/api/portal/bot/${encodeURIComponent(bot.name)}/${act}?telegram_id=${session?.telegram_id}`, null, { timeout: 120000 });
     } catch (e: any) {
       setControlSteps(p => [...p, { message: e?.response?.data?.detail || e?.message || `Failed`, status: "failed", time: Date.now() }]);
@@ -322,7 +330,17 @@ export default function UserDashboard() {
 
   /* ─── derived ─── */
   const running = bot.running;
-  const status = running ? "running" : bot.frozen ? "frozen" : bot.suspended ? "suspended" : "stopped";
+  // The backend sets state to "activating" the moment a start succeeds, then flips to "running" only
+  // after the first post/cycle (which, with staggered accounts, can be minutes later). Treat activating
+  // as ON so the button shows Starting/Stop and never snaps back to "Start Bot" mid-startup (which made
+  // users think it failed and re-click).
+  const activating = (bot as any).state === "activating";
+  const active = running || activating;                 // bot is on (coming up or fully running)
+  const starting = actionLoading === "start" || (activating && !running);
+  const stopping = actionLoading === "stop";
+  const controlBusy = !!actionLoading || preStartLoading;
+  const controlLabel = preStartLoading ? "Checking…" : starting ? "Starting…" : stopping ? "Stopping…" : active ? "Stop Bot" : "Start Bot";
+  const status = running ? "running" : activating ? "activating" : bot.frozen ? "frozen" : bot.suspended ? "suspended" : "stopped";
   const totalSent = stats?.lifetime_sent || 0;
   const totalFailed = stats?.lifetime_failed || 0;
   const total = totalSent + totalFailed;
@@ -543,8 +561,8 @@ export default function UserDashboard() {
                 <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-accent-400 to-accent-700 flex items-center justify-center shadow-lg shadow-accent/30">
                   <span className="text-[26px] font-bold text-white leading-none drop-shadow-sm">{(bot.name || "A").charAt(0).toUpperCase()}</span>
                 </div>
-                <div className={`absolute -bottom-1 -right-1 h-[18px] w-[18px] rounded-full border-[3px] border-dark-950 ${running ? "bg-success" : "bg-dark-600"}`}>
-                  {running && <span className="absolute inset-0 m-auto h-1.5 w-1.5 rounded-full bg-white/80 animate-pulse" />}
+                <div className={`absolute -bottom-1 -right-1 h-[18px] w-[18px] rounded-full border-[3px] border-dark-950 ${active ? "bg-success" : "bg-dark-600"}`}>
+                  {active && <span className="absolute inset-0 m-auto h-1.5 w-1.5 rounded-full bg-white/80 animate-pulse" />}
                 </div>
               </div>
               <div className="min-w-0 flex-1">
@@ -552,11 +570,11 @@ export default function UserDashboard() {
                 <h1 className="text-[24px] font-bold text-white tracking-tight leading-tight truncate">{bot.name}</h1>
                 <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
                   <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold border ${
-                    running ? "bg-success/10 text-success border-success/20" :
+                    active ? "bg-success/10 text-success border-success/20" :
                     status === "frozen" || status === "suspended" ? "bg-warning/10 text-warning border-warning/20" :
                     "bg-dark-800/60 text-dark-300 border-white/[0.06]"
                   }`}>
-                    {running
+                    {active
                       ? <span className="relative flex h-1.5 w-1.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75" /><span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-success" /></span>
                       : <span className={`h-1.5 w-1.5 rounded-full ${status === "frozen" || status === "suspended" ? "bg-warning" : "bg-dark-500"}`} />}
                     {status.charAt(0).toUpperCase() + status.slice(1)}
@@ -595,13 +613,13 @@ export default function UserDashboard() {
             </div>
 
             {/* start / stop button — full width */}
-            <button onClick={() => doAction(running ? "stop" : "start")} disabled={!!actionLoading || preStartLoading}
-              className="mt-4 w-full flex items-center justify-center gap-2 rounded-2xl py-3.5 text-white font-bold text-[15px] transition-all duration-300 disabled:opacity-50"
-              style={running
+            <button onClick={() => doAction(active ? "stop" : "start")} disabled={controlBusy}
+              className="mt-4 w-full flex items-center justify-center gap-2 rounded-2xl py-3.5 text-white font-bold text-[15px] transition-all duration-300 disabled:opacity-60"
+              style={active
                 ? { background: "linear-gradient(135deg, #ff8080, #ff6b6b)", boxShadow: "0 6px 18px rgba(255,107,107,0.35)" }
                 : { background: "linear-gradient(135deg, #8b6cff, #6c5ce7)", boxShadow: "0 6px 18px rgba(108,92,231,0.4)" }}>
-              {(actionLoading || preStartLoading) ? <Loader2 className="h-5 w-5 animate-spin" /> : running ? <Square className="h-5 w-5 fill-white" /> : <Play className="h-5 w-5 fill-white" />}
-              {preStartLoading ? "Checking..." : running ? "Stop Bot" : "Start Bot"}
+              {controlBusy ? <Loader2 className="h-5 w-5 animate-spin" /> : active ? <Square className="h-5 w-5 fill-white" /> : <Play className="h-5 w-5 fill-white" />}
+              {controlLabel}
             </button>
           </div>
         </div>
@@ -674,7 +692,7 @@ export default function UserDashboard() {
         {/* ─────────── Bottom status strip ─────────── */}
         <div className="rounded-[22px] border border-white/[0.06] bg-[#101019] px-3 py-4 mb-2 grid grid-cols-4">
           <StatusCol icon={<Power className="h-4 w-4" />} iconColor="text-success" label="Bot Status"
-            value={running ? "Running" : "Stopped"} sub={running ? "Tap to stop" : "Tap to start"} />
+            value={running ? "Running" : activating ? "Starting" : "Stopped"} sub={active ? "Tap to stop" : "Tap to start"} />
           <StatusCol icon={<Clock className="h-4 w-4" />} iconColor="text-info" label="Last Activity" divider
             value={stats?.last_cycle_ts ? fmtAgo(stats.last_cycle_ts) : "—"}
             sub={stats?.last_cycle_ts ? new Date(stats.last_cycle_ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "no activity"} />
@@ -708,9 +726,9 @@ export default function UserDashboard() {
               </div>
               {/* Status dot */}
               <div className={`absolute -bottom-1 -right-1 h-5 w-5 rounded-full border-[2.5px] border-dark-950 flex items-center justify-center ${
-                running ? "bg-success" : "bg-dark-600"
+                active ? "bg-success" : "bg-dark-600"
               }`}>
-                {running && <span className="h-2 w-2 rounded-full bg-white/80 animate-pulse" />}
+                {active && <span className="h-2 w-2 rounded-full bg-white/80 animate-pulse" />}
               </div>
             </div>
 
@@ -720,12 +738,12 @@ export default function UserDashboard() {
               <div className="flex flex-wrap items-center gap-2 mt-2">
                 {/* Status pill */}
                 <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold backdrop-blur-sm border ${
-                  running ? "bg-success/10 text-success border-success/20" :
+                  active ? "bg-success/10 text-success border-success/20" :
                   status === "frozen" || status === "suspended" ? "bg-warning/10 text-warning border-warning/20" :
                   "bg-dark-800/50 text-dark-400 border-dark-700/30"
                 }`}>
-                  {running && <span className="relative flex h-1.5 w-1.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75" /><span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-success" /></span>}
-                  {!running && <span className={`h-1.5 w-1.5 rounded-full ${status === "frozen" || status === "suspended" ? "bg-warning" : "bg-dark-500"}`} />}
+                  {active && <span className="relative flex h-1.5 w-1.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75" /><span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-success" /></span>}
+                  {!active && <span className={`h-1.5 w-1.5 rounded-full ${status === "frozen" || status === "suspended" ? "bg-warning" : "bg-dark-500"}`} />}
                   {status.charAt(0).toUpperCase() + status.slice(1)}
                 </span>
                 {/* Plan pill */}
@@ -748,13 +766,13 @@ export default function UserDashboard() {
           </div>
 
           {/* Start / Stop button — filled gradient */}
-          <button onClick={() => doAction(running ? "stop" : "start")} disabled={!!actionLoading || preStartLoading}
-            className="shrink-0 flex items-center gap-2.5 rounded-2xl px-8 py-4 text-[15px] font-bold text-white transition-all duration-300 disabled:opacity-50 hover:brightness-110"
-            style={running
+          <button onClick={() => doAction(active ? "stop" : "start")} disabled={controlBusy}
+            className="shrink-0 flex items-center gap-2.5 rounded-2xl px-8 py-4 text-[15px] font-bold text-white transition-all duration-300 disabled:opacity-60 hover:brightness-110"
+            style={active
               ? { background: "linear-gradient(135deg, #ff8080, #ff6b6b)", boxShadow: "0 8px 24px rgba(255,107,107,0.35)" }
               : { background: "linear-gradient(135deg, #8b6cff, #6c5ce7)", boxShadow: "0 8px 24px rgba(108,92,231,0.4)" }}>
-            {(actionLoading || preStartLoading) ? <Loader2 className="h-5 w-5 animate-spin" /> : running ? <Square className="h-5 w-5 fill-white" /> : <Play className="h-5 w-5 fill-white" />}
-            {preStartLoading ? "Checking..." : running ? "Stop Bot" : "Start Bot"}
+            {controlBusy ? <Loader2 className="h-5 w-5 animate-spin" /> : active ? <Square className="h-5 w-5 fill-white" /> : <Play className="h-5 w-5 fill-white" />}
+            {controlLabel}
           </button>
         </div>
       </div>
