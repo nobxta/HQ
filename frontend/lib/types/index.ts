@@ -40,6 +40,10 @@ export interface DashboardStats {
     memory_used_mb: number;
     memory_total_mb: number;
     uptime_seconds: number;
+    disk_percent?: number | null;
+    disk_used_gb?: number | null;
+    disk_total_gb?: number | null;
+    logs_size_mb?: number | null;
   };
   workers: {
     create_worker_ok: boolean;

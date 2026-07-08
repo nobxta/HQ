@@ -85,6 +85,31 @@ def _aggregate_all_bot_stats() -> dict:
     }
 
 
+def _disk_and_logs() -> dict:
+    """Disk usage for the drive the app lives on, plus total size of the per-bot log
+    dir (those logs are append-only and never rotate, so they're the main fill risk)."""
+    from code.config import BASE_DIR, DATA_LOGS_DIR
+    out = {"disk_percent": None, "disk_used_gb": None, "disk_total_gb": None, "logs_size_mb": None}
+    try:
+        d = psutil.disk_usage(str(BASE_DIR))
+        out["disk_percent"] = d.percent
+        out["disk_used_gb"] = round(d.used / 1024 ** 3, 1)
+        out["disk_total_gb"] = round(d.total / 1024 ** 3, 1)
+    except Exception:
+        pass
+    try:
+        total = 0
+        for f in DATA_LOGS_DIR.glob("*.log"):
+            try:
+                total += f.stat().st_size
+            except OSError:
+                pass
+        out["logs_size_mb"] = round(total / 1024 / 1024, 1)
+    except Exception:
+        pass
+    return out
+
+
 def _get_renewals_soon(bots: dict, days_ahead: int = 14) -> list:
     """Find bots with valid_till within the next N days."""
     now = datetime.now()
@@ -179,6 +204,9 @@ async def dashboard_stats():
     # Posting stats (aggregate from all bot stats files)
     posting = await asyncio.to_thread(_aggregate_all_bot_stats)
 
+    # Disk + log-dir size (fill risk: per-bot logs never rotate)
+    disk_info = await asyncio.to_thread(_disk_and_logs)
+
     # Renewals coming soon
     renewals_soon = _get_renewals_soon(bots)
 
@@ -204,6 +232,10 @@ async def dashboard_stats():
             "memory_total_mb": round(mem.total / 1024 / 1024, 1),
             "memory_percent": mem.percent,
             "uptime_seconds": round(time.time() - boot_time),
+            "disk_percent": disk_info["disk_percent"],
+            "disk_used_gb": disk_info["disk_used_gb"],
+            "disk_total_gb": disk_info["disk_total_gb"],
+            "logs_size_mb": disk_info["logs_size_mb"],
         },
         "workers": {
             "create_worker_ok": create_ok,

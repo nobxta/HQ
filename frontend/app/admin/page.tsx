@@ -15,7 +15,7 @@ import {
   ArrowRightLeft, Loader2, Play, Trash2, RefreshCw,
   HelpCircle, MessageSquare, AlertTriangle, HardDrive,
   ExternalLink, Hammer, Square, CheckSquare, ChevronDown,
-  Calendar,
+  Calendar, Power, PauseCircle, Wrench,
 } from "lucide-react";
 import { formatDateTime, timeAgo } from "@/lib/utils";
 import type { RangeAnalytics } from "@/lib/types";
@@ -106,6 +106,50 @@ export default function DashboardPage() {
     }
   };
 
+  // ── System controls: maintenance state, real worker heartbeats, emergency actions ──
+  const { data: maint, mutate: mutateMaint } = useSWR<{ maintenance_enabled: boolean }>(
+    "/api/system/maintenance", replFetcher, { refreshInterval: 15000 }
+  );
+  const { data: workerHb } = useSWR<Record<string, { last_heartbeat: number; age_sec: number; healthy: boolean }>>(
+    "/api/system/workers", replFetcher, { refreshInterval: 15000 }
+  );
+  const [sysBusy, setSysBusy] = useState("");
+  const [confirmStop, setConfirmStop] = useState(false);
+
+  const maintenanceOn = !!maint?.maintenance_enabled;
+
+  const doEmergency = async (kind: "stop" | "resume") => {
+    setSysBusy(kind);
+    try {
+      const { data } = await api.post(`/api/system/emergency-${kind}`);
+      toast.success(data?.message || `Emergency ${kind} complete`);
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || `Emergency ${kind} failed`);
+    }
+    setSysBusy("");
+    setConfirmStop(false);
+  };
+
+  const toggleMaintenance = async () => {
+    const next = !maintenanceOn;
+    setSysBusy("maint");
+    try {
+      await api.post(`/api/system/maintenance?enabled=${next}`);
+      toast.success(`Maintenance mode ${next ? "enabled" : "disabled"}`);
+      mutateMaint();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Failed to toggle maintenance");
+    }
+    setSysBusy("");
+  };
+
+  const fmtAge = (age?: number) => {
+    if (age == null || age < 0) return "no signal";
+    if (age < 90) return `${Math.round(age)}s ago`;
+    if (age < 5400) return `${Math.round(age / 60)}m ago`;
+    return `${Math.round(age / 3600)}h ago`;
+  };
+
   // Orders that got paid but are stuck (insufficient/bad sessions, no token, etc.) —
   // payment is already received, so these need attention, not silence.
   const { data: pendingOrdersData, mutate: mutatePendingOrders } = usePendingOrders();
@@ -155,9 +199,12 @@ export default function DashboardPage() {
   const openTickets = supportData?.tickets?.filter((t: any) => t.status === "open") || [];
   const lowSessions = s.free <= 3;
 
-  const successRate = posting.today_sent + posting.today_failed > 0
-    ? ((posting.today_sent / (posting.today_sent + posting.today_failed)) * 100).toFixed(1)
-    : "100";
+  const postsToday = posting.today_sent + posting.today_failed;
+  const successRate = postsToday > 0
+    ? ((posting.today_sent / postsToday) * 100).toFixed(1)
+    : null;
+  const diskPct = sys.disk_percent;
+  const diskWarn = diskPct != null && diskPct >= 85;
 
   const hourlyChart = posting.hourly.map((h) => {
     const date = new Date(h.hour_ts * 3600 * 1000);
@@ -186,7 +233,8 @@ export default function DashboardPage() {
       icon: Users, tone: "accent" as const,
     },
     {
-      title: "Posts Today", value: posting.today_sent.toLocaleString(), subtitle: `${posting.today_failed} failed · ${successRate}% success`,
+      title: "Posts Today", value: posting.today_sent.toLocaleString(),
+      subtitle: `${posting.today_failed} failed · ${successRate === null ? "—" : successRate + "%"} success (24h)`,
       icon: Send, tone: "info" as const, live: true,
     },
     {
@@ -196,7 +244,8 @@ export default function DashboardPage() {
     },
     {
       title: "CPU / RAM", value: `${sys.cpu_percent?.toFixed(0) || 0}% / ${sys.memory_percent?.toFixed(0) || 0}%`,
-      subtitle: `${Math.round(sys.memory_used_mb)}MB used`, icon: Cpu, tone: "warning" as const,
+      subtitle: `${Math.round(sys.memory_used_mb)}MB · Disk ${diskPct != null ? diskPct.toFixed(0) + "%" : "—"}`,
+      icon: Cpu, tone: "warning" as const,
     },
   ];
   const toneMap: Record<string, string> = {
@@ -295,6 +344,80 @@ export default function DashboardPage() {
           .clay-stat, .clay-btn-primary, .clay-btn-soft { transition: none; }
         }
       `}</style>
+
+      {/* ────── System Control Bar ────── */}
+      <div className="clay-card flex flex-col gap-3 px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2.5">
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl clay-pill bg-accent/15 text-accent shrink-0">
+            <Shield className="h-4 w-4" />
+          </span>
+          <div>
+            <p className="text-sm font-bold text-white leading-tight">System Controls</p>
+            <p className="text-[11px] text-dark-500">
+              {maintenanceOn ? "Maintenance mode is ON" : "All systems operational"}
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={toggleMaintenance}
+            disabled={sysBusy === "maint"}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl transition-all disabled:opacity-50 ${
+              maintenanceOn
+                ? "bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500/25"
+                : "clay-btn-soft text-dark-300 hover:text-white"
+            }`}
+          >
+            {sysBusy === "maint" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wrench className="h-4 w-4" />}
+            Maintenance: {maintenanceOn ? "On" : "Off"}
+          </button>
+          <button
+            onClick={() => doEmergency("resume")}
+            disabled={sysBusy === "resume"}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl bg-emerald-500/12 text-emerald-400 border border-emerald-500/25 hover:bg-emerald-500/20 transition-all disabled:opacity-50"
+          >
+            {sysBusy === "resume" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+            Resume All
+          </button>
+          <button
+            onClick={() => setConfirmStop(true)}
+            disabled={sysBusy === "stop"}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl bg-red-500/12 text-red-400 border border-red-500/30 hover:bg-red-500/20 transition-all disabled:opacity-50"
+          >
+            {sysBusy === "stop" ? <Loader2 className="h-4 w-4 animate-spin" /> : <PauseCircle className="h-4 w-4" />}
+            Emergency Stop
+          </button>
+        </div>
+      </div>
+
+      {/* Maintenance banner */}
+      {maintenanceOn && (
+        <div className="clay-raise border border-amber-500/30 bg-amber-500/[0.07] px-4 py-3 flex items-center gap-3">
+          <div className="h-10 w-10 rounded-full clay-pill bg-amber-500/20 flex items-center justify-center shrink-0">
+            <Wrench className="h-5 w-5 text-amber-400" />
+          </div>
+          <div className="flex-1">
+            <p className="text-sm font-bold text-amber-400">Maintenance Mode Active</p>
+            <p className="text-xs text-amber-400/70 mt-0.5">User-facing actions are paused. Turn it off in System Controls when done.</p>
+          </div>
+        </div>
+      )}
+
+      {/* Disk-almost-full banner (per-bot logs never rotate) */}
+      {diskWarn && (
+        <div className="clay-raise border border-red-500/30 bg-red-500/[0.07] px-4 py-3 flex items-center gap-3">
+          <div className="h-10 w-10 rounded-full clay-pill bg-red-500/20 flex items-center justify-center shrink-0">
+            <HardDrive className="h-5 w-5 text-red-400" />
+          </div>
+          <div className="flex-1">
+            <p className="text-sm font-bold text-red-400">Disk {diskPct?.toFixed(0)}% full</p>
+            <p className="text-xs text-red-400/70 mt-0.5">
+              Posting halts if the disk fills. Per-bot logs never rotate
+              {sys.logs_size_mb != null ? ` — data/logs is ${sys.logs_size_mb.toLocaleString()} MB` : ""}. Clear old logs to reclaim space.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* ────── Paid-but-stuck orders — collapsed notification; click to reveal who ────── */}
       {stuckOrders.length > 0 && (
@@ -1010,12 +1133,11 @@ export default function DashboardPage() {
         <div className="clay-card flex flex-col">
           <div className="px-5 py-4 border-b border-dark-800/50 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-white">Session Pool</h3>
-            <div className="flex gap-1">
-              <span className={`w-2 h-2 rounded-full ${workers.create_worker_ok ? "bg-emerald-400" : "bg-red-400"}`} />
-              <span className={`w-2 h-2 rounded-full ${workers.payment_worker_ok ? "bg-emerald-400" : "bg-red-400"}`} />
-              <span className="w-2 h-2 rounded-full bg-emerald-400" />
-              {s.dead > 0 && <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />}
-            </div>
+            {s.dead > 0 && (
+              <span className="inline-flex items-center gap-1.5 text-[10px] font-bold text-red-400">
+                <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />{s.dead} dead
+              </span>
+            )}
           </div>
           <div className="p-5 space-y-5 flex-1">
             {[
@@ -1053,14 +1175,28 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Worker threads */}
+          {/* Worker heartbeats (real age from /api/system/workers) */}
           <div className="px-5 py-3 border-t border-dark-800/50">
-            <p className="text-[10px] font-bold text-dark-500 uppercase tracking-widest mb-2">Worker Status</p>
-            <div className="flex flex-wrap gap-1.5">
-              <div className={`w-3 h-3 rounded-full ${workers.create_worker_ok ? "bg-emerald-400" : "bg-red-400"}`} title="Create Worker" />
-              <div className={`w-3 h-3 rounded-full ${workers.payment_worker_ok ? "bg-emerald-400" : "bg-red-400"}`} title="Payment Worker" />
-              <div className="w-3 h-3 rounded-full bg-emerald-400" title="Scheduler" />
-              <div className="w-3 h-3 rounded-full bg-emerald-400" title="Monitor" />
+            <p className="text-[10px] font-bold text-dark-500 uppercase tracking-widest mb-2">Worker Health</p>
+            <div className="space-y-1.5">
+              {[
+                { key: "create_worker_heartbeat", label: "Create Worker", fallback: workers.create_worker_ok },
+                { key: "payment_worker_heartbeat", label: "Payment Worker", fallback: workers.payment_worker_ok },
+              ].map((w) => {
+                const h = workerHb?.[w.key];
+                const healthy = h ? h.healthy : w.fallback;
+                return (
+                  <div key={w.key} className="flex items-center justify-between">
+                    <span className="flex items-center gap-2 text-xs text-dark-300">
+                      <span className={`w-2 h-2 rounded-full ${healthy ? "bg-emerald-400" : "bg-red-400 animate-pulse"}`} />
+                      {w.label}
+                    </span>
+                    <span className={`text-[11px] font-medium ${healthy ? "text-dark-500" : "text-red-400"}`}>
+                      {h ? fmtAge(h.age_sec) : (healthy ? "healthy" : "no signal")}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -1139,6 +1275,26 @@ export default function DashboardPage() {
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* Emergency Stop confirmation */}
+      <Modal open={confirmStop} onClose={() => setConfirmStop(false)} title="Emergency Stop" size="sm">
+        <div className="space-y-4">
+          <div className="flex items-start gap-3">
+            <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/20 shrink-0">
+              <PauseCircle className="h-6 w-6 text-red-400" />
+            </div>
+            <p className="text-sm text-dark-300">
+              This immediately stops <b className="text-white">every running bot</b>. Users can restart their own bots afterward, or use <b className="text-emerald-400">Resume All</b> to bring them back. Continue?
+            </p>
+          </div>
+          <div className="flex gap-2 pt-1">
+            <Button variant="ghost" size="sm" className="flex-1" onClick={() => setConfirmStop(false)}>Cancel</Button>
+            <Button variant="danger" size="sm" className="flex-1" loading={sysBusy === "stop"} onClick={() => doEmergency("stop")}>
+              <PauseCircle className="h-3.5 w-3.5" /> Stop All Bots
+            </Button>
+          </div>
+        </div>
       </Modal>
     </div>
   );
