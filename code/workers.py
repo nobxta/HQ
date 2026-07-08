@@ -389,10 +389,16 @@ async def worker_main_async(
             half = max(1, total_sessions) // 2
             stagger_sec = 0.0 if global_ordinal < half else float(ENTERPRISE_STAGGER_SEC)
         else:
-            # Starter: even-spread phase = ordinal * (cycle/N). Matches the per-cycle anchor phase in
-            # _async_session_loop so cycle 1 is already correctly spaced and never collides.
-            _cycle_sec = max(config.MIN_CYCLE_SEC, int(config_snapshot.get("cycle", 3600)))
-            stagger_sec = _starter_phase_offset(global_ordinal, total_sessions, _cycle_sec)
+            # Starter spacing normally comes from the per-cycle phased boundary in _async_session_loop.
+            # Apply the phase as a one-time startup delay ONLY on a fresh start, where the first cycle
+            # runs immediately (run_first_cycle_immediately) and therefore bypasses that boundary. On a
+            # resume the boundary already spaces accounts, so adding the delay here would double-count the
+            # offset and make accounts post the same groups at the same moment right after a restart.
+            if config_snapshot.get("run_first_cycle_immediately"):
+                _cycle_sec = max(config.MIN_CYCLE_SEC, int(config_snapshot.get("cycle", 3600)))
+                stagger_sec = _starter_phase_offset(global_ordinal, total_sessions, _cycle_sec)
+            else:
+                stagger_sec = 0.0
         t = asyncio.create_task(
             _async_session_loop(
                 bot_token,

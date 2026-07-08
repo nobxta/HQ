@@ -2223,14 +2223,26 @@ async def _async_session_loop(
             if resume_first_pass:
                 resume_first_pass = False
                 _last_done = float((cfg.get("last_cycle_time") or {}).get(session_file) or 0)
-                if cycle_sec > 0 and _last_done >= current_boundary - 1.0:
-                    current_boundary = current_boundary + cycle_sec
+                # Preserve an INTERRUPTED cycle: if a mid-cycle checkpoint exists for exactly this
+                # boundary, run it now (the seeded posted set below skips already-sent groups) so a
+                # crash mid-posting finishes where it left off.
+                _prog0 = (cfg.get("cycle_progress") or {}).get(session_file) if isinstance(cfg, dict) else None
+                _has_midcycle = bool(_prog0) and int(float((_prog0 or {}).get("cycle_ts") or 0)) == int(current_boundary)
+                # Otherwise, if this boundary is in the PAST — already completed, or missed while the bot
+                # was down — advance to the next phased boundary so each account resumes at its OWN
+                # staggered slot instead of catching up on top of another account (same-group, same-time
+                # collisions after a restart). Chosen behavior: wait for the proper slot, never fire an
+                # overdue cycle immediately.
+                if cycle_sec > 0 and not _has_midcycle and current_boundary <= now_ts + 1.0:
+                    _skipped_from = current_boundary
+                    while current_boundary <= now_ts:
+                        current_boundary += cycle_sec
                     next_cycle_time = current_boundary
                     delta_sec = next_cycle_time - now_ts
                     delay_sec = 0.0
                     logger.info(
-                        "[Resume] session=%s cycle at %.0f already completed before restart; waiting for next boundary %.0f",
-                        session_file, current_boundary - cycle_sec, current_boundary,
+                        "[Resume] session=%s past boundary %.0f skipped (last_done=%.0f); waiting for next staggered slot %.0f",
+                        session_file, _skipped_from, _last_done, current_boundary,
                     )
             # Instant first cycle: run immediately on start instead of waiting for cycle boundary
             if cfg.get("run_first_cycle_immediately") and not run_first_cycle_done:
@@ -3929,8 +3941,9 @@ async def _restart_single_worker(bot_token: str, worker_id: int) -> bool:
                 half = max(1, total_sessions) // 2
                 _worker_stagger_sec[key] = 0.0 if global_ordinal < half else float(ENTERPRISE_STAGGER_SEC)
             else:
-                _restart_cycle_sec = max(config.MIN_CYCLE_SEC, int(cfg_restart.get("cycle", 3600)))
-                _worker_stagger_sec[key] = _starter_phase_offset(global_ordinal, total_sessions, _restart_cycle_sec)
+                # A single-worker restart is always boundary-driven (resume), so the worker applies no
+                # Starter startup delay — mirror that here so the health monitor's timing matches.
+                _worker_stagger_sec[key] = 0.0
         else:
             _worker_stagger_sec[key] = 0.0
         try:
@@ -4206,8 +4219,14 @@ async def _start_posting(
             half = max(1, total_sessions) // 2
             stagger_sec = 0.0 if global_ordinal < half else float(ENTERPRISE_STAGGER_SEC)
         else:
-            _start_cycle_sec = max(config.MIN_CYCLE_SEC, int(cfg.get("cycle", 3600)))
-            stagger_sec = _starter_phase_offset(global_ordinal, total_sessions, _start_cycle_sec)
+            # Mirror workers.py: Starter applies the phase as a startup delay only on a fresh start
+            # (first cycle runs immediately, bypassing the phased boundary). On a resume the boundary
+            # spaces accounts, so no startup delay — avoids double-counting the offset.
+            if not preserve_cycle_time:
+                _start_cycle_sec = max(config.MIN_CYCLE_SEC, int(cfg.get("cycle", 3600)))
+                stagger_sec = _starter_phase_offset(global_ordinal, total_sessions, _start_cycle_sec)
+            else:
+                stagger_sec = 0.0
         _worker_stagger_sec[key] = stagger_sec
     # Send START to each worker so they begin posting (avoids connection storms; workers wait for this).
     for _proc, cmd_q, w_id, _chunk in workers_list:
