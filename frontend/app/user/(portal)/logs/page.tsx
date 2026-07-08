@@ -431,8 +431,13 @@ export default function UserLogsPage() {
   // allows (a request for 10000 was seen 422-ing while 1000 succeeded) — rather than hardcode a number
   // that might again exceed whatever the server currently accepts, start generous and step the request
   // size down automatically on a 422 until it succeeds, so the page always shows whatever it can get.
-  // Light by default (fast, low load). "Load older"/"Load all" opt into a deeper window; 0 = whole file.
-  const [fetchLines, setFetchLines] = useState(1500);
+  // Light by default (fast, low load), but escalates automatically — no manual buttons:
+  //   • typing a search looks through the WHOLE file (fetchLines = 0),
+  //   • paging toward the oldest rows grows the live tail (browseLines) a chunk at a time.
+  const [browseLines, setBrowseLines] = useState(1500);  // depth of the live tail; grows as you page back
+  const [search, setSearch] = useState("");              // free-text search (account, group, status, reason)
+  const searching = search.trim().length > 0;
+  const fetchLines = searching ? 0 : browseLines;        // 0 = whole file
   const [displayCount] = useState(1000);  // how many rows to render
   // usePortalSessionValid() reads localStorage, which doesn't exist during SSR — evaluating it
   // immediately would render a different tree on the server vs. the client's first paint and
@@ -449,16 +454,15 @@ export default function UserLogsPage() {
 
   useEffect(() => {
     const status = (logsError as any)?.response?.status;
-    if (status === 422 && fetchLines > 100) {
-      setFetchLines((n) => (n > 500 ? 500 : n > 200 ? 200 : 100));
+    if (status === 422 && browseLines > 100) {
+      setBrowseLines((n) => (n > 500 ? 500 : n > 200 ? 200 : 100));
     }
-  }, [logsError, fetchLines]);
+  }, [logsError, browseLines]);
 
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState<FilterType>("all");
   const [accountFilter, setAccountFilter] = useState<string>("all");
   const [selected, setSelected] = useState<ParsedLog | null>(null);   // row expanded inline
-  const [search, setSearch] = useState("");        // free-text search (account, group, status, reason)
   const [range, setRange] = useState("all");        // time window for stats + list (All time default)
   const [sort, setSort] = useState<"newest" | "oldest">("newest");
   const [view, setView] = useState<"timeline" | "groups">("timeline");
@@ -605,6 +609,17 @@ export default function UserLogsPage() {
     [sortedAll, safePage, perPage]
   );
 
+  // Auto-load older history as the user pages toward the end of what's loaded. Reaching the last
+  // page while more log lines exist on the server pulls the next chunk — so scrolling far back just
+  // works, with no "Load older" button. (Search already loads the whole file via fetchLines=0.)
+  const hasMoreOnServer = (data?.total_lines ?? 0) > lines.length;
+  useEffect(() => {
+    if (searching || logsLoading) return;
+    if (safePage >= totalPages && hasMoreOnServer) {
+      setBrowseLines((n) => (n >= 20000 ? n : n + 5000));
+    }
+  }, [safePage, totalPages, hasMoreOnServer, searching, logsLoading]);
+
   // Per-group aggregation for the "By Group" view (respects search).
   const groupAgg = useMemo(() => {
     const map: Record<string, {
@@ -737,27 +752,11 @@ export default function UserLogsPage() {
               </span>
             )}
           </div>
-          <p className="text-sm text-dark-500 mt-1">Real-time activity from all your accounts</p>
-          {(data?.total_lines ?? 0) > lines.length && (
-            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] font-semibold">
-              <span className="text-dark-500">
-                Showing last {lines.length.toLocaleString()} of {(data?.total_lines ?? 0).toLocaleString()} log lines
-              </span>
-              <button
-                onClick={(e) => { e.stopPropagation(); setFetchLines((n) => (n === 0 ? 0 : n + 5000)); }}
-                className="text-accent hover:text-accent-300 transition-colors"
-              >
-                Load older
-              </button>
-              <span className="text-dark-700">·</span>
-              <button
-                onClick={(e) => { e.stopPropagation(); setFetchLines(0); }}
-                className="text-accent hover:text-accent-300 transition-colors"
-              >
-                Load all
-              </button>
-            </div>
-          )}
+          <p className="text-sm text-dark-500 mt-1">
+            {searching
+              ? "Searching across your full log history"
+              : "Real-time activity from all your accounts"}
+          </p>
         </div>
 
         <div className="flex items-center gap-2">
