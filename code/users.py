@@ -439,6 +439,10 @@ _worker_startup_grace_until: dict[tuple[str, str], float] = {}
 _worker_stagger_sec: dict[tuple[str, str], float] = {}
 # Track first cycle or post per session for "posting started" and startup-failure detection
 _worker_first_cycle_or_post: set[tuple[str, str]] = set()  # (bot_token, session_file)
+# Latest scheduler next_run (unix ts) per session, reported by the worker. Used so the
+# startup-failure check does not restart a session whose next cycle is legitimately still in
+# the future (e.g. after a crash-resume that preserved the cycle anchor).
+_worker_next_run: dict[tuple[str, str], float] = {}
 # Stats: counts only, stored in data/stats/<name>.json. No event list; 24h rolling via hourly buckets.
 RECENT_EVENTS_WINDOW_SEC = 24 * 3600  # 24 hours rolling window
 STATS_FLUSH_INTERVAL_SEC = 5
@@ -3647,6 +3651,10 @@ def _apply_worker_result(msg: dict) -> None:
         delay_sec = msg.get("delay_sec", 0)
         worker_alive = msg.get("worker_alive", True)
         name = (_get_cfg(bot_token) or {}).get("name", bot_token[:20])
+        # Remember the scheduled next_run so the startup-failure check can tell a session that is
+        # simply waiting for its (possibly far-future) cycle apart from one that is truly stuck.
+        if session_file:
+            _worker_next_run[(bot_token, session_file)] = float(next_run or 0)
         logger.info(
             "[SchedulerHealth] session=%s next_run=%.0f delay_sec=%.1f worker_alive=%s bot=%s",
             session_file, next_run, delay_sec, worker_alive, name,
@@ -3845,6 +3853,7 @@ def _clear_session_registry_for_bot(bot_token: str) -> None:
         _worker_start_time.pop(k, None)
         _worker_startup_grace_until.pop(k, None)
         _worker_stagger_sec.pop(k, None)
+        _worker_next_run.pop(k, None)
 
 
 async def _restart_single_worker(bot_token: str, worker_id: int) -> bool:
@@ -4580,6 +4589,14 @@ async def run_session_health_monitor() -> None:
                     stagger_sec = _worker_stagger_sec.get(key, 0.0)
                     effective_start = start_ts + stagger_sec  # when we expect first cycle to begin
                     if now < grace_until or (bot_token, session_file) in _worker_first_cycle_or_post:
+                        continue
+                    # The worker scheduled a next_run that is still in the future (e.g. a crash-resume
+                    # preserved a cycle anchor, so this session legitimately posts later). It is waiting,
+                    # not stuck — don't diagnose or restart it as a startup failure, or it churns every
+                    # cycle until that time arrives. A truly stuck worker never reports a next_run (no
+                    # entry) and is still caught by the heartbeat/liveness checks above.
+                    next_run = _worker_next_run.get((bot_token, session_file), 0.0)
+                    if next_run > now:
                         continue
                     if now > effective_start + HEALTH_CHECK_DELAY_SEC:
                         logger.warning(
