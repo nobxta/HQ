@@ -797,32 +797,8 @@ export default function UserLogsPage() {
         <p className="text-[11px] text-dark-600 -mt-2 mb-3">Showing lifetime totals (match the Dashboard) · pick a range to see recent activity.</p>
       )}
 
-      {/* ── Quick filters: always-visible Sent / Failed / System + view + account ── */}
+      {/* ── View + account controls (status filtering lives in the funnel next to search) ── */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
-        {/* Status filter chips */}
-        <div className="flex gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 py-0.5">
-          {filterOptions.map((o) => {
-            const active = filter === o.key;
-            const tint: Record<string, string> = {
-              all: "bg-accent/15 text-accent ring-1 ring-accent/30",
-              success: "bg-success/15 text-success ring-1 ring-success/30",
-              failure: "bg-danger/15 text-danger ring-1 ring-danger/30",
-              flood: "bg-warning/15 text-warning ring-1 ring-warning/30",
-              system: "bg-dark-700 text-dark-100 ring-1 ring-dark-500",
-            };
-            return (
-              <button
-                key={o.key}
-                onClick={() => setFilter(o.key)}
-                className={`flex items-center gap-1.5 shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-[13px] font-semibold transition-all ${active ? tint[o.key] : "bg-dark-900 text-dark-400 border border-dark-700/50 hover:text-dark-200 hover:border-dark-600"}`}
-              >
-                {o.label}
-                <span className={`text-[11px] font-bold tabular-nums rounded-full px-1.5 py-0.5 ${active ? "bg-white/10" : "bg-dark-800 text-dark-500"}`}>{o.count}</span>
-              </button>
-            );
-          })}
-        </div>
-
         <div className="flex items-center gap-2 ml-auto">
           {/* Timeline / By Group */}
           <div className="flex items-center rounded-xl border border-dark-700 bg-dark-900 overflow-hidden">
