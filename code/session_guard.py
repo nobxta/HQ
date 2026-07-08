@@ -249,6 +249,39 @@ async def release_soft_holders(session_files: list[str]) -> None:
             logger.warning("[SessionGuard] Soft release of %s failed: %s", _lock_key(fn), e)
 
 
+def force_clear_locks(session_files: list[str]) -> list[str]:
+    """Unconditionally break any on-disk locks for these session files and return
+    the keys that were cleared.
+
+    This is for the AdBot *start* path only: the caller has already stopped and
+    joined every worker for the bot, so any surviving 'posting' lock on one of the
+    bot's own sessions is orphaned — a crashed/killed worker, or (worse) a recorded
+    PID that the OS has since reused, which makes `_pid_alive` report it alive
+    forever. Because posting locks carry no expected duration, `_is_stale` can never
+    break such a lock on its own, so the session would stay permanently "busy" and
+    the freshly spawned worker could never acquire it. Clearing here is safe *only*
+    because no live worker of this bot holds the lock at this point."""
+    cleared: list[str] = []
+    for fn in session_files:
+        key = _lock_key(fn)
+        holder = _read_lock(key)
+        if holder is None:
+            continue
+        logger.warning(
+            "[SessionGuard] Force-clearing lock on %s at start (task=%s pid=%s held %.0fs) — "
+            "no worker of this bot is running, so this lock is orphaned",
+            key, holder.get("task"), holder.get("pid"),
+            time.time() - float(holder.get("started_at") or time.time()),
+        )
+        try:
+            _lock_path(key).unlink()
+            cleared.append(key)
+        except OSError:
+            pass
+        _held_tokens.pop(key, None)
+    return cleared
+
+
 async def _acquire(key: str, task: str, wait_timeout: float, expected_sec: Optional[float]) -> None:
     """Acquire the cross-process lock for `key` or raise SessionBusyError."""
     deadline = time.monotonic() + max(0.0, wait_timeout)

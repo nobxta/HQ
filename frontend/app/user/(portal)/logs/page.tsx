@@ -487,27 +487,54 @@ export default function UserLogsPage() {
     return collapsed;
   }, [lines]);
 
-  // Discover unique accounts (from ALL history so options are stable regardless of the time window)
-  const accounts = useMemo(() => {
-    const set = new Set<string>();
-    for (const p of parsed) {
-      if (p.account) set.add(p.account);
+  // The account list is driven by the bot's CONFIGURED sessions — so every account shows in a stable
+  // slot (numbered by its real config index), including ones that never posted this window (e.g. a
+  // session that was temporarily unable to connect). Falling back to log-discovered accounts only
+  // when the config sessions aren't available keeps older/detached views working.
+  type AcctItem = { id: string; index: number; name: string; digits: string };
+  const accountList: AcctItem[] = useMemo(() => {
+    const sessions = (bot?.sessions as Array<{ file?: string; real_name?: string; index?: number }> | undefined) || [];
+    if (sessions.length) {
+      return sessions
+        .map((s, i) => {
+          const file = String(s.file || "");
+          const phone = file.replace(/\.session$/, "");
+          const index = Number(s.index) || i + 1;
+          return { id: phone || `idx-${index}`, index, name: (s.real_name || phone || `Account ${index}`), digits: digitsKey(phone) };
+        })
+        .sort((a, b) => a.index - b.index);
     }
+    // Fallback: discover from logs (previous behaviour) when config sessions are unavailable.
+    const set = new Set<string>();
+    for (const p of parsed) if (p.account) set.add(p.account);
+    return Array.from(set).sort().map((a, i) => ({ id: a, index: i + 1, name: `Account ${i + 1}`, digits: digitsKey(a) }));
+  }, [bot, parsed]);
+
+  // A log line identifies its account inconsistently: post lines carry account=+14699469531,
+  // forwarded lines carry "Account N" (an ordinal), cycle/connect lines carry only a session tail
+  // (…469531). Match a line to a configured account by last-6 digits OR by that ordinal → index.
+  const entryOrdinal = (p: ParsedLog): number => {
+    const m = /^Account\s+(\d+)$/.exec(p.account || "");
+    return m ? Number(m[1]) : 0;
+  };
+  const matchesAccount = (p: ParsedLog, acct: AcctItem): boolean => {
+    const k = digitsKey(p.account || p.accountShort);
+    if (acct.digits && k && k === acct.digits) return true;
+    const ord = entryOrdinal(p);
+    return ord > 0 && ord === acct.index;
+  };
+  const resolveAcctIndex = (entry: ParsedLog): number => {
+    const hit = accountList.find((a) => matchesAccount(entry, a));
+    return hit ? hit.index : 0;
+  };
+  // Raw account ids exactly as they appear in the logs (group.byAccount is keyed by these).
+  const logAccountIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of parsed) if (p.account) set.add(p.account);
     return Array.from(set).sort();
   }, [parsed]);
-
-  // Resolve any log entry (post OR cycle/connect/system) to its 1-based account index by matching
-  // last-6 digits — so cycle rows like "Next cycle in 30m" can show the same "Acc N" as post rows,
-  // even though they only carry a session tail (…613368) rather than the full account= id.
-  const acctIndexByKey = useMemo(() => {
-    const m = new Map<string, number>();
-    accounts.forEach((a, i) => m.set(digitsKey(a), i + 1));
-    return m;
-  }, [accounts]);
-  const resolveAcctIndex = (entry: ParsedLog): number => {
-    const key = digitsKey(entry.account || entry.accountShort);
-    return key ? (acctIndexByKey.get(key) ?? 0) : 0;
-  };
+  // Map a raw log account id to its configured 1-based index (for stable "Acc N" labels).
+  const logAcctIndex = (rawId: string): number => resolveAcctIndex({ account: rawId } as ParsedLog);
 
   const rangeMs = TIME_RANGES.find((r) => r.key === range)?.ms ?? Infinity;
 
@@ -523,13 +550,16 @@ export default function UserLogsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [parsed, rangeMs, data]);
 
-  // Per-account stats (within the selected time window)
+  // Per-account stats (within the selected time window), keyed by configured account id so a
+  // non-posting account still gets an entry (shown as 0/0 rather than vanishing).
   const accountStats = useMemo(() => {
     const map: Record<string, { sent: number; failed: number; flood: number; lastSent?: string; lastFailed?: string; lastEventType?: LogType; lastEventTime?: string }> = {};
+    for (const acct of accountList) map[acct.id] = { sent: 0, failed: 0, flood: 0 };
     for (const p of inRange) {
       if (!p.account) continue;
-      if (!map[p.account]) map[p.account] = { sent: 0, failed: 0, flood: 0 };
-      const s = map[p.account];
+      const acct = accountList.find((a) => matchesAccount(p, a));
+      if (!acct) continue;
+      const s = map[acct.id];
       if (p.type === "success") {
         s.sent++;
         if (!s.lastSent && p.groupName) s.lastSent = p.groupName;
@@ -545,7 +575,7 @@ export default function UserLogsPage() {
       }
     }
     return map;
-  }, [inRange]);
+  }, [inRange, accountList]);
 
   // Full matching set (sorted), then a page slice for the table. inRange is oldest→newest.
   const sortedAll = useMemo(() => {
@@ -554,11 +584,14 @@ export default function UserLogsPage() {
     else if (filter === "failure") result = result.filter((p) => p.type === "failure");
     else if (filter === "flood") result = result.filter((p) => p.type === "flood");
     else if (filter === "system") result = result.filter((p) => ["system", "cycle_start", "cycle_end", "connect"].includes(p.type));
-    if (accountFilter !== "all") result = result.filter((p) => p.account === accountFilter);
+    if (accountFilter !== "all") {
+      const acct = accountList.find((a) => a.id === accountFilter);
+      if (acct) result = result.filter((p) => matchesAccount(p, acct));
+    }
     const q = search.trim().toLowerCase();
     if (q) result = result.filter((p) => matchesSearch(p, q));
     return sort === "newest" ? [...result].reverse() : [...result];
-  }, [inRange, filter, accountFilter, search, sort]);
+  }, [inRange, filter, accountFilter, search, sort, accountList]);
 
   const matchTotal = sortedAll.length;
   const totalPages = Math.max(1, Math.ceil(matchTotal / perPage));
@@ -602,7 +635,8 @@ export default function UserLogsPage() {
   const { data: lifetimeStats } = usePortalStats();
   const stats = useMemo(() => {
     let success = 0, failure = 0, flood = 0;
-    const source = accountFilter !== "all" ? inRange.filter((p) => p.account === accountFilter) : inRange;
+    const _acct = accountFilter !== "all" ? accountList.find((a) => a.id === accountFilter) : undefined;
+    const source = _acct ? inRange.filter((p) => matchesAccount(p, _acct)) : inRange;
     for (const p of source) {
       if (p.type === "success") success++;
       else if (p.type === "failure") failure++;
@@ -618,7 +652,7 @@ export default function UserLogsPage() {
     // windowed count as everything else — so it never mixes a lifetime figure with a windowed one.
     const total = usingLifetime ? success + failure : success + failure + flood;
     return { success, failure, flood, total, usingLifetime };
-  }, [inRange, accountFilter, range, lifetimeStats]);
+  }, [inRange, accountFilter, range, lifetimeStats, accountList]);
 
   const systemCount = useMemo(
     () => inRange.filter((p) => ["system", "cycle_start", "cycle_end", "connect"].includes(p.type)).length,
@@ -666,7 +700,8 @@ export default function UserLogsPage() {
     );
   }
 
-  const acctLabel = accountFilter === "all" ? "All Accounts" : `Account ${accounts.indexOf(accountFilter) + 1}`;
+  const _activeAcct = accountList.find((a) => a.id === accountFilter);
+  const acctLabel = accountFilter === "all" || !_activeAcct ? "All Accounts" : `Account ${_activeAcct.index}`;
 
   return (
     <div className="animate-fade-in" onClick={() => { setAcctOpen(false); setFunnelOpen(false); }}>
@@ -720,7 +755,7 @@ export default function UserLogsPage() {
         <StatCard icon={CheckCircle2} label="Successful" value={stats.success} tint="success" sub={`${pct(stats.success)}% success rate`} subTint="success" />
         <StatCard icon={XCircle} label="Failed" value={stats.failure} tint="danger" sub={`${pct(stats.failure)}% failure rate`} subTint="danger" />
         <StatCard icon={Clock} label="Waiting" value={stats.flood} tint="warning" sub="In queue" subTint="warning" />
-        <StatCard icon={Users} label="Active Accounts" value={accounts.length} tint="info" sub="Active sessions" />
+        <StatCard icon={Users} label="Active Accounts" value={accountList.length} tint="info" sub="Active sessions" />
       </div>
       {stats.usingLifetime && (
         <p className="text-[11px] text-dark-600 -mt-2 mb-3">Showing lifetime totals (match the Dashboard) · pick a range to see recent activity.</p>
@@ -759,8 +794,8 @@ export default function UserLogsPage() {
             <button onClick={() => setView("groups")} className={`px-3 py-2 text-xs font-semibold transition-colors ${view === "groups" ? "bg-dark-700 text-dark-100" : "text-dark-500 hover:text-dark-300"}`}>By Group</button>
           </div>
 
-          {/* Account-wise dropdown */}
-          {accounts.length > 1 && (
+          {/* Account-wise dropdown — lists every configured account (even non-posting ones) */}
+          {accountList.length > 1 && (
             <div className="relative" onClick={(e) => e.stopPropagation()}>
               <button
                 onClick={() => setAcctOpen((v) => !v)}
@@ -770,14 +805,17 @@ export default function UserLogsPage() {
                 <ChevronDown className="h-3 w-3 opacity-70" />
               </button>
               {acctOpen && (
-                <div className="absolute right-0 top-[calc(100%+6px)] z-30 min-w-[180px] rounded-xl border border-dark-700 bg-dark-850 p-1.5 shadow-2xl animate-scale-in">
+                <div className="absolute right-0 top-[calc(100%+6px)] z-30 min-w-[200px] rounded-xl border border-dark-700 bg-dark-850 p-1.5 shadow-2xl animate-scale-in">
                   <button onClick={() => { setAccountFilter("all"); setAcctOpen(false); }} className={`flex w-full items-center rounded-lg px-2.5 py-2 text-[13px] transition-colors ${accountFilter === "all" ? "bg-dark-800 text-dark-100 font-semibold" : "text-dark-400 hover:bg-dark-800/60"}`}>All Accounts</button>
-                  {accounts.map((a, i) => (
-                    <button key={a} onClick={() => { setAccountFilter(a); setAcctOpen(false); }} className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-[13px] transition-colors ${accountFilter === a ? "bg-dark-800 text-dark-100 font-semibold" : "text-dark-400 hover:bg-dark-800/60"}`}>
-                      Account {i + 1}
-                      <span className="text-[11px] text-dark-500 tabular-nums">{accountStats[a] ? `${accountStats[a].sent}/${accountStats[a].sent + accountStats[a].failed}` : "—"}</span>
-                    </button>
-                  ))}
+                  {accountList.map((a) => {
+                    const st = accountStats[a.id];
+                    return (
+                      <button key={a.id} onClick={() => { setAccountFilter(a.id); setAcctOpen(false); }} className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-[13px] transition-colors ${accountFilter === a.id ? "bg-dark-800 text-dark-100 font-semibold" : "text-dark-400 hover:bg-dark-800/60"}`}>
+                        <span className="truncate">Account {a.index}</span>
+                        <span className="text-[11px] text-dark-500 tabular-nums shrink-0">{st ? `${st.sent}/${st.sent + st.failed}` : "0/0"}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -835,12 +873,12 @@ export default function UserLogsPage() {
                     </button>
                   ))}
                 </div>
-                {accounts.length > 1 && (
+                {accountList.length > 1 && (
                   <>
                     <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-2">Account</p>
                     <select value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)} className="w-full rounded-lg border border-dark-700 bg-dark-900 px-2.5 py-2 text-[13px] text-dark-200 outline-none focus:border-accent/60">
                       <option value="all">All accounts</option>
-                      {accounts.map((a, i) => <option key={a} value={a}>Account {i + 1}</option>)}
+                      {accountList.map((a) => <option key={a.id} value={a.id}>Account {a.index}</option>)}
                     </select>
                   </>
                 )}
@@ -864,7 +902,7 @@ export default function UserLogsPage() {
             <EmptyState title={search ? "No group matches" : "No group activity"} label={search ? `Nothing matches "${search}".` : "No posts in this range yet."} />
           ) : (
             <div className="divide-y divide-dark-800/60">
-              {groupAgg.map((g) => <GroupRow key={g.name} group={g} accounts={accounts} />)}
+              {groupAgg.map((g) => <GroupRow key={g.name} group={g} accounts={logAccountIds} acctIndexOf={logAcctIndex} />)}
             </div>
           )
         ) : (
@@ -1125,17 +1163,18 @@ function LogTableRow({ entry, accountIndex, expanded, onToggle, botName }: {
 
 /* ────────────────────── Group row (By Group, expandable) ────────────────────── */
 
-function GroupRow({ group, accounts }: {
+function GroupRow({ group, accounts, acctIndexOf }: {
   group: {
     name: string; groupId?: string; groupLink?: string;
     byAccount: Record<string, { type: LogType; time?: string; wait?: string; link?: string }>;
     sent: Set<string>; flood: Set<string>; failed: Set<string>;
   };
   accounts: string[];
+  acctIndexOf: (rawId: string) => number;
 }) {
   const [open, setOpen] = useState(false);
   const rows = accounts
-    .map((acct, i) => ({ acct, i, rec: group.byAccount[acct] }))
+    .map((acct, i) => ({ acct, i: (acctIndexOf(acct) || i + 1) - 1, rec: group.byAccount[acct] }))
     .filter((r) => r.rec)
     .sort((a, b) => (entryMs({ timestamp: b.rec!.time } as ParsedLog) || 0) - (entryMs({ timestamp: a.rec!.time } as ParsedLog) || 0));
 

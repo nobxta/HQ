@@ -1926,7 +1926,11 @@ async def _connect_session_for_cycle(
     Returns "ok" (connected + authorized), "unauth" (connected but session logged out /
     de-authorized — dead), or "failed" (transient connect failure after retries).
     On "unauth" it calls report_session_died so the dead session is flagged for replacement.
+    Returns "busy" (distinct from "failed") when every attempt was blocked by another
+    task holding the session lock, so the caller can report a self-lock — an internal
+    lock contention — instead of a misleading "can't reach Telegram" failure.
     Uses SESSION_CONNECT_TIMEOUT_SEC so scheduler is not blocked; sends heartbeat during connect to avoid false worker frozen."""
+    last_busy: Optional["SessionBusyError"] = None
     for attempt in range(SESSION_RECONNECT_MAX_ATTEMPTS):
         connect_start = time.time()
         if report_user_log:
@@ -1994,6 +1998,7 @@ async def _connect_session_for_cycle(
         except SessionBusyError as e:
             # Session file is held by another task (chatlist sync, health check, portal, …).
             # Report WHO holds it and how long to wait, then retry with backoff.
+            last_busy = e
             logger.warning("Session %s connect blocked (attempt %s): %s", session_file, attempt + 1, e)
             if report_user_log:
                 report_user_log(f"[Connect] session={session_file} waiting: {e}")
@@ -2001,6 +2006,7 @@ async def _connect_session_for_cycle(
                 await asyncio.sleep(min(SESSION_RECONNECT_DELAY_SEC * (2 ** attempt), 60))
             continue
         except Exception as e:
+            last_busy = None  # a real connect error supersedes any earlier lock contention
             connect_end = time.time()
             duration = connect_end - connect_start
             logger.warning(
@@ -2016,7 +2022,9 @@ async def _connect_session_for_cycle(
             if attempt < SESSION_RECONNECT_MAX_ATTEMPTS - 1:
                 backoff = min(SESSION_RECONNECT_DELAY_SEC * (2 ** attempt), 60)
                 await asyncio.sleep(backoff)
-    return "failed"
+    # All attempts exhausted. If the last obstacle was a lock (not a real connect
+    # error), report it as a self-lock so the alert is diagnosable.
+    return "busy" if last_busy is not None else "failed"
 
 
 async def _async_session_loop(
@@ -2300,12 +2308,23 @@ async def _async_session_loop(
                     return
                 if _conn_status != "ok":
                     bot_name = cfg.get("name") or bot_token[:20]
-                    msg = f"AdBot {bot_name} — session {session_file} failed to connect. Will retry next cycle."
-                    if report_alert:
-                        report_alert("session_disconnected", msg)
+                    if _conn_status == "busy":
+                        # Not a Telegram/network problem — another task (or an orphaned
+                        # lock) holds this session file. Name it so it's fixable, not
+                        # mistaken for a dead account.
+                        msg = (f"AdBot {bot_name} — session {session_file} is locked by another task and "
+                               f"could not be used this cycle. If this repeats, the bot may need a restart "
+                               f"to clear a stale lock. Will retry next cycle.")
+                        alert_kind = "session_busy"
                     else:
-                        add_admin_alert("session_disconnected", msg)
-                    logger.warning("Session %s failed to connect for bot %s; retrying next cycle.", session_file, bot_name)
+                        msg = f"AdBot {bot_name} — session {session_file} failed to connect. Will retry next cycle."
+                        alert_kind = "session_disconnected"
+                    if report_alert:
+                        report_alert(alert_kind, msg)
+                    else:
+                        add_admin_alert(alert_kind, msg)
+                    logger.warning("Session %s %s for bot %s; retrying next cycle.",
+                                   session_file, "is locked (busy)" if _conn_status == "busy" else "failed to connect", bot_name)
                     # Do not break — sleep briefly then retry from top of loop on next cycle
                     retry_sleep = 15
                     slept = 0
@@ -4007,12 +4026,26 @@ async def _start_posting(
     cfg = _get_cfg(bot_token) or cfg
     # Release idle web-portal holds (account manager keeps sessions connected up to
     # 5 min after last use) so posting workers don't hit "session busy" at start.
+    _own_session_files = [s.get("file") or "" for s in cfg.get("sessions", []) if s.get("file")]
     try:
-        await session_guard.release_soft_holders(
-            [s.get("file") or "" for s in cfg.get("sessions", []) if s.get("file")]
-        )
+        await session_guard.release_soft_holders(_own_session_files)
     except Exception as e:
         logger.warning("release_soft_holders before start failed: %s", e)
+    # Force-clear any orphaned cross-process locks on this bot's OWN sessions. All
+    # of this bot's prior workers were just stopped and joined above, so a surviving
+    # "posting" lock is stale — a crashed worker or a reused PID that _pid_alive
+    # wrongly reports as alive. Without this, that session stays permanently "busy"
+    # and the new worker loops on "failed to connect" forever (never a Telegram
+    # limit — the bot locked itself out). Only this bot's session files are touched.
+    try:
+        _cleared_locks = session_guard.force_clear_locks(_own_session_files)
+        if _cleared_locks:
+            logger.info(
+                "[AdBotLifecycle] Cleared %s orphaned session lock(s) before start bot=%s: %s",
+                len(_cleared_locks), cfg.get("name") or bot_token[:20], _cleared_locks,
+            )
+    except Exception as e:
+        logger.warning("force_clear_locks before start failed: %s", e)
     for k in list(_worker_heartbeat_log_ts.keys()):
         if k[0] == bot_token:
             del _worker_heartbeat_log_ts[k]
