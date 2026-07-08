@@ -1415,12 +1415,6 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
                   {s.phone_from_file && <div className="flex justify-between gap-2"><span className="text-hq-muted">Session file number</span><span className="text-hq-sub font-mono">{s.phone_from_file}</span></div>}
                 </div>
 
-                {(s.last_error || s.validation_reason) && (
-                  <div className="rounded-[8px] bg-hq-danger/10 px-2.5 py-1.5 text-[11px] text-hq-danger mb-2.5 line-clamp-2" title={s.last_error || s.validation_reason || ""}>
-                    {s.last_error || s.validation_reason}
-                  </div>
-                )}
-
                 {/* Metrics */}
                 <div className="grid grid-cols-4 gap-1.5 mb-2.5">
                   <MetricPill label="Sent" value={st.sent.toLocaleString()} tone="#22C55E" />
@@ -1515,43 +1509,167 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
   );
 }
 
-/* Fetches the bot log and shows only the lines for one session (account=<file>). */
+/* ── Structured per-session log viewer ── */
+type LogTag = "POST_SUCCESS" | "POST_FAILURE" | "FLOOD_WAIT" | "POST_SKIPPED" | "OTHER";
+interface ParsedLog {
+  raw: string; date: string; time: string; tag: LogTag;
+  group: string; groupId: string; extraLabel: string; extra: string;
+}
+
+const LOG_TAG_META: Record<LogTag, { label: string; color: string }> = {
+  POST_SUCCESS: { label: "Sent", color: "#22C55E" },
+  POST_FAILURE: { label: "Failed", color: "#EF4444" },
+  FLOOD_WAIT:   { label: "Flood", color: "#F97316" },
+  POST_SKIPPED: { label: "Skipped", color: "#EAB308" },
+  OTHER:        { label: "Info", color: "#64748B" },
+};
+
+const LOG_FILTERS: { key: string; label: string; tags: LogTag[] }[] = [
+  { key: "all", label: "All", tags: [] },
+  { key: "success", label: "Sent", tags: ["POST_SUCCESS"] },
+  { key: "failed", label: "Failed", tags: ["POST_FAILURE"] },
+  { key: "flood", label: "Flood", tags: ["FLOOD_WAIT"] },
+  { key: "skipped", label: "Skipped", tags: ["POST_SKIPPED"] },
+];
+
+function unquote(s: string): string {
+  const t = s.trim();
+  if (t.length >= 2 && (t[0] === "'" || t[0] === '"') && t[t.length - 1] === t[0]) return t.slice(1, -1);
+  return t;
+}
+
+function parseLogLine(raw: string): ParsedLog {
+  const tsM = raw.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/);
+  const tagM = raw.match(/\[(POST_SUCCESS|POST_FAILURE|FLOOD_WAIT|POST_SKIPPED)\]/);
+  const out: ParsedLog = {
+    raw, date: tsM?.[1] || "", time: tsM?.[2] || "",
+    tag: (tagM?.[1] as LogTag) || "OTHER", group: "", groupId: "", extraLabel: "", extra: "",
+  };
+  const gnIdx = raw.indexOf("group_name=");
+  const giIdx = raw.indexOf(" group_id=");
+  if (gnIdx >= 0 && giIdx > gnIdx) out.group = unquote(raw.slice(gnIdx + 11, giIdx));
+  if (giIdx >= 0) {
+    const m = raw.slice(giIdx + 10).match(/^(\S+)(?:\s+(reason|error|wait)=([\s\S]*))?$/);
+    if (m) {
+      out.groupId = m[1];
+      if (m[2]) { out.extraLabel = m[2]; out.extra = unquote(m[3]); }
+    }
+  }
+  return out;
+}
+
 function SessionLogsModal({ name, file, onClose }: { name: string; file: string; onClose: () => void }) {
   const [lines, setLines] = useState<string[] | null>(null);
   const [error, setError] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("all");
   const account = file.replace(".session", "");
 
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const { data } = await api.get(`/api/bots/${encodeURIComponent(name)}/logs?lines=1000`);
-        if (!alive) return;
-        const all: string[] = data.lines || [];
-        // Log lines are `[TAG] account=<account> group_name=…` — match on the account token.
-        setLines(all.filter((l) => l.includes(`account=${account} `)));
-      } catch {
-        if (alive) setError(true);
-      }
-    })();
-    return () => { alive = false; };
-  }, [name, file, account]);
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.get(`/api/bots/${encodeURIComponent(name)}/logs?lines=2000`);
+      const all: string[] = data.lines || [];
+      // Log lines are `[TAG] account=<account> group_name=…` — match on the account token.
+      setLines(all.filter((l) => l.includes(`account=${account} `)));
+      setError(false);
+    } catch {
+      setError(true);
+    }
+    setLoading(false);
+  }, [name, account]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const parsed = (lines || []).map(parseLogLine);
+  const counts = parsed.reduce<Record<string, number>>((acc, p) => {
+    for (const f of LOG_FILTERS) {
+      if (f.key === "all" || f.tags.includes(p.tag)) acc[f.key] = (acc[f.key] || 0) + 1;
+    }
+    return acc;
+  }, {});
+
+  const activeTags = LOG_FILTERS.find((f) => f.key === filter)?.tags || [];
+  const q = query.trim().toLowerCase();
+  const rows = parsed.filter((p) => {
+    if (activeTags.length && !activeTags.includes(p.tag)) return false;
+    if (!q) return true;
+    return (
+      p.group.toLowerCase().includes(q) ||
+      p.groupId.toLowerCase().includes(q) ||
+      p.extra.toLowerCase().includes(q) ||
+      p.time.includes(q)
+    );
+  }).reverse();
 
   return (
-    <Modal open onClose={onClose} title={`Logs: ${file}`} size="lg">
-      {error ? (
-        <p className="text-[13px] text-hq-danger py-8 text-center">Could not load logs. Check backend logs.</p>
-      ) : lines === null ? (
-        <div className="flex items-center gap-2 py-10 justify-center text-hq-muted text-[13px]"><Loader2 className="h-5 w-5 animate-spin" /> Loading logs…</div>
-      ) : lines.length === 0 ? (
-        <p className="text-[13px] text-hq-muted py-10 text-center">No log activity for this session yet.</p>
-      ) : (
-        <div className="max-h-[60vh] overflow-y-auto rounded-[12px] bg-hq-bg border border-hq-border p-3 space-y-0.5 font-mono text-[11px]">
-          {lines.slice(-500).reverse().map((l, i) => (
-            <div key={i} className={`whitespace-pre-wrap break-all ${l.includes("[POST_FAILURE]") ? "text-hq-danger" : l.includes("[FLOOD_WAIT]") ? "text-hq-warning" : l.includes("[POST_SUCCESS]") ? "text-hq-sub" : "text-hq-muted"}`}>{l}</div>
+    <Modal open onClose={onClose} title={`Session Logs · ${account}`} size="xl">
+      {/* Toolbar: search + status filters + refresh */}
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <div className="relative flex-1 min-w-[180px]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-hq-muted" />
+          <input
+            className="w-full rounded-[12px] border border-hq-border bg-hq-bg pl-9 pr-3 py-2 text-[13px] text-hq-text placeholder:text-hq-muted focus:outline-none focus:border-hq-accent/60"
+            placeholder="Search group, ID, reason, or time…" value={query} onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+        <div className="flex items-center rounded-[12px] border border-hq-border bg-hq-bg p-0.5">
+          {LOG_FILTERS.map((f) => (
+            <button key={f.key} onClick={() => setFilter(f.key)}
+              className={`px-2.5 py-1.5 text-[12px] font-medium rounded-[10px] transition-colors flex items-center gap-1.5 ${filter === f.key ? "bg-hq-accent text-white" : "text-hq-muted hover:text-hq-text"}`}>
+              {f.label}
+              <span className={`tabular-nums ${filter === f.key ? "opacity-80" : "opacity-60"}`}>{counts[f.key] || 0}</span>
+            </button>
           ))}
         </div>
+        <HqBtn tone="ghost" onClick={load} loading={loading} icon={RefreshCw}>Refresh</HqBtn>
+      </div>
+
+      {/* Body */}
+      {error ? (
+        <p className="text-[13px] text-hq-danger py-10 text-center">Could not load logs. Check backend logs.</p>
+      ) : lines === null ? (
+        <div className="flex items-center gap-2 py-14 justify-center text-hq-muted text-[13px]"><Loader2 className="h-5 w-5 animate-spin" /> Loading logs…</div>
+      ) : parsed.length === 0 ? (
+        <p className="text-[13px] text-hq-muted py-14 text-center">No log activity for this session yet.</p>
+      ) : rows.length === 0 ? (
+        <p className="text-[13px] text-hq-muted py-14 text-center">No lines match your search / filter.</p>
+      ) : (
+        <div className="max-h-[62vh] overflow-y-auto rounded-[12px] bg-hq-bg border border-hq-border divide-y divide-hq-border/40">
+          {rows.map((p, i) => {
+            const meta = LOG_TAG_META[p.tag];
+            return (
+              <div key={i} className="flex items-start gap-3 px-3 py-2 hover:bg-white/[0.03] transition-colors">
+                <span className="text-[11px] text-hq-muted font-mono tabular-nums shrink-0 pt-0.5" title={`${p.date} ${p.time}`}>{p.time || "—"}</span>
+                <span className="inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded-md text-[10px] font-semibold shrink-0 w-[62px] justify-center"
+                  style={{ color: meta.color, backgroundColor: `${meta.color}1f` }}>
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: meta.color }} />
+                  {meta.label}
+                </span>
+                <div className="min-w-0 flex-1">
+                  {p.group || p.groupId ? (
+                    <div className="text-[12px] text-hq-text truncate">
+                      {p.group || "Unknown group"}
+                      {p.groupId && <span className="text-hq-muted font-mono ml-1.5">{p.groupId}</span>}
+                    </div>
+                  ) : (
+                    <div className="text-[12px] text-hq-sub font-mono break-all">{p.raw}</div>
+                  )}
+                  {p.extra && (
+                    <div className="text-[11px] mt-0.5 break-words" style={{ color: p.tag === "POST_FAILURE" ? "#F87171" : p.tag === "FLOOD_WAIT" ? "#FB923C" : "#9CA3AF" }}>
+                      {p.extraLabel === "wait" ? `Flood wait: ${p.extra}` : p.extraLabel === "reason" ? `Reason: ${p.extra}` : p.extra}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       )}
+      <p className="text-[11px] text-hq-muted mt-2.5 text-center">
+        Showing {rows.length} of {parsed.length} line{parsed.length === 1 ? "" : "s"} · newest first
+      </p>
     </Modal>
   );
 }
