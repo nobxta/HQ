@@ -306,8 +306,23 @@ async def dashboard_analytics(
     if end - start > max_span:
         start = end - max_span
 
+    # load_adbot() keys bots by bot_token, but log files are named by display name
+    # (data/logs/<name>.log). Resolve names, deduped by their sanitized filename so
+    # two configs that map to the same log aren't double-counted.
+    from code.utils import name_to_filename
     data = await wrappers.load_adbot()
-    bot_names = list((data.get("bots") or {}).keys())
+    bots = data.get("bots") or {}
+    seen: set[str] = set()
+    bot_names: list[str] = []
+    for cfg in bots.values():
+        nm = (cfg.get("name") or "").strip()
+        if not nm:
+            continue
+        key = name_to_filename(nm)
+        if key in seen:
+            continue
+        seen.add(key)
+        bot_names.append(nm)
     return await asyncio.to_thread(compute_range_analytics, bot_names, start, end)
 
 
