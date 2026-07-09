@@ -449,11 +449,11 @@ const PLAN_META: Record<string, { reach: string; reachVal: number; posts: string
 };
 
 const FAQS = [
-  { q: "Do I need my own Telegram accounts?", a: "No. We provision and maintain every account, proxy, and session. You only write the ad." },
-  { q: "How quickly can a campaign start?", a: "Under two minutes after payment confirms. Plans activate automatically — no approval queue." },
-  { q: "What happens if an account gets limited?", a: "A healthy replacement takes over within minutes, automatically. Your plan includes free replacements." },
-  { q: "Can I choose specific groups?", a: "Yes. Filter by niche, language, and member count — or hand-pick groups one by one." },
-  { q: "How is delivery tracked?", a: "Every post is logged the moment it lands, with per-group status in your dashboard. What you saw in the demo above is the real interface." },
+  { q: "Do I need my own Telegram accounts?", a: "No. HQAdz provisions and maintains every account, proxy, and Telegram session. You only write the ad." },
+  { q: "How quickly can a campaign start?", a: "Under two minutes after payment confirms via crypto payments. Plans activate automatically on our Telegram AdBot platform — no approval queue." },
+  { q: "What happens if an account gets limited?", a: "A healthy replacement takes over within minutes, automatically. Your plan includes free replacements and automatic flood wait handling for account health." },
+  { q: "Can I choose specific groups?", a: "Yes. Filter by niche, language, and member count — or hand-pick groups one by one directly from the dashboard control." },
+  { q: "How is delivery tracked?", a: "Every post is logged the moment it lands, with per-group posting logs in your dashboard. What you saw in the demo above is the real interface." },
 ];
 
 export default function LandingPage() {
@@ -531,6 +531,37 @@ export default function LandingPage() {
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-[#8b8b93] antialiased font-body">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify({
+            "@context": "https://schema.org",
+            "@type": "SoftwareApplication",
+            "name": "HQAdz",
+            "applicationCategory": "BusinessApplication",
+            "operatingSystem": "Web",
+            "url": "https://hqadz.io",
+            "description": "HQAdz.io is a Telegram AdBot SaaS platform for managing automated Telegram ad posting, Telegram sessions, campaign logs, account health, and crypto payments from one dashboard."
+          })
+        }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify({
+            "@context": "https://schema.org",
+            "@type": "FAQPage",
+            "mainEntity": FAQS.map(faq => ({
+              "@type": "Question",
+              "name": faq.q,
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": faq.a
+              }
+            }))
+          })
+        }}
+      />
 
       {/* ── Nav ── */}
       <nav className={`fixed top-0 inset-x-0 z-50 transition-all duration-400 ${
@@ -584,11 +615,11 @@ export default function LandingPage() {
           <div className="grid lg:grid-cols-[1fr_440px] gap-12 lg:gap-14 items-center">
             <div>
               <h1 className={`text-[42px] sm:text-[52px] md:text-[60px] font-semibold text-white leading-[1.04] tracking-[-0.03em] ${reveal(hero.visible).className}`}>
-                Post once.<br />
-                Reach <span style={{ color: TG }}>thousands</span> of groups.
+                HQAdz.io Telegram<br />
+                <span style={{ color: TG }}>AdBot Platform</span>
               </h1>
               <p className={`mt-6 text-[15px] md:text-base text-[#8b8b93] max-w-sm leading-relaxed ${reveal(hero.visible, 120).className}`} style={reveal(hero.visible, 120).style}>
-                Your ad, delivered to Telegram groups around the clock. No accounts to manage. No manual posting.
+                The ultimate Telegram advertising bot for automation. We handle session management, posting logs, account health, flood wait handling, and crypto payments. 
               </p>
               <div className={`mt-8 flex items-center gap-4 ${reveal(hero.visible, 220).className}`} style={reveal(hero.visible, 220).style}>
                 <Link href="/user/login" className="inline-flex items-center gap-2 text-[14px] font-medium text-white px-5 py-2.5 rounded-md transition-all duration-150 hover:opacity-90 hover:translate-y-[-1px]" style={{ background: TG }}>
