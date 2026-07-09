@@ -526,6 +526,12 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
         # parent order and would otherwise fail to extend after a real payment.
         renew_token = (o.get("bot_token") or "").strip() or (parent.get("bot_token", "") if parent else "")
         if renew_token and extend_valid_till_for_bot(renew_token, o.get("duration_days", 0), o.get("order_id", "")):
+            # Renewals have no bot-creation step, but the state machine still requires
+            # payment_waiting → paid → completed. Jumping straight to completed was rejected,
+            # leaving the order stuck in payment_waiting (UI polls forever) even though the bot
+            # was already extended. extend_valid_till_for_bot is idempotent by order_id, so a
+            # re-poll before this completes cannot double-extend.
+            update_order_status(order_id, "paid", paid_at=now)
             update_order_status(order_id, "completed", paid_at=now)
             if user_id:
                 try:
@@ -958,6 +964,15 @@ def extend_valid_till_for_bot(bot_token: str, duration_days: int, order_id: str 
     cfg = load_user_data(name)
     if not cfg:
         return False
+    # Idempotency: if this renewal order was already applied, do NOT extend again. The payment
+    # poller re-calls apply_confirmed_payment every cycle while the order stays payment_waiting,
+    # so without this guard a stuck renewal would add duration_days on every poll. Match by
+    # order_id in the renewal history; return True (already applied) so the caller marks it done.
+    if order_id:
+        _renewals = list((cfg.get("history") or {}).get("renewals") or []) + list(cfg.get("renewal_history") or [])
+        if any(str((e or {}).get("order_id") or "") == str(order_id) for e in _renewals):
+            logger.info("Renewal order %s already applied to bot — skipping duplicate extend", order_id)
+            return True
     vt = (cfg.get("valid_till") or "").strip()
     if not vt:
         return False

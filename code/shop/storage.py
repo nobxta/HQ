@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 ORDER_STATUS_TRANSITIONS: dict[str, set[str]] = {
     "payment_waiting": {"confirming", "paid", "cancelled", "expired"},
     "confirming": {"paid", "cancelled", "expired"},
-    "paid": {"creating", "pending_creation", "cancelled"},
+    "paid": {"creating", "pending_creation", "cancelled", "completed"},  # completed: renewals finish without a bot-creation step
     "pending_creation": {"creating", "cancelled"},
     "creating": {"completed", "failed", "pending_creation"},  # pending_creation for stale recovery (>5 min)
     "completed": set(),  # terminal
