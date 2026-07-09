@@ -85,9 +85,20 @@ def _parse_events(path: Path) -> list[tuple[float, bool]]:
 
 
 def compute_analytics(bot_name: str, range_key: str) -> dict:
-    """Build a bucketed series for ``range_key`` plus rolling-window summary counters."""
-    bucket_seconds, count = RANGE_CONFIG.get(range_key, RANGE_CONFIG[DEFAULT_RANGE])
+    """Build a bucketed series for ``range_key`` plus rolling-window summary counters.
+
+    ``range_key`` may also be ``lifetime``: the bucket size is then picked from the
+    span between the first logged event and now (via ``_pick_bucket``).
+    """
     now = time.time()
+    if range_key == "lifetime":
+        path = _resolve_log_path(bot_name)
+        events = _parse_events(path) if path is not None else []
+        first_ts = min((ts for ts, _ in events), default=now)
+        bucket_seconds = _pick_bucket(max(now - first_ts, 3600))
+        count = int(now // bucket_seconds) - int(first_ts // bucket_seconds) + 1
+    else:
+        bucket_seconds, count = RANGE_CONFIG.get(range_key, RANGE_CONFIG[DEFAULT_RANGE])
     start_index = int(now // bucket_seconds) - (count - 1)
     range_start_ts = start_index * bucket_seconds
 
@@ -111,7 +122,7 @@ def compute_analytics(bot_name: str, range_key: str) -> dict:
                     summary[k]["sent" if ok else "failed"] += 1
 
     return {
-        "range": range_key if range_key in RANGE_CONFIG else DEFAULT_RANGE,
+        "range": range_key if (range_key in RANGE_CONFIG or range_key == "lifetime") else DEFAULT_RANGE,
         "bucket_seconds": bucket_seconds,
         "points": points,
         "range_sent": range_sent,

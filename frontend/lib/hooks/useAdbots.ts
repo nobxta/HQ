@@ -65,6 +65,41 @@ export function useSessionsOverview(name: string, range: string) {
   );
 }
 
+export type AnalyticsRange = "24h" | "7d" | "30d" | "lifetime";
+
+export interface BotAnalytics {
+  range: string;
+  bucket_seconds: number;
+  points: Array<{ ts: number; sent: number; failed: number }>;
+  range_sent: number;
+  range_failed: number;
+  summary: Record<string, { sent: number; failed: number }>;
+  generated_at: number;
+}
+
+export function useAdbotAnalytics(name: string, range: AnalyticsRange) {
+  return useSWR<BotAnalytics | null>(
+    name ? `/api/bots/${encodeURIComponent(name)}/analytics?range=${range}` : null,
+    silentFetcher,
+    { refreshInterval: 15000, shouldRetryOnError: false, keepPreviousData: true }
+  );
+}
+
+export interface BotFailureReasons {
+  total: number;
+  range: string;
+  reasons: Array<{ key: string; label: string; count: number; sessions: string[] }>;
+  generated_at: number;
+}
+
+export function useAdbotFailureReasons(name: string, range: AnalyticsRange) {
+  return useSWR<BotFailureReasons | null>(
+    name ? `/api/bots/${encodeURIComponent(name)}/failure-reasons?range=${range}` : null,
+    silentFetcher,
+    { refreshInterval: 30000, shouldRetryOnError: false, keepPreviousData: true }
+  );
+}
+
 export function useAdbotLogs(name: string, lines = 100) {
   return useSWR<{ lines: string[]; total_lines: number }>(
     name ? `/api/bots/${name}/logs?lines=${lines}` : null, silentFetcher, {

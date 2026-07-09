@@ -2,7 +2,14 @@
 import { useState, useRef, useEffect, useCallback, forwardRef, type ReactNode, type InputHTMLAttributes } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { getSession } from "next-auth/react";
-import { useAdbot, useAdbotStats, useAdbotLogs, useSessionsOverview } from "@/lib/hooks/useAdbots";
+import { useAdbot, useAdbotStats, useAdbotLogs, useSessionsOverview, useAdbotAnalytics, useAdbotFailureReasons, type AnalyticsRange } from "@/lib/hooks/useAdbots";
+import ChartCard from "@/components/charts/ChartCard";
+import TimeRangeTabs from "@/components/charts/TimeRangeTabs";
+import PostingActivityChart from "@/components/charts/PostingActivityChart";
+import SessionPerformanceChart, { maskAccount, type SessionPerfRow } from "@/components/charts/SessionPerformanceChart";
+import DeliveryBreakdownCard from "@/components/charts/DeliveryBreakdownCard";
+import FailureReasonsChart from "@/components/charts/FailureReasonsChart";
+import CycleTimingCard from "@/components/charts/CycleTimingCard";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
@@ -23,7 +30,6 @@ import {
   Power, Send, Upload, Filter, MoreVertical, Wifi, Check, AlertOctagon,
   AlertTriangle, Folder,
 } from "lucide-react";
-import { ResponsiveContainer, BarChart, Bar, XAxis, Tooltip, PieChart, Pie, Cell } from "recharts";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
 import { formatDate, formatDateTime, timeAgo, formatUSD, ddmmyyyyToIso, isoToDdmmyyyy } from "@/lib/utils";
@@ -382,18 +388,6 @@ function StatTile({ label, value, sub, icon: Icon, tone = "accent" }: {
   );
 }
 
-function LegendRow({ color, label, value }: { color: string; label: string; value: string | number }) {
-  return (
-    <div className="flex items-center gap-2.5">
-      <span className="w-2.5 h-2.5 rounded-[4px]" style={{ background: color }} />
-      <div className="min-w-0">
-        <p className="text-[11px] text-hq-muted leading-tight">{label}</p>
-        <p className="text-[15px] font-semibold text-hq-text tabular-nums leading-tight">{value}</p>
-      </div>
-    </div>
-  );
-}
-
 /* ── Missing-value formatter: never render raw undefined/null/empty ── */
 function fmt(v: any, fallback = "Not set"): string {
   if (v === undefined || v === null) return fallback;
@@ -440,16 +434,6 @@ function HealthChip({ label, value, tone = "muted", pulse = false }: {
       <span className="text-hq-muted">{label}</span>
       <span className="font-medium" style={{ color: tone === "muted" ? "#98A2B3" : c }}>{value}</span>
     </span>
-  );
-}
-
-/* Thin health bar */
-function HealthBar({ pct }: { pct: number | null }) {
-  const col = pct === null ? "#667085" : pct >= 80 ? "#22C55E" : pct >= 50 ? "#F59E0B" : "#EF4444";
-  return (
-    <div className="h-1.5 w-full rounded-full bg-hq-bg overflow-hidden">
-      <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct ?? 0}%`, background: col }} />
-    </div>
   );
 }
 
@@ -519,19 +503,25 @@ function ActionMenu({ items }: { items: MenuItem[] }) {
 }
 
 /* ─── OVERVIEW (read-only) ─── */
+const RANGE_LABELS: Record<AnalyticsRange, string> = {
+  "24h": "Last 24 hours", "7d": "Last 7 days", "30d": "Last 30 days", lifetime: "Lifetime",
+};
+function rangeLabel(r: AnalyticsRange): string { return RANGE_LABELS[r]; }
+
 function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavigate: (tab: string) => void }) {
   const { data: stats } = useAdbotStats(name);
   const { data: overview } = useSessionsOverview(name, "all");
+  const [range, setRange] = useState<AnalyticsRange>("7d");
+  const { data: analytics, isLoading: aLoading } = useAdbotAnalytics(name, range);
+  const { data: failures, isLoading: fLoading } = useAdbotFailureReasons(name, range);
 
   const sent = stats?.lifetime_sent || 0;
   const failed = stats?.lifetime_failed || 0;
   const totalPosts = sent + failed;
   const successRate = totalPosts ? Math.round((sent / totalPosts) * 100) : null;
-  const failureRate = totalPosts ? Math.round((failed / totalPosts) * 100) : null;
   const cycles = stats?.cycles || 0;
 
   const summary = overview?.summary;
-  const previewSessions = (overview?.sessions || []).slice(0, 5);
   const activeCount = summary?.active ?? bot.sessions_count ?? 0;
   const deadCount = summary?.dead ?? 0;
   const disabledCount = summary?.disabled ?? 0;
@@ -540,16 +530,25 @@ function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavi
   const lastCycleTs = stats?.last_cycle_ts || 0;
 
   const sessionStats: Record<string, any> = stats?.session_stats || {};
-  const perfData = Object.entries(sessionStats).map(([s, v]) => ({
-    name: s.replace(".session", "").slice(-4),
-    sent: v.lifetime_sent || v.sent || 0,
-    failed: v.lifetime_failed || v.failed || 0,
-  })).slice(0, 12);
 
-  const donutData = totalPosts > 0
-    ? [{ name: "Sent", value: sent }, { name: "Failed", value: failed }]
-    : [{ name: "None", value: 1 }];
-  const donutColors = totalPosts > 0 ? ["#7C5CFF", "#EF4444"] : ["#242A38"];
+  // Session comparison rows — sorted by volume so the busiest accounts lead.
+  const perfRows: SessionPerfRow[] = (overview?.sessions || [])
+    .map((s) => ({
+      file: s.file,
+      displayName: s.display_name || `Account ${s.index}`,
+      maskedId: maskAccount(s.phone_from_file || String(s.telegram_user_id || "")),
+      status: s.status,
+      sent: s.stats.sent,
+      failed: s.stats.failed,
+      successRate: s.stats.success_rate,
+    }))
+    .sort((a, b) => (b.sent + b.failed) - (a.sent + a.failed));
+
+  // Mean cycle duration across sessions that have one recorded.
+  const durations = Object.values(sessionStats)
+    .map((v: any) => v.avg_cycle_duration_sec || 0)
+    .filter((d: number) => d > 0);
+  const avgCycleDuration = durations.length ? durations.reduce((a, b) => a + b, 0) / durations.length : null;
 
   const botToken = bot.bot_username ? "Connected" : "Not configured";
   const details: [string, ReactNode][] = [
@@ -604,103 +603,30 @@ function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavi
         <HealthChip label="Last activity" value={lastCycleTs ? relTime(lastCycleTs) : "None"} tone="muted" />
       </div>
 
-      {/* Performance + Delivery */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3.5">
-        <HqCard className="p-5 lg:col-span-2">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h3 className="text-[15px] font-semibold text-hq-text">Posting performance</h3>
-              <p className="text-[12px] text-hq-muted mt-0.5">Sent vs failed per session (lifetime)</p>
-            </div>
-          </div>
-          {perfData.length === 0 ? (
-            <div className="h-[220px] flex items-center justify-center"><EmptyState icon={BarChart3} title="No posting activity yet" hint="Charts appear once the bot completes a cycle." /></div>
-          ) : (
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={perfData} barCategoryGap="28%">
-                <XAxis dataKey="name" tick={{ fill: "#667085", fontSize: 11 }} axisLine={false} tickLine={false} />
-                <Tooltip
-                  cursor={{ fill: "rgba(255,255,255,0.03)" }}
-                  contentStyle={{ background: "#151925", border: "1px solid #242A38", borderRadius: 12, color: "#F4F7FB", fontSize: 12 }}
-                  labelStyle={{ color: "#98A2B3" }}
-                />
-                <Bar dataKey="sent" name="Sent" radius={[5, 5, 0, 0]} fill="#7C5CFF" maxBarSize={36} />
-                <Bar dataKey="failed" name="Failed" radius={[5, 5, 0, 0]} fill="#EF4444" maxBarSize={36} />
-              </BarChart>
-            </ResponsiveContainer>
-          )}
-        </HqCard>
+      {/* Posting activity — bucketed sent/failed series parsed from the real log */}
+      <ChartCard
+        title="Posting activity"
+        subtitle="Sent, failed and success rate over the selected range"
+        right={<TimeRangeTabs value={range} onChange={setRange} />}
+      >
+        <PostingActivityChart analytics={analytics} loading={aLoading} />
+      </ChartCard>
 
-        <HqCard className="p-5">
-          <h3 className="text-[15px] font-semibold text-hq-text mb-1">Delivery</h3>
-          <p className="text-[12px] text-hq-muted">Sent vs failed</p>
-          <div className="relative h-[160px] mt-2">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={donutData} dataKey="value" innerRadius={56} outerRadius={78} paddingAngle={totalPosts > 0 ? 3 : 0} stroke="none">
-                  {donutData.map((_, i) => <Cell key={i} fill={donutColors[i]} />)}
-                </Pie>
-              </PieChart>
-            </ResponsiveContainer>
-            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-              <span className="text-[24px] font-semibold text-hq-text leading-none tabular-nums">{successRate === null ? "—" : `${successRate}%`}</span>
-              <span className="text-[11px] text-hq-muted mt-1">Success</span>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3 mt-3">
-            <LegendRow color="#7C5CFF" label="Sent" value={sent.toLocaleString()} />
-            <LegendRow color="#EF4444" label="Failed" value={failed.toLocaleString()} />
-            <LegendRow color="#22C55E" label="Success rate" value={successRate === null ? "—" : `${successRate}%`} />
-            <LegendRow color="#F59E0B" label="Failure rate" value={failureRate === null ? "—" : `${failureRate}%`} />
-          </div>
-        </HqCard>
+      {/* Analytics grid — session comparison left, breakdown/failures/timing right */}
+      <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-5 lg:grid-rows-[auto_auto_auto]">
+        <ChartCard title="Delivery breakdown" subtitle={rangeLabel(range)} className="lg:col-start-4 lg:col-span-2 lg:row-start-1">
+          <DeliveryBreakdownCard sent={analytics?.range_sent || 0} failed={analytics?.range_failed || 0} loading={aLoading} />
+        </ChartCard>
+        <ChartCard title="Session performance" subtitle="Messages sent and failed by account (lifetime)" className="lg:col-start-1 lg:col-span-3 lg:row-start-1 lg:row-span-3">
+          <SessionPerformanceChart rows={perfRows} loading={!overview} onViewAll={() => onNavigate("sessions")} totalCount={summary?.total ?? perfRows.length} />
+        </ChartCard>
+        <ChartCard title="Failure reasons" subtitle={rangeLabel(range)} className="lg:col-start-4 lg:col-span-2 lg:row-start-2">
+          <FailureReasonsChart data={failures} loading={fLoading} />
+        </ChartCard>
+        <ChartCard title="Cycle timing" subtitle="Posting cadence" className="lg:col-start-4 lg:col-span-2 lg:row-start-3">
+          <CycleTimingCard lastCycleTs={stats?.last_cycle_ts || 0} cycleSec={bot.cycle || 0} gapSec={bot.gap || 0} avgDurationSec={avgCycleDuration} running={!!bot.running} />
+        </ChartCard>
       </div>
-
-      {/* Session health preview */}
-      <HqCard className="p-5">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h3 className="text-[15px] font-semibold text-hq-text">Session health</h3>
-            <p className="text-[12px] text-hq-muted mt-0.5">Top {previewSessions.length || 0} of {summary?.total ?? 0} accounts</p>
-          </div>
-          <HqBtn tone="ghost" onClick={() => onNavigate("sessions")} icon={ArrowRightLeft} className="!py-1.5 !text-[12px]">View all</HqBtn>
-        </div>
-        {previewSessions.length === 0 ? (
-          <EmptyState icon={Smartphone} title="No sessions assigned" hint="Assign accounts from the Sessions tab." />
-        ) : (
-          <div className="overflow-x-auto -mx-1">
-            <table className="w-full text-[13px] min-w-[560px]">
-              <thead>
-                <tr className="text-left text-[11px] uppercase tracking-wide text-hq-muted border-b border-hq-border">
-                  {["Session", "Status", "Sent", "Failed", "Success", "Last used"].map((h) => (
-                    <th key={h} className="px-2 py-2 font-medium whitespace-nowrap">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-hq-border/50">
-                {previewSessions.map((s) => (
-                  <tr key={s.file} className="hover:bg-hq-hover/50 transition-colors">
-                    <td className="px-2 py-2.5">
-                      <div className="text-hq-text font-medium truncate max-w-[160px]">{s.display_name || `Account ${s.index}`}</div>
-                      <div className="text-[11px] text-hq-muted font-mono truncate max-w-[160px]">{s.phone_from_file || s.telegram_user_id || s.file}</div>
-                    </td>
-                    <td className="px-2 py-2.5"><SessionStatusChip status={s.status} /></td>
-                    <td className="px-2 py-2.5 tabular-nums text-hq-success">{s.stats.sent.toLocaleString()}</td>
-                    <td className="px-2 py-2.5 tabular-nums" style={{ color: s.stats.failed > 0 ? "#EF4444" : undefined }}>{s.stats.failed.toLocaleString()}</td>
-                    <td className="px-2 py-2.5 w-32">
-                      <div className="flex items-center gap-2">
-                        <HealthBar pct={s.stats.success_rate} />
-                        <span className="text-[12px] tabular-nums w-9 text-right text-hq-sub">{s.stats.success_rate === null ? "—" : `${s.stats.success_rate}%`}</span>
-                      </div>
-                    </td>
-                    <td className="px-2 py-2.5 text-[12px] text-hq-muted whitespace-nowrap">{relTime(s.last_active_at)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </HqCard>
 
       {/* Details + System state */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3.5">

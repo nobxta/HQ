@@ -540,6 +540,36 @@ async def get_bot_stats(name: str):
     return serialize_stats(stats)
 
 
+# Ranges accepted by the analytics endpoints; "lifetime" auto-picks a bucket size.
+_ANALYTICS_RANGES = {"1h", "6h", "24h", "7d", "30d", "lifetime"}
+_RANGE_WINDOW_SEC = {"1h": 3600, "6h": 6 * 3600, "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400}
+
+
+@router.get("/{name}/analytics")
+async def get_bot_analytics(name: str, range: str = Query("7d")):
+    """Time-bucketed sent/failed series parsed from the durable log file."""
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+    if range not in _ANALYTICS_RANGES:
+        range = "7d"
+    from api.services.log_stats import compute_analytics
+    return await asyncio.to_thread(compute_analytics, name, range)
+
+
+@router.get("/{name}/failure-reasons")
+async def get_bot_failure_reasons(name: str, range: str = Query("7d")):
+    """Categorized POST_FAILURE / FLOOD_WAIT tallies for this bot within the range."""
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+    since = time.time() - _RANGE_WINDOW_SEC[range] if range in _RANGE_WINDOW_SEC else 0.0
+    from api.services.log_stats import compute_failure_reasons
+    result = await asyncio.to_thread(compute_failure_reasons, [name], since)
+    result["range"] = range if range in _ANALYTICS_RANGES else "lifetime"
+    return result
+
+
 @router.get("/{name}/logs")
 async def get_bot_logs(name: str, lines: int = Query(100, ge=1, le=5000)):
     from code.config import DATA_LOGS_DIR
