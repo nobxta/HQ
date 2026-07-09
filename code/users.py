@@ -3101,6 +3101,7 @@ def _build_worker_config_snapshot(
         "groups_dir": str(config.GROUPS_DIR),
         "message_text": cfg.get("message_text", "Hello"),
         "post_links": _get_post_links_list(cfg),
+        "message_mode": _get_message_mode(cfg),
         "mode": get_plan_mode(cfg),
         "log_group": cfg.get("log_group") or "",
         "log_file": log_file or "",

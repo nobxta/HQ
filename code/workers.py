@@ -94,9 +94,30 @@ async def worker_main_async(
     ban_snapshot = dict(config_snapshot.get("ban_error_count_by_session") or {})
     local_ban_set: set[tuple[str, str]] = set()
 
+    # Content fields the user can edit while the bot runs (bot UI or web portal). These are
+    # re-read from disk each cycle so edits apply from the next cycle without a worker restart;
+    # the spawn-time snapshot is otherwise frozen. Everything else stays snapshot-driven.
+    _bot_name = config_snapshot.get("name") or ""
+    _live_config_keys = ("message_text", "message_mode", "cycle", "gap", "group_file", "log_group")
+
     def get_config() -> dict:
         merged = dict(config_snapshot)
         merged["last_cycle_time"] = {**(config_snapshot.get("last_cycle_time") or {}), **local_last_cycle}
+        # Refresh live-editable content (post links / message / mode) from disk so a changed post
+        # link is picked up on the next cycle without restarting the bot. Fail-open: on any read
+        # error, keep the snapshot values.
+        if _bot_name:
+            try:
+                from .utils import load_user_data
+                from .users import _get_post_links_list
+                disk = load_user_data(_bot_name)
+                if disk:
+                    merged["post_links"] = _get_post_links_list(disk)
+                    for k in _live_config_keys:
+                        if k in disk:
+                            merged[k] = disk[k]
+            except Exception:
+                pass
         if local_config_patch:
             for k, v in local_config_patch.items():
                 if v is not None:
