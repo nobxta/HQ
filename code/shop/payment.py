@@ -12,6 +12,31 @@ from .payment_constants import SUPPORTED_PAY_CURRENCIES, internal_to_provider
 
 logger = logging.getLogger(__name__)
 
+# ── NOWPayments status semantics — single source of truth for every consumer ──────────
+# Provider lifecycle (per NOWPayments docs):
+#   waiting → confirming → confirmed → sending → finished          (success path)
+#   partially_paid                                                 (underpaid)
+#   failed / refunded / expired                                    (terminal negative)
+# Product rule: DELIVER as soon as the blockchain CONFIRMS the payment — do not wait for the
+# payout to reach "finished". So confirmed, sending, and finished all mean "provision now".
+# ("sent" is kept as a legacy alias some provider payloads used.) get_payment_details() also
+# normalises finished/sent/sending → "confirmed", but these helpers accept RAW provider status
+# too (e.g. the IPN webhook body) so callers never need to know which form they hold.
+PAYMENT_SUCCESS_STATUSES = frozenset({"confirmed", "sending", "sent", "finished"})
+PAYMENT_FAILED_STATUSES = frozenset({"failed", "refunded", "expired"})
+
+
+def is_payment_success(status: object) -> bool:
+    """True once funds are confirmed on-chain — safe to provision/deliver (renewal, AdBot
+    creation, session replacement, anything). Covers confirmed/sending/finished (+legacy sent)."""
+    return str(status or "").strip().lower() in PAYMENT_SUCCESS_STATUSES
+
+
+def is_payment_failed(status: object) -> bool:
+    """True for terminal-negative provider statuses (failed / refunded / expired)."""
+    return str(status or "").strip().lower() in PAYMENT_FAILED_STATUSES
+
+
 # #region agent log
 DEBUG_LOG_PATH = Path(__file__).resolve().parent.parent.parent / ".cursor" / "debug.log"
 def _debug_log(message: str, data: dict, hypothesis_id: str | None = None, location: str = "") -> None:
@@ -314,7 +339,9 @@ def get_payment_details(payment_id: str) -> dict[str, Any] | None:
         return None
 
     status = (out.get("payment_status") or out.get("status") or "waiting").lower()
-    if status in ("finished", "sent"):
+    # Collapse every on-chain-confirmed state to "confirmed" so downstream consumers see one
+    # canonical success value (delivery happens at confirmation, not at payout "finished").
+    if status in ("finished", "sent", "sending"):
         status = "confirmed"
     if status in ("waiting_for_confirmations",):
         status = "waiting"

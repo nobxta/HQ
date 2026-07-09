@@ -701,6 +701,8 @@ async def portal_create_renewal(bot_name: str, telegram_id: int = Query(...), bo
         from datetime import datetime
         now = datetime.utcnow().isoformat() + "Z"
         if token and extend_valid_till_for_bot(token, body.duration_days, rev_order.get("order_id", "")):
+            # Respect the order state machine: payment_waiting → paid → completed.
+            update_order_status(rev_order["order_id"], "paid", paid_at=now)
             update_order_status(rev_order["order_id"], "completed", paid_at=now)
             return {
                 "status": "completed",
@@ -1637,7 +1639,7 @@ async def portal_replacement_payment_status(
     await _get_user_bot(telegram_id, bot_name)
 
     from code.replacement import load_replacement_queue, mark_replacement_paid, _queue_lock
-    from code.shop.payment import get_payment_details
+    from code.shop.payment import get_payment_details, is_payment_success
     from code.shop.explorer import build_explorer_link, normalize_network_for_explorer
 
     queue = load_replacement_queue()
@@ -1690,7 +1692,7 @@ async def portal_replacement_payment_status(
         net_key = normalize_network_for_explorer(pay_currency, network)
         explorer_link = build_explorer_link(net_key, tx_hash)
 
-    if pay_status in ("confirmed", "finished", "sent", "sending"):
+    if is_payment_success(pay_status):
         # Mark as paid and transition to ready
         mark_replacement_paid(entry_id, payment_id=payment_id)
         add_portal_notification(
@@ -2457,6 +2459,7 @@ async def nowpayments_ipn(request: Request):
     logger.info("[IPN] payment_id=%s status=%s", payment_id, pstatus)
 
     from code.shop.storage import get_order_by_payment_id, update_order, update_order_status
+    from code.shop.payment import is_payment_success, is_payment_failed
 
     # Underpayment: record what was received so the UI can show "paid X, send Y more".
     if pstatus == "partially_paid":
@@ -2476,7 +2479,7 @@ async def nowpayments_ipn(request: Request):
         return {"ok": True}
 
     # Invoice expired / failed: stop the order and release the reserved bot token.
-    if pstatus in ("expired", "failed", "refunded"):
+    if is_payment_failed(pstatus):
         order = get_order_by_payment_id(payment_id)
         if order and order.get("status") in ("payment_waiting", "confirming"):
             try:
@@ -2506,8 +2509,8 @@ async def nowpayments_ipn(request: Request):
                     logger.warning("[IPN] replacement expiry failed: %s", exc)
         return {"ok": True}
 
-    # Terminal success → confirm + provision.
-    if pstatus in ("confirmed", "finished", "sent"):
+    # Blockchain-confirmed → confirm + provision (confirmed/sending/finished, per product rule).
+    if is_payment_success(pstatus):
         details = {
             "payment_status": "confirmed",
             "amount_received": float(data.get("actually_paid") or data.get("amount_received") or 0),

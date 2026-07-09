@@ -479,12 +479,12 @@ def check_replacement_payment(entry_ids: list[str]) -> bool:
     payment_id = entries[0].get("payment_id", "")
     if not payment_id:
         return False
-    from .shop.payment import get_payment_details
+    from .shop.payment import get_payment_details, is_payment_success
     details = get_payment_details(payment_id)
     if not details:
         return False
     status = (details.get("payment_status") or "").lower()
-    if status in ("confirmed", "finished", "sending", "sent"):
+    if is_payment_success(status):
         for e in entries:
             mark_replacement_paid(e["id"], payment_id)
         return True

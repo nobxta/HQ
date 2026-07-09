@@ -858,6 +858,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             now = datetime.utcnow().isoformat() + "Z"
             parent_token = (parent.get("bot_token") or "").strip()
             if parent_token and extend_valid_till_for_bot(parent_token, duration_days, rev_order.get("order_id", "")):
+                # State machine requires payment_waiting → paid → completed (no direct jump).
+                update_order_status(rev_order["order_id"], "paid", paid_at=now)
                 update_order_status(rev_order["order_id"], "completed", paid_at=now)
                 try:
                     from ..broadcast_users import add_plan_user
@@ -932,6 +934,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             now = datetime.utcnow().isoformat() + "Z"
             parent_token = (parent.get("bot_token") or "").strip()
             if parent_token and extend_valid_till_for_bot(parent_token, duration_days, rev_order.get("order_id", "")):
+                # State machine requires payment_waiting → paid → completed (no direct jump).
+                update_order_status(rev_order["order_id"], "paid", paid_at=now)
                 update_order_status(rev_order["order_id"], "completed", paid_at=now)
                 try:
                     from ..broadcast_users import add_plan_user

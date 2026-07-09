@@ -158,7 +158,7 @@ async def sync_order(order_id: str):
     """Re-poll NOWPayments for this order right now and update it. If the provider says the
     payment is finished and we haven't processed it yet, confirm it (triggers build)."""
     from code.shop.storage import get_order, update_order, update_order_status
-    from code.shop.payment import get_payment_details
+    from code.shop.payment import get_payment_details, is_payment_success, is_payment_failed
 
     order = get_order(order_id)
     if not order:
@@ -181,7 +181,7 @@ async def sync_order(order_id: str):
     })
 
     confirmed = False
-    if pstatus in ("confirmed", "finished", "sent") and order.get("status") in ("payment_waiting", "confirming"):
+    if is_payment_success(pstatus) and order.get("status") in ("payment_waiting", "confirming"):
         from code.shop.workers import confirm_payment_for_invoice
         try:
             confirmed = await confirm_payment_for_invoice(payment_id, details)
@@ -192,7 +192,7 @@ async def sync_order(order_id: str):
             update_order_status(order_id, "confirming")
         except Exception:
             pass
-    elif pstatus in ("expired", "failed") and order.get("status") in ("payment_waiting", "confirming"):
+    elif is_payment_failed(pstatus) and order.get("status") in ("payment_waiting", "confirming"):
         try:
             update_order_status(order_id, "expired" if pstatus == "expired" else "cancelled")
             from code.shop import token_pool

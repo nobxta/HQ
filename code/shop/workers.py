@@ -64,7 +64,7 @@ from .storage import (
     temppay_get_by_invoice_id,
     append_order_from_temppay,
 )
-from .payment import get_payment_details, fetch_supported_currencies
+from .payment import get_payment_details, fetch_supported_currencies, is_payment_success, is_payment_failed
 from .explorer import (
     build_explorer_link,
     normalize_network_for_explorer,
@@ -322,7 +322,7 @@ async def _process_temppay_entry(entry: dict, now_utc: datetime) -> None:
         elif user_id:
             await notify.notify_send_to_chat(user_id, CONFIRMING_MESSAGE_DISPLAY, entities=CONFIRMING_ENTITIES, bot_token=config.SHOP_BOT_TOKEN)
         return
-    if provider_status in ("confirmed", "finished", "sent", "sending") and amount_received >= pay_amount:
+    if is_payment_success(provider_status):
         existing = get_order_by_payment_id(invoice_id)
         if existing and existing.get("status") in ("paid", "completed"):
             temppay_remove_by_invoice_id(invoice_id)
@@ -644,10 +644,10 @@ async def payment_safety_sweep() -> None:
                     continue
                 st = (d.get("payment_status") or "waiting").lower()
                 order_id = o.get("order_id", "")
-                if st in ("confirmed", "finished", "sent") and float(d.get("amount_received") or 0) >= float(o.get("pay_amount") or 0):
+                if is_payment_success(st):
                     logger.info("[SWEEP] webhook missed — confirming order %s", order_id)
                     await apply_confirmed_payment(o, d)
-                elif st in ("expired", "failed", "refunded"):
+                elif is_payment_failed(st):
                     update_order_status(order_id, "expired" if st == "expired" else "cancelled")
                     from . import token_pool as _tp
                     _tp.release_order(order_id)
@@ -673,10 +673,10 @@ async def payment_safety_sweep() -> None:
                 if not d:
                     continue
                 st = (d.get("payment_status") or "waiting").lower()
-                if st in ("confirmed", "finished", "sent"):
+                if is_payment_success(st):
                     logger.info("[SWEEP] webhook missed — confirming temppay %s", pid)
                     await confirm_payment_for_invoice(pid, d)
-                elif st in ("expired", "failed", "refunded"):
+                elif is_payment_failed(st):
                     logger.info("[SWEEP] temppay %s -> expired (provider %s)", pid, st)
                     await _expire_temppay_to_orders(entry)
                 else:
@@ -706,10 +706,10 @@ async def payment_safety_sweep() -> None:
                     if not d:
                         continue
                     st = (d.get("payment_status") or "waiting").lower()
-                    if st in ("confirmed", "finished", "sent", "sending"):
+                    if is_payment_success(st):
                         logger.info("[SWEEP] webhook missed — confirming replacement %s (payment %s)", rep.get("id"), pid)
                         await confirm_replacement_payment_by_id(pid)
-                    elif st in ("expired", "failed", "refunded"):
+                    elif is_payment_failed(st):
                         logger.info("[SWEEP] replacement invoice %s expired (provider %s) — clearing", pid, st)
                         expire_replacement_invoice_by_id(pid)
             except Exception as rep_exc:
@@ -887,9 +887,10 @@ async def payment_polling_worker() -> None:
                         update_order(order_id, {"_notified_confirming": True})
                     continue
 
-                # Paid or overpaid: amount_received >= pay_amount AND provider reports a
-                # terminal-success status (confirmed/finished/sent/sending) → proceed normally.
-                if provider_status in ("confirmed", "finished", "sent", "sending") and amount_received >= pay_amount:
+                # Blockchain-confirmed → provision now (confirmed/sending/finished). NOWPayments only
+                # reports these once the full amount is met (underpayment surfaces as partially_paid /
+                # waiting-with-partial above), so no separate amount gate is needed here.
+                if is_payment_success(provider_status):
                     await apply_confirmed_payment(o, details)
         except Exception as e:
             logger.warning("Payment polling error: %s", e)
