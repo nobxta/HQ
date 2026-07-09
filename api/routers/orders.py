@@ -25,16 +25,66 @@ def _temppay_as_order_rows() -> list[dict]:
     return rows
 
 
-async def _orders_with_temppay() -> list[dict]:
-    """orders.json plus live bot invoices, deduped by order_id/payment_id."""
+# Replacement-queue statuses → order-like display status so the payments UI can render them
+# with the same Badge/filters as real orders (money-in → "paid", still-owed → "payment_waiting").
+_REPLACEMENT_STATUS_MAP = {
+    "pending_payment": "payment_waiting",
+    "ready": "paid",
+    "awaiting_session": "paid",
+    "processing": "paid",
+    "completed": "completed",
+    "cancelled": "cancelled",
+}
+
+
+def _replacement_as_order_rows() -> list[dict]:
+    """Paid session-replacement requests live on the replacement queue (not orders.json), so
+    the payments dashboard never saw that money. Surface each PAID (non-free) entry as an
+    order-like, read-only row tagged order_type="replacement"."""
+    from code.replacement import load_replacement_queue
+    rows: list[dict] = []
+    for e in load_replacement_queue():
+        # Only entries that represent actual money (skip free replacements).
+        if e.get("free_replacement") or float(e.get("price_usd") or 0) <= 0:
+            continue
+        inv = e.get("invoice_data") or {}
+        real_name = (e.get("real_name") or e.get("session_file") or "").replace(".session", "")
+        rows.append({
+            "order_id": e.get("id", ""),
+            "user_id": e.get("owner_id"),
+            "status": _REPLACEMENT_STATUS_MAP.get(e.get("status", ""), e.get("status", "")),
+            "order_type": "replacement",
+            "source": "replacement",
+            "plan_name": "Session replacement",
+            "amount_usd": float(e.get("price_usd") or 0),
+            "bot_name": e.get("bot_name", ""),
+            "real_name": real_name,
+            "session_file": e.get("session_file", ""),
+            "payment_id": e.get("payment_id", "") or inv.get("payment_id", ""),
+            "pay_currency": inv.get("pay_currency", ""),
+            "pay_amount": inv.get("pay_amount", ""),
+            "pay_address": inv.get("pay_address", ""),
+            "invoice_expires_at": inv.get("invoice_expires_at", ""),
+            "created_at": e.get("created_at", ""),
+            "paid_at": e.get("paid_at", ""),
+            "is_replacement": True,
+        })
+    return rows
+
+
+async def _all_payment_rows() -> list[dict]:
+    """Every payment the admin should see: orders.json + live bot invoices (temppay) +
+    paid session-replacement requests. Deduped by order_id/payment_id."""
     orders = await wrappers.load_orders()
     temppay_rows = await asyncio.to_thread(_temppay_as_order_rows)
+    replacement_rows = await asyncio.to_thread(_replacement_as_order_rows)
     seen_ids = {o.get("order_id") for o in orders}
     seen_pids = {(o.get("payment_id") or "").strip() for o in orders if o.get("payment_id")}
-    return orders + [
-        t for t in temppay_rows
-        if t.get("order_id") not in seen_ids and (t.get("payment_id") or "") not in seen_pids
+    extra = [
+        r for r in (temppay_rows + replacement_rows)
+        if r.get("order_id") not in seen_ids and (r.get("payment_id") or "") not in seen_pids
     ]
+    return orders + extra
 
 
 @router.get("")
@@ -44,7 +94,7 @@ async def list_orders(
     order_type: str = Query(None),
     pagination: Pagination = Depends(),
 ):
-    orders = await _orders_with_temppay()
+    orders = await _all_payment_rows()
     results = []
     for o in orders:
         if status and o.get("status") != status:
@@ -61,7 +111,7 @@ async def list_orders(
 
 @router.get("/pending")
 async def pending_orders():
-    orders = await _orders_with_temppay()
+    orders = await _all_payment_rows()
     pending = [
         serialize_order(o) for o in orders
         if o.get("status") in ("payment_waiting", "confirming", "paid", "pending_creation", "creating")
@@ -73,7 +123,7 @@ async def pending_orders():
 @router.get("/stats")
 async def order_stats():
     """Aggregate metrics across ALL orders (incl. live bot invoices) for the payments dashboard."""
-    orders = await _orders_with_temppay()
+    orders = await _all_payment_rows()
     by_status: dict[str, int] = {}
     revenue = 0.0
     for o in orders:

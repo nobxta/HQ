@@ -108,6 +108,10 @@ def serialize_order(order: dict) -> dict:
         # Live Shop Bot invoice (still in temppay.json, not yet a real order) — admin
         # actions like sync/mark-paid/cancel don't apply until payment confirms.
         "is_temppay": bool(order.get("is_temppay")),
+        # Paid session-replacement request surfaced from the replacement queue (read-only row).
+        "is_replacement": bool(order.get("is_replacement")),
+        "real_name": order.get("real_name", ""),
+        "session_file": order.get("session_file", ""),
     }
 
 

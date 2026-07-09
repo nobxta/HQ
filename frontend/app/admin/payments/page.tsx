@@ -14,6 +14,7 @@ import { formatDateTime, formatUSD, truncate } from "@/lib/utils";
 
 interface OrderRow {
   order_id: string; user_id?: number | string; status: string; source?: string;
+  order_type?: string;
   plan_name?: string; plan_mode?: string; mode?: string; duration_days?: number;
   amount_usd?: number; base_amount_usd?: number; coupon?: string; coupon_percent?: number;
   payment_id?: string; pay_currency?: string; pay_amount?: string | number; amount_received?: number;
@@ -21,7 +22,31 @@ interface OrderRow {
   ref_name?: string; ref_email?: string; ref_username?: string;
   bot_name?: string; web_token?: string; creation_step?: string; queued?: boolean;
   created_at?: string; paid_at?: string; bot_username?: string;
-  is_temppay?: boolean;
+  is_temppay?: boolean; is_replacement?: boolean; real_name?: string; session_file?: string;
+}
+
+// Payment kind → label, accent color and how to describe the purchased item. Every payment
+// (new AdBot purchase, renewal/extension, session replacement) is classified here so the table
+// is not hard-wired to "AdBot plan" any more.
+function paymentKind(o: OrderRow): { key: string; label: string; cls: string } {
+  const t = (o.order_type || "purchase").toLowerCase();
+  if (o.is_replacement || t === "replacement")
+    return { key: "replacement", label: "Replacement", cls: "bg-purple-500/15 text-purple-300 border-purple-500/30" };
+  if (t === "renewal")
+    return { key: "renewal", label: "Renewal", cls: "bg-sky-500/15 text-sky-300 border-sky-500/30" };
+  return { key: "purchase", label: "New AdBot", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" };
+}
+
+// What the money bought — shown in the "Item" column, type-aware.
+function itemLabel(o: OrderRow): string {
+  const kind = paymentKind(o).key;
+  if (kind === "replacement") return o.real_name ? `Session · ${o.real_name}` : "Session replacement";
+  if (kind === "renewal") {
+    const dur = o.duration_days ? `${o.duration_days}d` : "";
+    return [`Renewal`, o.bot_name, dur].filter(Boolean).join(" · ");
+  }
+  const plan = o.plan_name || "AdBot";
+  return o.plan_mode ? `${plan} (${o.plan_mode})` : plan;
 }
 
 function Row({ label, value, mono = false }: { label: string; value: any; mono?: boolean }) {
@@ -36,8 +61,9 @@ function Row({ label, value, mono = false }: { label: string; value: any; mono?:
 
 export default function PaymentsPage() {
   const [statusFilter, setStatusFilter] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
   const [page, setPage] = useState(1);
-  const { data, isLoading, mutate } = useOrders(statusFilter, page);
+  const { data, isLoading, mutate } = useOrders(statusFilter, page, typeFilter);
   const { data: pending } = usePendingOrders();
   const [markPaidTarget, setMarkPaidTarget] = useState<string | null>(null);
   const [cancelTarget, setCancelTarget] = useState<string | null>(null);
@@ -63,6 +89,10 @@ export default function PaymentsPage() {
   // (low sessions / bad token), or a web order that's paid+queued (no token yet).
   const canRecreate = (o: OrderRow) =>
     o.status === "pending_creation" || (o.source === "web" && o.status === "paid" && !!o.queued);
+
+  // Rows that aren't real orders.json entries: live Shop Bot invoices and replacement-queue
+  // rows. Order actions (sync/mark-paid/cancel/recreate) don't apply to them.
+  const isReadOnly = (o: OrderRow) => !!o.is_temppay || !!o.is_replacement;
 
   const doAction = async (orderId: string, action: "mark-paid" | "cancel" | "recreate", body?: any) => {
     setActionLoading(true);
@@ -175,6 +205,28 @@ export default function PaymentsPage() {
             </button>
           ))}
         </div>
+        {/* Payment-type filter — separates new AdBot purchases, renewals, and session replacements. */}
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-dark-500 uppercase tracking-wider shrink-0">Type</span>
+          <div className="flex gap-1 rounded-lg bg-dark-800 p-0.5 overflow-x-auto">
+            {[
+              { v: "", label: "All types" },
+              { v: "purchase", label: "New AdBot" },
+              { v: "renewal", label: "Renewal" },
+              { v: "replacement", label: "Replacement" },
+            ].map((t) => (
+              <button
+                key={t.v}
+                onClick={() => { setTypeFilter(t.v); setPage(1); }}
+                className={`px-3 py-1.5 text-xs rounded-md transition-all whitespace-nowrap ${
+                  typeFilter === t.v ? "bg-accent text-white" : "text-dark-400 hover:text-dark-200"
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {isLoading ? (
@@ -185,8 +237,8 @@ export default function PaymentsPage() {
             <Thead>
               <tr>
                 <Th>Order ID</Th>
-                <Th>Payment ID</Th>
-                <Th>Plan</Th>
+                <Th>Type</Th>
+                <Th>Item</Th>
                 <Th>USD</Th>
                 <Th>Crypto</Th>
                 <Th>Status</Th>
@@ -198,11 +250,17 @@ export default function PaymentsPage() {
               {orders.length === 0 ? (
                 <Tr><Td className="text-center py-8 text-dark-500" colSpan={8}>No orders found</Td></Tr>
               ) : (
-                orders.map((o) => (
+                orders.map((o) => {
+                  const kind = paymentKind(o);
+                  return (
                   <Tr key={o.order_id} className="cursor-pointer hover:bg-dark-800/40" onClick={() => setDetail(o)}>
                     <Td className="font-mono text-xs text-accent">{truncate(o.order_id, 12)}</Td>
-                    <Td className="font-mono text-xs">{o.payment_id ? truncate(String(o.payment_id), 12) : "—"}</Td>
-                    <Td>{o.plan_name || "—"}</Td>
+                    <Td>
+                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium whitespace-nowrap ${kind.cls}`}>
+                        {kind.label}
+                      </span>
+                    </Td>
+                    <Td className="text-xs text-dark-200"><span className="block max-w-[200px] truncate" title={itemLabel(o)}>{itemLabel(o)}</span></Td>
                     <Td className="font-medium">{formatUSD(o.amount_usd)}</Td>
                     <Td className="text-xs">{cryptoAmount(o)}</Td>
                     <Td><Badge status={o.status} /></Td>
@@ -212,6 +270,10 @@ export default function PaymentsPage() {
                         {o.is_temppay ? (
                           <span className="text-[10px] text-dark-500 whitespace-nowrap" title="Live Shop Bot invoice — becomes an order once payment confirms">
                             Bot invoice
+                          </span>
+                        ) : o.is_replacement ? (
+                          <span className="text-[10px] text-dark-500 whitespace-nowrap" title="Session-replacement payment — managed from the AdBot's replacements, not here">
+                            Replacement
                           </span>
                         ) : (
                           <>
@@ -238,7 +300,8 @@ export default function PaymentsPage() {
                       </div>
                     </Td>
                   </Tr>
-                ))
+                  );
+                })
               )}
             </Tbody>
           </Table>
@@ -260,9 +323,16 @@ export default function PaymentsPage() {
         {detail && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <Badge status={detail.status} />
+              <div className="flex items-center gap-2">
+                <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${paymentKind(detail).cls}`}>
+                  {paymentKind(detail).label}
+                </span>
+                <Badge status={detail.status} />
+              </div>
               {detail.is_temppay ? (
                 <span className="text-[11px] text-dark-500">Live Shop Bot invoice</span>
+              ) : detail.is_replacement ? (
+                <span className="text-[11px] text-dark-500">Session replacement</span>
               ) : (
                 <Button variant="secondary" size="sm" loading={syncing} onClick={() => syncOrder(detail.order_id)}>
                   <RotateCw className="h-3.5 w-3.5" /> Sync now
@@ -273,9 +343,21 @@ export default function PaymentsPage() {
             <div className="rounded-xl border border-white/[0.06] bg-dark-900/50 px-4 py-2 divide-y divide-white/[0.04]">
               <Row label="Order ID" value={detail.order_id} mono />
               <Row label="Payment ID" value={detail.payment_id} mono />
+              <Row label="Type" value={paymentKind(detail).label} />
               <Row label="Source" value={detail.source} />
-              <Row label="Plan" value={`${detail.plan_name || ""}${detail.plan_mode ? ` (${detail.plan_mode})` : ""}`} />
-              <Row label="Duration" value={detail.duration_days ? `${detail.duration_days} days` : ""} />
+              {detail.is_replacement ? (
+                <>
+                  <Row label="Item" value="Session replacement" />
+                  <Row label="AdBot" value={detail.bot_name} />
+                  <Row label="Session" value={detail.real_name || detail.session_file} />
+                </>
+              ) : (
+                <>
+                  {paymentKind(detail).key === "renewal" && <Row label="AdBot" value={detail.bot_name} />}
+                  <Row label="Plan" value={`${detail.plan_name || ""}${detail.plan_mode ? ` (${detail.plan_mode})` : ""}`} />
+                  <Row label="Duration" value={detail.duration_days ? `${detail.duration_days} days` : ""} />
+                </>
+              )}
               <Row label="Original price" value={detail.amount_usd != null ? `${formatUSD(detail.amount_usd)} USD` : ""} />
               {detail.coupon ? <Row label="Coupon" value={`${detail.coupon} (-${detail.coupon_percent}%)`} /> : null}
               <Row label="Pay price" value={detail.pay_amount ? `${detail.pay_amount} ${(detail.pay_currency || "").toUpperCase()}` : ""} />
@@ -335,6 +417,10 @@ export default function PaymentsPage() {
             {detail.is_temppay ? (
               <p className="text-[11px] text-dark-500 text-center pt-1">
                 This is a live Shop Bot invoice. It becomes a manageable order once the buyer pays, or moves to Expired if the window closes.
+              </p>
+            ) : detail.is_replacement ? (
+              <p className="text-[11px] text-dark-500 text-center pt-1">
+                This is a session-replacement payment. It's processed automatically on confirmation and managed from the AdBot's replacements — no order actions here.
               </p>
             ) : (
               <>
