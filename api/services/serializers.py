@@ -47,6 +47,12 @@ def serialize_bot_detail(token: str, cfg: dict) -> dict:
         "excluded_sessions": cfg.get("excluded_sessions", []),
         "disabled_sessions": cfg.get("disabled_sessions", []),
         "custom_chatlist": cfg.get("custom_chatlist"),
+        # Live posting content the user configured via the portal / shop bot.
+        # "link" mode forwards one of post_links; "text" mode posts message_text.
+        "message_mode": cfg.get("message_mode", "link"),
+        "message_text": cfg.get("message_text", ""),
+        "post_links": cfg.get("post_links", []),
+        "post_link": cfg.get("post_link", ""),  # legacy single-link fallback
         "plan": cfg.get("plan"),
         "history": cfg.get("history"),
         "web_token": cfg.get("web_token", ""),

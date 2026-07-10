@@ -155,6 +155,10 @@ export interface BotDetail extends BotSummary {
   telegram_user_id?: number;
   group_file?: string;
   message?: string;
+  message_mode?: "link" | "text";
+  message_text?: string;
+  post_links?: string[];
+  post_link?: string;
   plan_name?: string;
   renewal_price?: number;
   sessions?: string[];
@@ -217,6 +221,9 @@ export interface BotUpdatePayload {
   gap?: number;
   group_file?: string;
   valid_till?: string;
+  message_mode?: "link" | "text";
+  message_text?: string;
+  post_links?: string[];
 }
 
 // ── Sessions ──

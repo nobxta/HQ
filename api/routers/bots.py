@@ -199,6 +199,19 @@ async def update_bot(name: str, body: BotUpdateRequest):
     if body.valid_till is not None:
         cfg["valid_till"] = body.valid_till
         updated = True
+    # Posting content — same shape/limits the user portal enforces so admin edits
+    # and worker live-reload stay consistent (workers.py picks these up per cycle).
+    if body.message_mode is not None:
+        if body.message_mode not in ("text", "link"):
+            raise HTTPException(400, "message_mode must be 'text' or 'link'")
+        cfg["message_mode"] = body.message_mode
+        updated = True
+    if body.message_text is not None:
+        cfg["message_text"] = body.message_text[:500]
+        updated = True
+    if body.post_links is not None:
+        cfg["post_links"] = [str(x).strip() for x in body.post_links if x and str(x).strip()][:10]
+        updated = True
 
     if updated:
         await wrappers.save_user_data(name, cfg)

@@ -31,6 +31,7 @@ import {
   AlertTriangle, Folder,
 } from "lucide-react";
 import api from "@/lib/api";
+import TelegramPostPreview, { parseTelegramPostUrl } from "@/components/ui/TelegramPostPreview";
 import toast from "react-hot-toast";
 import { formatDate, formatDateTime, timeAgo, formatUSD, ddmmyyyyToIso, isoToDdmmyyyy } from "@/lib/utils";
 import type { BotUpdatePayload } from "@/lib/types";
@@ -916,21 +917,62 @@ const TG_TAGS: { tag: string; label: string; icon: any; wrap: [string, string] }
   { tag: "a", label: "Link", icon: Link2, wrap: ['<a href="https://">', "</a>"] },
 ];
 
+function normalizeLinks(bot: any): string[] {
+  const arr = Array.isArray(bot?.post_links) ? bot.post_links : [];
+  const cleaned = arr.map((x: any) => String(x || "").trim()).filter(Boolean);
+  if (cleaned.length) return cleaned;
+  const legacy = (bot?.post_link || "").trim();
+  return legacy ? [legacy] : [];
+}
+
 function PostingTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: () => void }) {
-  const [message, setMessage] = useState(bot.message || "");
+  const initialMode: "link" | "text" = bot.message_mode === "text" ? "text" : "link";
+  const initialText: string = bot.message_text ?? bot.message ?? "";
+  const initialLinks = normalizeLinks(bot);
+
+  const [mode, setMode] = useState<"link" | "text">(initialMode);
+  const [text, setText] = useState(initialText);
+  const [links, setLinks] = useState<string[]>(initialLinks);
+  const [newLink, setNewLink] = useState("");
+  const [previewLink, setPreviewLink] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
-  const dirty = message !== (bot.message || "");
+  // Re-sync when the bot payload refreshes (e.g. after save / SWR revalidate).
+  useEffect(() => {
+    setMode(bot.message_mode === "text" ? "text" : "link");
+    setText(bot.message_text ?? bot.message ?? "");
+    setLinks(normalizeLinks(bot));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bot?.name, bot?.message_mode, bot?.message_text, JSON.stringify(bot?.post_links)]);
+
+  const linksChanged = links.join("\n") !== initialLinks.join("\n");
+  const dirty = mode !== initialMode || text !== initialText || linksChanged;
+
+  const validLinks = links.filter((l) => parseTelegramPostUrl(l).ok).length;
+
+  const addLink = () => {
+    const link = newLink.trim();
+    if (!link) return;
+    if (links.length >= 10) { toast.error("Max 10 links"); return; }
+    if (links.includes(link)) { toast.error("Link already added"); return; }
+    setLinks([...links, link]);
+    setNewLink("");
+  };
+  const removeLink = (i: number) => setLinks(links.filter((_, idx) => idx !== i));
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.patch(`/api/bots/${name}`, { message });
-      toast.success("Post message updated");
+      await api.patch(`/api/bots/${name}`, {
+        message_mode: mode,
+        message_text: text,
+        post_links: links,
+      });
+      toast.success("Posting content updated");
       onUpdate();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || "Failed to update message");
+      toast.error(e?.response?.data?.detail || "Failed to update");
     }
     setSaving(false);
   };
@@ -939,9 +981,9 @@ function PostingTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate:
     const ta = taRef.current;
     if (!ta) return;
     const start = ta.selectionStart, end = ta.selectionEnd;
-    const sel = message.slice(start, end) || "text";
-    const next = message.slice(0, start) + open + sel + close + message.slice(end);
-    setMessage(next);
+    const sel = text.slice(start, end) || "text";
+    const next = text.slice(0, start) + open + sel + close + text.slice(end);
+    setText(next);
     requestAnimationFrame(() => {
       ta.focus();
       ta.selectionStart = start + open.length;
@@ -949,67 +991,191 @@ function PostingTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate:
     });
   };
 
+  const ModeBtn = ({ value, icon: Icon, title, desc }: { value: "link" | "text"; icon: any; title: string; desc: string }) => (
+    <button
+      type="button"
+      onClick={() => setMode(value)}
+      className={`flex-1 rounded-[14px] border p-3.5 text-left transition-all ${
+        mode === value
+          ? "border-hq-accent/60 bg-hq-accent/[0.08]"
+          : "border-hq-border bg-hq-bg hover:border-white/15"
+      }`}
+    >
+      <div className="flex items-center gap-2">
+        <Icon className={`h-4 w-4 ${mode === value ? "text-hq-accent" : "text-hq-sub"}`} strokeWidth={1.75} />
+        <span className={`text-[13px] font-semibold ${mode === value ? "text-hq-text" : "text-hq-sub"}`}>{title}</span>
+        {initialMode === value && (
+          <span className="ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-hq-success/15 text-hq-success">In use</span>
+        )}
+      </div>
+      <p className="text-[11px] text-hq-muted mt-1">{desc}</p>
+    </button>
+  );
+
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Editor */}
-        <HqCard className="p-5">
-          <HqTitle sub="Posted to every group each cycle">Post Message / Link</HqTitle>
-          {/* Formatting toolbar */}
-          <div className="flex items-center gap-1 mb-3 p-1 rounded-[12px] border border-hq-border bg-hq-bg w-fit">
-            {TG_TAGS.map((t) => (
-              <button key={t.tag} type="button" title={t.label} onClick={() => applyWrap(t.wrap[0], t.wrap[1])}
-                className="w-8 h-8 rounded-[8px] flex items-center justify-center text-hq-sub hover:text-hq-text hover:bg-hq-hover transition-colors">
-                <t.icon className="h-4 w-4" strokeWidth={1.75} />
-              </button>
-            ))}
+      {/* Current usage banner — what the user has configured right now */}
+      <HqCard className="p-4">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center justify-center w-10 h-10 rounded-[12px] bg-hq-accent/10 shrink-0">
+            {initialMode === "text"
+              ? <MessageSquare className="h-5 w-5 text-hq-accent" strokeWidth={1.75} />
+              : <Link2 className="h-5 w-5 text-hq-accent" strokeWidth={1.75} />}
           </div>
-          <textarea
-            ref={taRef}
-            className="w-full h-56 rounded-[14px] border border-hq-border bg-hq-bg px-4 py-3 text-[13px] text-hq-text font-mono placeholder:text-hq-muted focus:outline-none focus:border-hq-accent/60 resize-none transition-colors"
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            placeholder="Enter post message or link… e.g. <b>Bold</b> and <a href=&quot;https://t.me&quot;>link</a>"
-          />
-          <div className="flex items-center justify-between mt-2">
-            <span className="text-[11px] text-hq-muted tabular-nums">{message.length} chars{message.length > 4096 && <span className="text-hq-danger"> · over Telegram's 4096 limit</span>}</span>
-            <div className="flex items-center gap-2">
-              <HqBtn tone="ghost" onClick={() => { navigator.clipboard.writeText(message); toast.success("Copied"); }} icon={Copy}>Copy</HqBtn>
-              <HqBtn onClick={handleSave} loading={saving} icon={Save} disabled={!dirty}>Save</HqBtn>
-            </div>
+          <div className="min-w-0">
+            <p className="text-[13px] font-semibold text-hq-text">
+              Currently posting: {initialMode === "text" ? "Custom text message" : "Forwarded channel post"}
+            </p>
+            <p className="text-[12px] text-hq-muted mt-0.5 truncate">
+              {initialMode === "text"
+                ? (initialText.trim() ? `${initialText.trim().length} characters of custom text` : "No text set yet")
+                : (initialLinks.length ? `${initialLinks.length} post link${initialLinks.length > 1 ? "s" : ""} · bot forwards a random one each cycle` : "No links added yet")}
+            </p>
           </div>
-        </HqCard>
-
-        {/* Live preview */}
-        <HqCard className="p-5">
-          <HqTitle sub="How it renders in Telegram">Live Preview</HqTitle>
-          <div className="rounded-[14px] bg-hq-bg border border-hq-border p-4 min-h-[224px]">
-            {message.trim() ? (
-              <div className="max-w-[85%] rounded-[14px] rounded-tl-sm px-3.5 py-2.5 text-[13px] text-hq-text leading-relaxed break-words"
-                style={{ background: "linear-gradient(135deg,#7C5CFF22,#00D4FF14)", border: "1px solid rgba(255,255,255,0.06)" }}
-                dangerouslySetInnerHTML={{ __html: telegramPreviewHtml(message) }} />
-            ) : (
-              <div className="h-full flex items-center justify-center text-[13px] text-hq-muted italic py-16">No message set</div>
-            )}
-          </div>
-        </HqCard>
-      </div>
-
-      {/* Telegram formatting helper */}
-      <HqCard className="p-5">
-        <HqTitle sub="Supported Telegram HTML tags">Formatting Helper</HqTitle>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
-          {[
-            ["<b>bold</b>", "Bold"], ["<i>italic</i>", "Italic"], ["<u>underline</u>", "Underline"],
-            ["<s>strike</s>", "Strikethrough"], ["<code>mono</code>", "Monospace"], ['<a href="url">link</a>', "Hyperlink"],
-          ].map(([code, label]) => (
-            <div key={label} className="rounded-[12px] border border-hq-border bg-hq-bg px-3 py-2">
-              <p className="text-[12px] font-medium text-hq-text">{label}</p>
-              <code className="text-[11px] text-hq-accent2 font-mono break-all">{code}</code>
-            </div>
-          ))}
+          <span className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold shrink-0"
+            style={{ color: "#7C5CFF", backgroundColor: "#7C5CFF1f" }}>
+            <User className="h-3 w-3" strokeWidth={2} /> Set by user
+          </span>
         </div>
       </HqCard>
+
+      {/* Mode selector */}
+      <HqCard className="p-5">
+        <HqTitle sub="Choose whether the bot forwards a channel post or sends custom text">Message Mode</HqTitle>
+        <div className="flex gap-3">
+          <ModeBtn value="link" icon={Link2} title="Link Mode" desc="Forward a post from a channel" />
+          <ModeBtn value="text" icon={MessageSquare} title="Text Mode" desc="Send a custom text message" />
+        </div>
+      </HqCard>
+
+      {/* ── LINK MODE ── */}
+      {mode === "link" && (
+        <HqCard className="p-5">
+          <HqTitle
+            sub="Public t.me/name/123 posts preview live below. The bot forwards a random link each cycle."
+            right={<span className="text-[11px] text-hq-muted tabular-nums">{links.length}/10 · {validLinks} previewable</span>}
+          >
+            Post Links
+          </HqTitle>
+
+          {links.length === 0 ? (
+            <div className="rounded-[14px] border border-dashed border-hq-border p-6 text-center">
+              <Link2 className="h-6 w-6 mx-auto text-hq-muted mb-2" strokeWidth={1.5} />
+              <p className="text-[13px] text-hq-sub">No links added yet</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {links.map((link, i) => {
+                const parsed = parseTelegramPostUrl(link);
+                const open = previewLink === link;
+                return (
+                  <div key={i} className="rounded-[12px] border border-hq-border bg-hq-bg overflow-hidden">
+                    <div className="flex items-center gap-2.5 px-3 py-2.5">
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${parsed.ok ? "bg-hq-success" : "bg-amber-400/80"}`}
+                        title={parsed.ok ? "Public — previewable" : "Not previewable (private/invite)"} />
+                      <span className="flex-1 text-[12px] text-hq-text font-mono truncate">{link}</span>
+                      <button onClick={() => setPreviewLink(open ? null : link)}
+                        className="text-hq-muted hover:text-hq-accent transition-colors shrink-0 p-1" title={open ? "Hide preview" : "Show preview"}>
+                        {open ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                      </button>
+                      <button onClick={() => removeLink(i)}
+                        className="text-hq-muted hover:text-hq-danger transition-colors shrink-0 p-1" title="Remove">
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    {open && <div className="px-3 pb-3"><TelegramPostPreview url={link} /></div>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Add link + live preview */}
+          <div className="flex gap-2 mt-3">
+            <input
+              className="flex-1 min-w-0 rounded-[12px] border border-hq-border bg-hq-bg px-3 py-2 text-[13px] text-hq-text font-mono placeholder:text-hq-muted focus:outline-none focus:border-hq-accent/60 transition-colors"
+              placeholder="https://t.me/channel/123"
+              value={newLink}
+              onChange={(e) => setNewLink(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addLink()}
+            />
+            <HqBtn tone="secondary" icon={Plus} onClick={addLink}>Add</HqBtn>
+          </div>
+          {newLink.trim() && (
+            <div className="mt-3 space-y-1.5">
+              <p className="text-[10px] uppercase tracking-wide text-hq-muted font-semibold">Live preview</p>
+              <TelegramPostPreview url={newLink} />
+            </div>
+          )}
+        </HqCard>
+      )}
+
+      {/* ── TEXT MODE ── */}
+      {mode === "text" && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <HqCard className="p-5">
+            <HqTitle sub="Sent as a message to every group each cycle">Custom Text Message</HqTitle>
+            <div className="flex items-center gap-1 mb-3 p-1 rounded-[12px] border border-hq-border bg-hq-bg w-fit">
+              {TG_TAGS.map((t) => (
+                <button key={t.tag} type="button" title={t.label} onClick={() => applyWrap(t.wrap[0], t.wrap[1])}
+                  className="w-8 h-8 rounded-[8px] flex items-center justify-center text-hq-sub hover:text-hq-text hover:bg-hq-hover transition-colors">
+                  <t.icon className="h-4 w-4" strokeWidth={1.75} />
+                </button>
+              ))}
+            </div>
+            <textarea
+              ref={taRef}
+              className="w-full h-56 rounded-[14px] border border-hq-border bg-hq-bg px-4 py-3 text-[13px] text-hq-text font-mono placeholder:text-hq-muted focus:outline-none focus:border-hq-accent/60 resize-none transition-colors"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="Enter post message… e.g. <b>Bold</b> and <a href=&quot;https://t.me&quot;>link</a>"
+            />
+            <div className="flex items-center justify-between mt-2">
+              <span className="text-[11px] text-hq-muted tabular-nums">
+                {text.length}/500{text.length > 500 && <span className="text-hq-danger"> · over 500 limit</span>}
+              </span>
+              <HqBtn tone="ghost" onClick={() => { navigator.clipboard.writeText(text); toast.success("Copied"); }} icon={Copy}>Copy</HqBtn>
+            </div>
+          </HqCard>
+
+          <HqCard className="p-5">
+            <HqTitle sub="How it renders in Telegram">Live Preview</HqTitle>
+            <div className="rounded-[14px] bg-hq-bg border border-hq-border p-4 min-h-[224px]">
+              {text.trim() ? (
+                <div className="max-w-[85%] rounded-[14px] rounded-tl-sm px-3.5 py-2.5 text-[13px] text-hq-text leading-relaxed break-words"
+                  style={{ background: "linear-gradient(135deg,#7C5CFF22,#00D4FF14)", border: "1px solid rgba(255,255,255,0.06)" }}
+                  dangerouslySetInnerHTML={{ __html: telegramPreviewHtml(text) }} />
+              ) : (
+                <div className="h-full flex items-center justify-center text-[13px] text-hq-muted italic py-16">No message set</div>
+              )}
+            </div>
+          </HqCard>
+        </div>
+      )}
+
+      {/* Save bar */}
+      <div className="flex items-center justify-end gap-2">
+        {dirty && <span className="text-[12px] text-hq-muted">Unsaved changes</span>}
+        <HqBtn onClick={handleSave} loading={saving} icon={Save} disabled={!dirty}>Save changes</HqBtn>
+      </div>
+
+      {/* Telegram formatting helper (text mode only) */}
+      {mode === "text" && (
+        <HqCard className="p-5">
+          <HqTitle sub="Supported Telegram HTML tags">Formatting Helper</HqTitle>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+            {[
+              ["<b>bold</b>", "Bold"], ["<i>italic</i>", "Italic"], ["<u>underline</u>", "Underline"],
+              ["<s>strike</s>", "Strikethrough"], ["<code>mono</code>", "Monospace"], ['<a href="url">link</a>', "Hyperlink"],
+            ].map(([code, label]) => (
+              <div key={label} className="rounded-[12px] border border-hq-border bg-hq-bg px-3 py-2">
+                <p className="text-[12px] font-medium text-hq-text">{label}</p>
+                <code className="text-[11px] text-hq-accent2 font-mono break-all">{code}</code>
+              </div>
+            ))}
+          </div>
+        </HqCard>
+      )}
     </div>
   );
 }

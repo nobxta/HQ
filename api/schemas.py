@@ -59,6 +59,9 @@ class BotUpdateRequest(BaseModel):
     gap: Optional[int] = None
     group_file: Optional[str] = None
     valid_till: Optional[str] = None
+    message_mode: Optional[str] = None
+    message_text: Optional[str] = None
+    post_links: Optional[list[str]] = None
 
 
 class BotControlResponse(BaseModel):
