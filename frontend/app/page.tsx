@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
 import {
-  Send, Check, CheckCheck, Menu, X, ArrowRight, Plus, Eye, MousePointerClick,
+  Send, Check, CheckCheck, Menu, X, ArrowRight, Plus,
   User, Building2, Gem, Star, Zap, ShieldCheck, Coins, Headphones,
   ChevronRight, ChevronLeft, Clock, Tag, TrendingUp, Lock, Users, Activity,
 } from "lucide-react";
@@ -54,20 +54,17 @@ const AD_TEXT = "VIP signals — 40% off this week";
 function HeroSim() {
   const [tick, setTick] = useState(0);
   const [delivered, setDelivered] = useState(2841);
-  const [views, setViews] = useState(184230);
-  const [clicks, setClicks] = useState(4112);
 
   useEffect(() => {
     const t = setInterval(() => {
       setTick(x => x + 1);
       setDelivered(d => d + 1);
-      setViews(v => v + 90 + Math.floor(Math.random() * 240));
-      setClicks(c => c + (Math.random() > 0.4 ? 1 + Math.floor(Math.random() * 4) : 0));
     }, 1700);
     return () => clearInterval(t);
   }, []);
 
   const active = tick % GROUPS.length;
+  const queued = GROUPS.slice(0, 4).filter((_, i) => !(i < active || active >= 4)).length;
 
   return (
     <div className="rounded-lg border border-[#1f1f22] bg-[#0e0e10] overflow-hidden select-none">
@@ -80,7 +77,7 @@ function HeroSim() {
           </span>
           Campaign live
         </span>
-        <span className="text-[11px] text-[#5d5d66]">~35 posts/min</span>
+        <span className="text-[11px] text-[#5d5d66]">Posting bots active</span>
       </div>
 
       <div className="p-4">
@@ -144,8 +141,8 @@ function HeroSim() {
       <div className="grid grid-cols-3 divide-x divide-[#1f1f22] border-t border-[#1f1f22]">
         {[
           { label: "Delivered", value: fmt(delivered), icon: CheckCheck },
-          { label: "Views", value: fmt(views), icon: Eye },
-          { label: "Clicks", value: fmt(clicks), icon: MousePointerClick },
+          { label: "Active bots", value: "6", icon: Users },
+          { label: "Queued", value: String(queued), icon: Clock },
         ].map((s) => (
           <div key={s.label} className="px-3.5 py-3 text-center">
             <p className="text-[9px] text-[#5d5d66] uppercase tracking-wider mb-1 flex items-center justify-center gap-1">
@@ -250,9 +247,9 @@ function SignalBars({ active }: { active: boolean }) {
 }
 
 function CampaignMonitor({ visible }: { visible: boolean }) {
-  const [sent, setSent] = useState(412930);
-  const [viewsK, setViewsK] = useState(28.4);
-  const [clicks, setClicks] = useState(61204);
+  const [sent, setSent] = useState(1204);
+  const [delivered, setDelivered] = useState(1189);
+  const [failed, setFailed] = useState(15);
   const [feed, setFeed] = useState<{ id: number; group: string; time: string }[]>([
     { id: 1, group: "Crypto Signals VIP", time: "just now" },
     { id: 2, group: "NFT Traders Hub", time: "2s ago" },
@@ -264,22 +261,16 @@ function CampaignMonitor({ visible }: { visible: boolean }) {
   ]);
   const idRef = useRef(8);
 
-  const SESSIONS = [
-    { n: 1, phone: "+91 81234 56789" },
-    { n: 2, phone: "+91 92345 67890" },
-    { n: 3, phone: "+91 99876 54321" },
-    { n: 4, phone: "+91 88765 43210" },
-    { n: 5, phone: "+91 77654 32109" },
-  ];
-  const [sending, setSending] = useState<number>(2); // which session is "Sending"
+  const BOTS = [1, 2, 3, 4, 5];
+  const [posting, setPosting] = useState<number>(2); // which bot is currently posting
 
   useEffect(() => {
     if (!visible) return;
     const t = setInterval(() => {
-      setSent(s => s + 3 + Math.floor(Math.random() * 9));
-      setViewsK(v => +(v + 0.1 + Math.random() * 0.3).toFixed(1));
-      setClicks(c => c + 1 + Math.floor(Math.random() * 6));
-      setSending(() => Math.floor(Math.random() * SESSIONS.length) + 1);
+      setSent(s => s + 1 + Math.floor(Math.random() * 3));
+      setDelivered(d => d + 1 + Math.floor(Math.random() * 3));
+      setFailed(f => f + (Math.random() > 0.85 ? 1 : 0));
+      setPosting(() => Math.floor(Math.random() * BOTS.length) + 1);
       setFeed(f => [
         { id: idRef.current++, group: GROUPS[Math.floor(Math.random() * GROUPS.length)].name, time: "just now" },
         ...f.slice(0, 6).map(x => ({ ...x, time: x.time === "just now" ? "2s ago" : x.time })),
@@ -320,34 +311,34 @@ function CampaignMonitor({ visible }: { visible: boolean }) {
           </div>
         </div>
 
-        {/* ── Active Sessions ── */}
+        {/* ── Posting Bots ── */}
         <div className={card}>
           <div className={head}>
             <span className="flex items-center gap-2 text-[13px] font-medium text-white">
               <Users className="w-4 h-4" style={{ color: TG }} />
-              Active Sessions
+              Posting Bots
             </span>
-            <span className="text-[11px] text-[#8b8b93] tabular-nums">{SESSIONS.length} / {SESSIONS.length} active</span>
+            <span className="text-[11px] text-[#8b8b93] tabular-nums">{BOTS.length} / {BOTS.length} online</span>
           </div>
           <div className="px-4 py-2.5 divide-y divide-[#161618]">
-            {SESSIONS.map((s) => {
-              const isSending = sending === s.n;
+            {BOTS.map((n) => {
+              const isPosting = posting === n;
               return (
-                <div key={s.n} className="flex items-center justify-between gap-3 py-[9px]">
+                <div key={n} className="flex items-center justify-between gap-3 py-[9px]">
                   <span className="flex items-center gap-2.5 min-w-0">
                     <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-[#161618] border border-[#1f1f22]">
                       <User className="w-3.5 h-3.5 text-[#8b8b93]" />
                     </span>
                     <span className="min-w-0">
-                      <span className="block text-[12px] font-medium text-[#e6e6ea] leading-tight">Session {s.n}</span>
-                      <span className="block text-[11px] text-[#5d5d66] font-mono leading-tight">{s.phone}</span>
+                      <span className="block text-[12px] font-medium text-[#e6e6ea] leading-tight">Bot {n}</span>
+                      <span className="block text-[11px] text-[#5d5d66] leading-tight">Managed by HQAdz</span>
                     </span>
                   </span>
                   <span className="flex items-center gap-2 flex-shrink-0">
-                    <span className="text-[11px] font-medium" style={{ color: isSending ? TG : "#34d399" }}>
-                      {isSending ? "Sending" : "Ready"}
+                    <span className="text-[11px] font-medium" style={{ color: isPosting ? TG : "#34d399" }}>
+                      {isPosting ? "Posting" : "Ready"}
                     </span>
-                    <SignalBars active={isSending} />
+                    <SignalBars active={isPosting} />
                   </span>
                 </div>
               );
@@ -363,15 +354,15 @@ function CampaignMonitor({ visible }: { visible: boolean }) {
               Campaign Overview
             </span>
             <span className="flex items-center gap-1.5 text-[11px] text-[#8b8b93]">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Live
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Example
             </span>
           </div>
           <div className="grid grid-cols-2">
             {[
-              { label: "Active Groups", value: "9,412" },
-              { label: "Messages Sent Today", value: fmt(sent) },
-              { label: "Views Generated", value: `${viewsK}M` },
-              { label: "Clicks Generated", value: fmt(clicks) },
+              { label: "Active Bots", value: "6" },
+              { label: "Posts Sent Today", value: fmt(sent) },
+              { label: "Delivered", value: fmt(delivered) },
+              { label: "Failed", value: fmt(failed) },
             ].map((s, i) => (
               <div key={s.label} className={`px-4 py-4 ${i % 2 === 0 ? "border-r border-[#1f1f22]" : ""} ${i < 2 ? "border-b border-[#1f1f22]" : ""}`}>
                 <p className="text-[10px] text-[#5d5d66] uppercase tracking-wider mb-1.5">{s.label}</p>
@@ -385,10 +376,10 @@ function CampaignMonitor({ visible }: { visible: boolean }) {
       {/* ── Trust badges ── */}
       <div className="grid grid-cols-2 md:grid-cols-4 rounded-xl border border-[#1f1f22] bg-[#0e0e10] divide-x divide-y md:divide-y-0 divide-[#1f1f22] overflow-hidden">
         {[
-          { icon: ShieldCheck, title: "Telethon Powered", sub: "Secure. Fast. Reliable." },
+          { icon: ShieldCheck, title: "Managed Posting Bots", sub: "We handle the bots for you." },
           { icon: Lock, title: "Your Data is Safe", sub: "Encrypted & private." },
-          { icon: Zap, title: "High Delivery Rate", sub: "Optimized multi-accounting." },
-          { icon: Clock, title: "Real-time Tracking", sub: "Live stats & reports." },
+          { icon: Zap, title: "Reliable Delivery", sub: "Bots work together to post." },
+          { icon: Clock, title: "Live Delivery Tracking", sub: "Every post logged as it lands." },
         ].map((b) => (
           <div key={b.title} className="flex items-center gap-3 px-4 py-4">
             <b.icon className="w-5 h-5 flex-shrink-0" style={{ color: TG }} />
@@ -405,19 +396,12 @@ function CampaignMonitor({ visible }: { visible: boolean }) {
 
 /* ─── Ops transparency ─── */
 function OpsBoard({ visible }: { visible: boolean }) {
-  const [deliveredToday, setDeliveredToday] = useState(412930);
-  useEffect(() => {
-    if (!visible) return;
-    const t = setInterval(() => setDeliveredToday(d => d + 5 + Math.floor(Math.random() * 12)), 2400);
-    return () => clearInterval(t);
-  }, [visible]);
-
   const rows = [
-    { label: "Accounts online", value: "1,284", status: "ok" },
-    { label: "Campaigns running", value: "312", status: "ok" },
-    { label: "Messages delivered today", value: fmt(deliveredToday), status: "ok" },
-    { label: "Average delivery rate", value: "99.2%", status: "ok" },
-    { label: "System uptime — 90 days", value: "99.97%", status: "ok" },
+    { label: "Posting bots", value: "Managed for you", status: "ok" },
+    { label: "Bot health checks", value: "Ongoing", status: "ok" },
+    { label: "Free replacements", value: "Included in every plan", status: "ok" },
+    { label: "Delivery tracking", value: "Live in your dashboard", status: "ok" },
+    { label: "Crypto payments", value: "Accepted", status: "ok" },
   ];
 
   return (
@@ -438,22 +422,24 @@ function OpsBoard({ visible }: { visible: boolean }) {
 interface Plan { id: string; sessions: number; price_week: number; price_month: number; free_replacements: number; cycle?: number; gap?: number }
 interface Plans { starter: Plan[]; enterprise: Plan[] }
 
-const PLAN_META: Record<string, { reach: string; reachVal: number; posts: string; rec: string }> = {
-  bronze:  { reach: "~15K", reachVal: 15, posts: "48", rec: "Testing the waters" },
-  silver:  { reach: "~30K", reachVal: 30, posts: "96", rec: "Solo sellers" },
-  gold:    { reach: "~50K", reachVal: 50, posts: "144", rec: "Growing channels" },
-  diamond: { reach: "~90K", reachVal: 90, posts: "240", rec: "Power sellers" },
-  basic:   { reach: "~120K", reachVal: 120, posts: "480", rec: "Small teams" },
-  pro:     { reach: "~300K", reachVal: 300, posts: "2.4K", rec: "Agencies" },
-  elite:   { reach: "~600K", reachVal: 600, posts: "14K", rec: "Networks" },
+const PLAN_META: Record<string, { rec: string }> = {
+  bronze:  { rec: "Testing the waters" },
+  silver:  { rec: "Solo sellers" },
+  gold:    { rec: "Growing channels" },
+  diamond: { rec: "Power sellers" },
+  basic:   { rec: "Small teams" },
+  pro:     { rec: "Agencies" },
+  elite:   { rec: "Networks" },
 };
 
 const FAQS = [
-  { q: "Do I need my own Telegram accounts?", a: "No. HQAdz provisions and maintains every account, proxy, and Telegram session. You only write the ad." },
-  { q: "How quickly can a campaign start?", a: "Under two minutes after payment confirms via crypto payments. Plans activate automatically on our Telegram AdBot platform — no approval queue." },
-  { q: "What happens if an account gets limited?", a: "A healthy replacement takes over within minutes, automatically. Your plan includes free replacements and automatic flood wait handling for account health." },
-  { q: "Can I choose specific groups?", a: "Yes. Filter by niche, language, and member count — or hand-pick groups one by one directly from the dashboard control." },
-  { q: "How is delivery tracked?", a: "Every post is logged the moment it lands, with per-group posting logs in your dashboard. What you saw in the demo above is the real interface." },
+  { q: "Do I need my own Telegram accounts?", a: "No. HQAdz provides and manages the posting bots included in your plan. You just provide the ad." },
+  { q: "How quickly can a campaign start?", a: "Most orders are prepared within 1–12 hours after your payment is confirmed, depending on current bot availability." },
+  { q: "What happens if a posting bot stops working?", a: "The bot is checked, and if it's eligible, it's replaced from the free allowance included with your plan so your campaign keeps running." },
+  { q: "Can I choose specific groups?", a: "Yes. Use the HQAdz group list or add your own groups and manage your target list directly from the dashboard." },
+  { q: "How is delivery tracked?", a: "Every delivery attempt is logged as it happens, with per-group details in your dashboard. The preview above reflects the real interface." },
+  { q: "Do you guarantee sales, members, or views?", a: "No. HQAdz provides the posting service described in your plan. Results depend on your ad, offer, and audience — we don't guarantee outcomes." },
+  { q: "Do I get any bonus rewards?", a: "Occasionally. HQAdz may run promotions offering bonus days, extra replacements, or other account rewards. These vary and aren't part of every order." },
 ];
 
 export default function LandingPage() {
@@ -519,7 +505,7 @@ export default function LandingPage() {
   };
   const popularIds = new Set(["gold", "pro"]);
 
-  const maxReach = activePlans.length ? Math.max(...activePlans.map(p => PLAN_META[p.id]?.reachVal || 0)) : 0;
+  const maxDailyPosts = activePlans.length ? Math.max(...activePlans.map(p => p.sessions * 1200)) : 0;
   const maxYearlySaving = activePlans.length
     ? Math.round(Math.max(0, ...activePlans.map(p => p.price_week * 52 - p.price_month * 12)))
     : 0;
@@ -541,7 +527,7 @@ export default function LandingPage() {
             "applicationCategory": "BusinessApplication",
             "operatingSystem": "Web",
             "url": "https://hqadz.io",
-            "description": "HQAdz.io is a Telegram AdBot SaaS platform for managing automated Telegram ad posting, Telegram sessions, campaign logs, account health, and crypto payments from one dashboard."
+            "description": "HQAdz.io is a Telegram advertising platform for managing posting bots, live delivery tracking, custom group targeting, and crypto payments from one dashboard."
           })
         }}
       />
@@ -585,7 +571,7 @@ export default function LandingPage() {
               Log in
             </Link>
             <Link href="/user/login" className="text-[13px] font-medium text-white px-3.5 py-1.5 rounded-md transition-opacity duration-150 hover:opacity-90" style={{ background: TG }}>
-              Start now
+              Start advertising
             </Link>
           </div>
 
@@ -603,7 +589,7 @@ export default function LandingPage() {
             ))}
             <div className="mt-3 flex gap-2">
               <Link href="/user/login" className="flex-1 text-center text-[13px] text-[#8b8b93] border border-[#1f1f22] py-2 rounded-md">Log in</Link>
-              <Link href="/user/login" className="flex-1 text-center text-[13px] font-medium text-white py-2 rounded-md" style={{ background: TG }}>Start now</Link>
+              <Link href="/user/login" className="flex-1 text-center text-[13px] font-medium text-white py-2 rounded-md" style={{ background: TG }}>Start advertising</Link>
             </div>
           </div>
         )}
@@ -615,23 +601,23 @@ export default function LandingPage() {
           <div className="grid lg:grid-cols-[1fr_440px] gap-12 lg:gap-14 items-center">
             <div>
               <h1 className={`text-[42px] sm:text-[52px] md:text-[60px] font-semibold text-white leading-[1.04] tracking-[-0.03em] ${reveal(hero.visible).className}`}>
-                HQAdz.io Telegram<br />
-                <span style={{ color: TG }}>AdBot Platform</span>
+                Stop trusting promises.<br />
+                <span style={{ color: TG }}>Start tracking every post.</span>
               </h1>
               <p className={`mt-6 text-[15px] md:text-base text-[#8b8b93] max-w-sm leading-relaxed ${reveal(hero.visible, 120).className}`} style={reveal(hero.visible, 120).style}>
-                The ultimate Telegram advertising bot for automation. We handle session management, posting logs, account health, flood wait handling, and crypto payments. 
+                HQAdz is a Telegram advertising platform where you launch campaigns, manage your posting bots, choose your groups, and track every delivery from your dashboard or Telegram control bot.
               </p>
               <div className={`mt-8 flex items-center gap-4 ${reveal(hero.visible, 220).className}`} style={reveal(hero.visible, 220).style}>
                 <Link href="/user/login" className="inline-flex items-center gap-2 text-[14px] font-medium text-white px-5 py-2.5 rounded-md transition-all duration-150 hover:opacity-90 hover:translate-y-[-1px]" style={{ background: TG }}>
-                  Launch a campaign
+                  Start advertising
                   <ArrowRight className="w-4 h-4" />
                 </Link>
-                <a href="#pricing" className="text-[14px] text-[#8b8b93] hover:text-white transition-colors duration-150">
-                  Pricing
+                <a href="#how-it-works" className="text-[14px] text-[#8b8b93] hover:text-white transition-colors duration-150">
+                  See how it works
                 </a>
               </div>
               <p className={`mt-8 text-[12px] text-[#5d5d66] ${reveal(hero.visible, 320).className}`} style={reveal(hero.visible, 320).style}>
-                12,000+ sellers · 85M+ ads delivered · crypto billing
+                Managed posting bots · Live delivery tracking · Free replacements · Custom group lists
               </p>
             </div>
 
@@ -647,8 +633,11 @@ export default function LandingPage() {
         <div ref={how.ref} className="max-w-5xl mx-auto px-6">
           <div className={`mb-14 ${reveal(how.visible).className}`}>
             <h2 className="text-[28px] md:text-4xl font-semibold text-white tracking-[-0.02em]">
-              Launch in under 2 minutes.
+              From payment to promotion.
             </h2>
+            <p className="mt-3 text-[14px] text-[#8b8b93] max-w-md">
+              Most orders are prepared within 1–12 hours after confirmed payment, depending on bot availability.
+            </p>
           </div>
           <div className={reveal(how.visible, 150).className} style={reveal(how.visible, 150).style}>
             <Workflow visible={how.visible} />
@@ -664,7 +653,7 @@ export default function LandingPage() {
               Watch it work.
             </h2>
             <p className="text-[14px] text-[#8b8b93] max-w-xs md:text-right">
-              The network right now — every number updates as ads land.
+              A preview of the live delivery tracking inside your dashboard.
             </p>
           </div>
           <div className={reveal(live.visible, 150).className} style={reveal(live.visible, 150).style}>
@@ -679,14 +668,14 @@ export default function LandingPage() {
           <div className="grid md:grid-cols-[1fr_1.2fr] gap-10 md:gap-16 items-center">
             <div className={reveal(trust.visible).className}>
               <h2 className="text-[28px] md:text-4xl font-semibold text-white tracking-[-0.02em]">
-                We handle the infrastructure.
+                We manage the posting bots.
               </h2>
               <p className="mt-4 text-[14px] text-[#8b8b93] leading-relaxed max-w-sm">
-                Accounts, proxies, warm-up, health checks, replacements. If something breaks, it&apos;s fixed before you notice.
+                Every posting bot is checked before assignment and monitored while your campaign runs. If an eligible bot stops working, it&apos;s replaced under your plan&apos;s allowance.
               </p>
               <p className="mt-6 text-[13px]">
                 <a href="#faq" className="inline-flex items-center gap-1.5 transition-colors duration-150 hover:text-white" style={{ color: TG }}>
-                  What happens if an account gets limited? <ArrowRight className="w-3.5 h-3.5" />
+                  What happens if a posting bot stops working? <ArrowRight className="w-3.5 h-3.5" />
                 </a>
               </p>
             </div>
@@ -709,7 +698,7 @@ export default function LandingPage() {
                 <TrendingUp className="w-6 h-6 md:w-7 md:h-7" style={{ color: TG }} />
               </h2>
               <p className="mt-3 text-[14px] text-[#8b8b93] leading-relaxed">
-                More reach. More posts. More growth.<br className="hidden sm:block" /> Choose the plan that fits your ambition.
+                More posting bots. More daily posts.<br className="hidden sm:block" /> Choose the plan that fits your campaign.
               </p>
             </div>
 
@@ -782,8 +771,9 @@ export default function LandingPage() {
               const label = tierLabel[plan.id] || plan.id;
               const price = billing === "month" ? plan.price_month : plan.price_week;
               const isPopular = popularIds.has(plan.id);
-              const meta = PLAN_META[plan.id] || { reach: "—", reachVal: 0, posts: "—", rec: "—" };
-              const fill = maxReach ? Math.max(8, Math.round((meta.reachVal / maxReach) * 100)) : 0;
+              const meta = PLAN_META[plan.id] || { rec: "—" };
+              const dailyPosts = plan.sessions * 1200;
+              const fill = maxDailyPosts ? Math.max(8, Math.round((dailyPosts / maxDailyPosts) * 100)) : 0;
 
               return (
                 <div
@@ -819,11 +809,11 @@ export default function LandingPage() {
                   </div>
                   <p className="text-[11px] text-[#5d5d66] mt-1">Billed {billing === "month" ? "monthly" : "weekly"}</p>
 
-                  {/* reach + bar */}
+                  {/* estimated posts + bar */}
                   <div className="mt-5 pt-5 border-t border-[#1f1f22]">
                     <div className="flex items-baseline justify-between">
-                      <p className="text-[10px] text-[#5d5d66] uppercase tracking-wider">Reach per day</p>
-                      <p className="text-[18px] font-semibold text-white tracking-tight">{meta.reach}</p>
+                      <p className="text-[10px] text-[#5d5d66] uppercase tracking-wider">Estimated posts / day</p>
+                      <p className="text-[18px] font-semibold text-white tracking-tight">{dailyPosts.toLocaleString()}</p>
                     </div>
                     <div className="h-1 rounded-full bg-[#1f1f22] mt-2 overflow-hidden">
                       <div
@@ -836,11 +826,11 @@ export default function LandingPage() {
                   {/* benefits */}
                   <ul className="mt-5 space-y-2.5 flex-1">
                     {[
-                      `${plan.sessions} bots posting for you`,
-                      `${((plan.sessions || 0) * 1200).toLocaleString()} posts / day`,
+                      `${plan.sessions} posting bots`,
                       plan.free_replacements === -1 ? "Unlimited replacements" : `${plan.free_replacements} free replacement${plan.free_replacements !== 1 ? "s" : ""}`,
-                      "Real-time delivery tracking",
-                      "20+ crypto coins accepted",
+                      "Live delivery tracking",
+                      "Custom group lists",
+                      "Crypto payments accepted",
                       ...(planTab === "enterprise" ? ["Priority support"] : []),
                     ].map((f, j) => (
                       <li key={j} className="flex items-center gap-2.5">
@@ -865,8 +855,7 @@ export default function LandingPage() {
                         mode: planTab,
                         billing,
                         price,
-                        reach: meta.reach,
-                        posts: meta.posts,
+                        posts: dailyPosts.toLocaleString(),
                         replacements: plan.free_replacements === -1 ? "Unlimited" : `${plan.free_replacements} free`,
                         durationDays: billing === "month" ? 30 : 7,
                       });
@@ -886,11 +875,11 @@ export default function LandingPage() {
           {/* Trust bar */}
           <div className={`mt-8 rounded-lg border border-[#1f1f22] bg-[#0e0e10] grid grid-cols-2 md:grid-cols-5 divide-y md:divide-y-0 md:divide-x divide-[#1f1f22] ${reveal(pricingRef.visible, 280).className}`} style={reveal(pricingRef.visible, 280).style}>
             {[
-              { icon: Zap, title: "Instant activation", sub: "Start in seconds" },
-              { icon: Clock, title: "No contracts", sub: "Cancel anytime" },
+              { icon: Zap, title: "Fast setup", sub: "1–12 hrs after payment" },
+              { icon: Clock, title: "No contracts", sub: "Weekly or monthly billing" },
               { icon: ShieldCheck, title: "Secure payments", sub: "Your data is safe" },
               { icon: Coins, title: "Crypto accepted", sub: "BTC, ETH, USDT +" },
-              { icon: Headphones, title: "24/7 support", sub: "Always here" },
+              { icon: Headphones, title: "Live support", sub: "Get help when you need it" },
             ].map((t, i) => (
               <div key={i} className={`flex items-center gap-3 px-4 py-3.5 ${i === 4 ? "col-span-2 md:col-span-1" : ""}`}>
                 <t.icon className="w-4 h-4 flex-shrink-0" style={{ color: TG }} />
@@ -947,13 +936,13 @@ export default function LandingPage() {
       <section className="py-20 md:py-28 border-t border-[#1f1f22]">
         <div ref={ctaRef.ref} className={`max-w-5xl mx-auto px-6 text-center ${reveal(ctaRef.visible).className}`}>
           <h2 className="text-[32px] md:text-5xl font-semibold text-white tracking-[-0.03em] leading-[1.1]">
-            Your first post is<br />two minutes away.
+            Your advertising shouldn&apos;t<br />depend on promises.
           </h2>
           <Link href="/user/login" className="mt-9 inline-flex items-center gap-2 text-[14px] font-medium text-white px-7 py-3 rounded-md transition-all duration-150 hover:opacity-90 hover:translate-y-[-1px]" style={{ background: TG }}>
-            Launch a campaign
+            Start advertising
             <ArrowRight className="w-4 h-4" />
           </Link>
-          <p className="mt-5 text-[12px] text-[#5d5d66]">No setup. No accounts. Crypto billing.</p>
+          <p className="mt-5 text-[12px] text-[#5d5d66]">You provide the ad. HQAdz handles the posting.</p>
         </div>
       </section>
 
@@ -967,8 +956,8 @@ export default function LandingPage() {
           <div className="flex items-center gap-5 text-[12px] text-[#5d5d66]">
             <a href="#pricing" className="hover:text-white transition-colors duration-150">Pricing</a>
             <a href="#faq" className="hover:text-white transition-colors duration-150">FAQ</a>
-            <a href="#" className="hover:text-white transition-colors duration-150">Terms</a>
-            <a href="#" className="hover:text-white transition-colors duration-150">Privacy</a>
+            <Link href="/terms" className="hover:text-white transition-colors duration-150">Terms</Link>
+            <Link href="/privacy-policy" className="hover:text-white transition-colors duration-150">Privacy</Link>
             <span className="flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
               Operational

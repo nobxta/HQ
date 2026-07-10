@@ -20,7 +20,6 @@ export interface PurchasePlan {
   mode: "starter" | "enterprise";
   billing: "week" | "month";
   price: number;
-  reach: string;
   posts: string;
   replacements: string;
   durationDays: number;
@@ -408,8 +407,7 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
 
               <div className="rounded-lg border border-[#1f1f22] bg-[#101012] divide-y divide-[#1f1f22]">
                 <Row label={`${plan.label} — ${plan.durationDays} days`} value={`$${plan.price.toFixed(2)}`} />
-                <Row label="Reach / day" value={plan.reach} muted />
-                <Row label="Posts / day" value={plan.posts} muted />
+                <Row label="Estimated posts / day" value={plan.posts} muted />
                 <Row label="Replacements" value={plan.replacements} muted />
                 {couponPct > 0 && <Row label={`Coupon ${coupon.toUpperCase()}`} value={`-${couponPct}%`} accent />}
                 <div className="flex items-center justify-between px-4 py-3">
