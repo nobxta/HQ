@@ -6,8 +6,9 @@ import portalApi from "@/lib/portal-api";
 import Card, { CardHeader, CardTitle } from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import { PageSkeleton } from "@/components/ui/Skeleton";
-import { Link2, Plus, Trash2, Save, Type } from "lucide-react";
+import { Link2, Plus, Trash2, Save, Type, Eye, EyeOff } from "lucide-react";
 import toast from "react-hot-toast";
+import TelegramPostPreview from "@/components/ui/TelegramPostPreview";
 
 export default function UserCampaignPage() {
   const { data: bot, isLoading, mutate } = usePortalBot();
@@ -18,6 +19,7 @@ export default function UserCampaignPage() {
   const [postLinks, setPostLinks] = useState<string[]>([]);
   const [newLink, setNewLink] = useState("");
   const [saving, setSaving] = useState(false);
+  const [previewLink, setPreviewLink] = useState<string | null>(null);
 
   useEffect(() => {
     if (bot) {
@@ -161,12 +163,26 @@ export default function UserCampaignPage() {
           ) : (
             <div className="space-y-2">
               {postLinks.map((link, i) => (
-                <div key={i} className="flex items-center gap-2 rounded-lg bg-dark-800 px-3 py-2">
-                  <Link2 className="h-3.5 w-3.5 text-accent shrink-0" />
-                  <span className="flex-1 text-xs sm:text-sm text-dark-300 font-mono truncate">{link}</span>
-                  <button onClick={() => removeLink(i)} className="text-dark-500 hover:text-danger transition-colors shrink-0 p-1">
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                <div key={i} className="rounded-lg bg-dark-800 overflow-hidden">
+                  <div className="flex items-center gap-2 px-3 py-2">
+                    <Link2 className="h-3.5 w-3.5 text-accent shrink-0" />
+                    <span className="flex-1 text-xs sm:text-sm text-dark-300 font-mono truncate">{link}</span>
+                    <button
+                      onClick={() => setPreviewLink(previewLink === link ? null : link)}
+                      className="text-dark-500 hover:text-accent transition-colors shrink-0 p-1"
+                      title={previewLink === link ? "Hide preview" : "Show preview"}
+                    >
+                      {previewLink === link ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                    </button>
+                    <button onClick={() => removeLink(i)} className="text-dark-500 hover:text-danger transition-colors shrink-0 p-1">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  {previewLink === link && (
+                    <div className="px-3 pb-3">
+                      <TelegramPostPreview url={link} />
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -184,6 +200,14 @@ export default function UserCampaignPage() {
               <Plus className="h-4 w-4" />
             </Button>
           </div>
+
+          {/* Instant live preview of the link being typed */}
+          {newLink.trim() && (
+            <div className="space-y-1.5">
+              <p className="text-[11px] uppercase tracking-wide text-dark-500 font-medium">Live preview</p>
+              <TelegramPostPreview url={newLink} />
+            </div>
+          )}
 
           <div className="flex justify-end">
             <Button onClick={saveLinks} loading={saving}>
