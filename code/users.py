@@ -752,19 +752,21 @@ DM_AUTOREPLY_MESSAGE = (
 DM_AUTOREPLY_DEFAULT = (
     "Hey, this is an automated advertising account. Please contact the main account for assistance."
 )
-# Locked HQAdz disclosure appended to EVERY auto-reply (default, custom, or preset).
-# The owner cannot edit or remove it; never appended twice.
-DM_AUTOREPLY_FOOTER = "For HQAdz AdBot, visit @HQAdz or HQAdz.io\nDirect support: @fairs"
+# Default locked footer appended to EVERY auto-reply. This is only the DEFAULT — the live
+# footer is admin-editable via dm_inbox.get_autoreply_footer(); the owner can never change it.
+DM_AUTOREPLY_FOOTER = dm_inbox.DEFAULT_AUTOREPLY_FOOTER
 
 
-def compose_autoreply(custom: str | None) -> str:
+def compose_autoreply(custom: str | None, footer: str | None = None) -> str:
     """Build the exact auto-reply text: (custom message or the default) + the locked
-    HQAdz footer, separated by a blank line. Idempotent — never appends the footer twice.
-    Single source of truth for the worker (send), the API (preview), and the control bot."""
+    admin-managed footer, separated by a blank line. Idempotent — never appends it twice.
+    Single source of truth for the worker (send), the API (preview), and the control bot.
+    Pass `footer` to override; otherwise the current admin-configured footer is used."""
     body = (custom or "").strip() or DM_AUTOREPLY_DEFAULT
-    if DM_AUTOREPLY_FOOTER in body:
+    ft = footer if footer is not None else dm_inbox.get_autoreply_footer()
+    if not ft or ft in body:
         return body
-    return f"{body}\n\n{DM_AUTOREPLY_FOOTER}"
+    return f"{body}\n\n{ft}"
 
 
 # Short-TTL disk cache so a portal/control-bot toggle of dm_autoreply reaches the
@@ -6876,8 +6878,9 @@ async def create_user_bot(bot_token: str) -> None:
                     return
             elif config_state == "autoreply_msg":
                 # "default" clears the custom message (falls back to the built-in default).
-                # The locked HQAdz footer is stripped so it can't be stored or duplicated.
-                new_msg = "" if text.strip().lower() == "default" else text.replace(DM_AUTOREPLY_FOOTER, "").strip()[:500]
+                # The locked footer is stripped so it can't be stored or duplicated.
+                _ft = dm_inbox.get_autoreply_footer()
+                new_msg = "" if text.strip().lower() == "default" else text.replace(_ft, "").strip()[:500]
                 def upd(c):
                     ar = dict(c.get("dm_autoreply") or {})
                     ar["message"] = new_msg

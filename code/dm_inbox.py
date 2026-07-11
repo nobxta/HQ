@@ -13,8 +13,15 @@ from . import config
 
 _inbox_lock = threading.Lock()
 _notif_lock = threading.Lock()
+_settings_lock = threading.Lock()
 _MAX_INBOX = 200
 _MAX_NOTIFS = 50
+
+# The locked HQAdz disclosure appended to every auto-reply. Admin-editable (stored in
+# data/admin_settings.json under "dm_autoreply_footer"); users can never change it.
+DEFAULT_AUTOREPLY_FOOTER = "For HQAdz AdBot, visit @HQAdz or HQAdz.io\nDirect support: @fairs"
+_footer_cache: tuple[float, str] | None = None
+_FOOTER_TTL = 60.0
 
 
 # ── DM inbox ──────────────────────────────────────────────────────────────────
@@ -95,6 +102,49 @@ def list_inbox_bots() -> list[str]:
         return [p.stem for p in d.glob("*.json")]
     except OSError:
         return []
+
+
+# ── Admin-configurable auto-reply footer (data/admin_settings.json) ───────────
+def _admin_settings_path():
+    return config.DATA_DIR / "admin_settings.json"
+
+
+def _load_admin_settings() -> dict:
+    p = _admin_settings_path()
+    if not p.exists():
+        return {}
+    try:
+        d = json.loads(p.read_text("utf-8"))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def get_autoreply_footer(force: bool = False) -> str:
+    """The current locked footer text (admin-set, or the default). Cached _FOOTER_TTL
+    seconds so the posting worker (separate process) reads disk on a cadence, not per DM."""
+    global _footer_cache
+    now = time.time()
+    if not force and _footer_cache and (now - _footer_cache[0]) < _FOOTER_TTL:
+        return _footer_cache[1]
+    ft = (_load_admin_settings().get("dm_autoreply_footer") or "").strip() or DEFAULT_AUTOREPLY_FOOTER
+    _footer_cache = (now, ft)
+    return ft
+
+
+def set_autoreply_footer(text: str) -> str:
+    """Admin-only: change the footer. Empty falls back to the default (never truly blank).
+    Read-modify-write so other admin settings are preserved."""
+    global _footer_cache
+    ft = (text or "").strip() or DEFAULT_AUTOREPLY_FOOTER
+    with _settings_lock:
+        s = _load_admin_settings()
+        s["dm_autoreply_footer"] = ft
+        p = _admin_settings_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(s, indent=2), "utf-8")
+    _footer_cache = (time.time(), ft)
+    return ft
 
 
 # ── Web notification writer (shared with the portal bell) ─────────────────────

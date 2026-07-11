@@ -384,13 +384,15 @@ async def portal_get_bot(bot_name: str, telegram_id: int = Query(...)):
     detail["web_token"] = cfg.get("web_token", "")
     detail["renewal_price"] = cfg.get("renewal_price", "0")
     # DM auto-reply config + a server-composed preview so the UI/bot render identical text.
-    from code.users import compose_autoreply, DM_AUTOREPLY_DEFAULT, DM_AUTOREPLY_FOOTER
+    # The footer is admin-managed (users can't edit it); read the live value, not the default.
+    from code.users import compose_autoreply, DM_AUTOREPLY_DEFAULT
+    from code import dm_inbox as _dm
     ar = cfg.get("dm_autoreply") or {}
     ar_enabled = bool(ar.get("enabled", True))
     ar_message = str(ar.get("message", "") or "")
     detail["dm_autoreply"] = {"enabled": ar_enabled, "message": ar_message}
     detail["dm_autoreply_default"] = DM_AUTOREPLY_DEFAULT
-    detail["dm_autoreply_footer"] = DM_AUTOREPLY_FOOTER
+    detail["dm_autoreply_footer"] = _dm.get_autoreply_footer()
     detail["dm_autoreply_preview"] = compose_autoreply(ar_message)
     return detail
 
@@ -547,8 +549,9 @@ async def portal_update_settings(bot_name: str, telegram_id: int = Query(...), b
 @router.put("/bot/{bot_name}/autoreply")
 async def portal_update_autoreply(bot_name: str, telegram_id: int = Query(...), body: PortalUpdateAutoreply = ...):
     """Save DM auto-reply config. The user only controls enabled + the body message; the
-    locked HQAdz footer is never stored (stripped here) and always appended at send time."""
-    from code.users import compose_autoreply, DM_AUTOREPLY_FOOTER
+    admin-managed footer is never stored (stripped here) and always appended at send time."""
+    from code.users import compose_autoreply
+    from code import dm_inbox as _dm
     token, cfg = await _get_user_bot(telegram_id, bot_name)
     name = cfg.get("name", bot_name)
     full_cfg = await wrappers.load_user_data(name)
@@ -557,7 +560,7 @@ async def portal_update_autoreply(bot_name: str, telegram_id: int = Query(...), 
         ar["enabled"] = bool(body.enabled)
     if body.message is not None:
         # Never persist the footer, so it can't duplicate or be edited by the user.
-        msg = body.message.replace(DM_AUTOREPLY_FOOTER, "").strip()[:500]
+        msg = body.message.replace(_dm.get_autoreply_footer(), "").strip()[:500]
         ar["message"] = msg
     ar.setdefault("enabled", True)
     ar.setdefault("message", "")

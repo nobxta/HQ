@@ -1,12 +1,14 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import useSWR from "swr";
 import api from "@/lib/api";
-import Card from "@/components/ui/Card";
+import Card, { CardHeader, CardTitle } from "@/components/ui/Card";
+import Button from "@/components/ui/Button";
 import { Table, Thead, Tbody, Tr, Th, Td } from "@/components/ui/Table";
 import { TableSkeleton } from "@/components/ui/Skeleton";
-import { MessageSquare, RefreshCw, ExternalLink } from "lucide-react";
+import { MessageSquare, RefreshCw, ExternalLink, Lock, Save, RotateCcw } from "lucide-react";
 import { formatDateTime } from "@/lib/utils";
+import toast from "react-hot-toast";
 
 interface DmRow {
   id: string;
@@ -42,6 +44,29 @@ export default function AdminDmInboxPage() {
 
   const rows = data?.messages || [];
 
+  // Admin-managed footer appended to every auto-reply.
+  const { data: footerData, mutate: mutateFooter } = useSWR<{ footer: string; default: string }>(
+    "/api/system/dm-inbox/footer",
+    fetcher
+  );
+  const [footer, setFooter] = useState("");
+  const [savingFooter, setSavingFooter] = useState(false);
+  useEffect(() => {
+    if (footerData?.footer !== undefined) setFooter(footerData.footer);
+  }, [footerData?.footer]);
+
+  const saveFooter = async () => {
+    setSavingFooter(true);
+    try {
+      await api.put("/api/system/dm-inbox/footer", { footer });
+      toast.success("Footer saved");
+      mutateFooter();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Failed to save footer");
+    }
+    setSavingFooter(false);
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
@@ -53,6 +78,31 @@ export default function AdminDmInboxPage() {
           <RefreshCw className="h-4 w-4" />
         </button>
       </div>
+
+      {/* Locked footer — appended to every auto-reply; only admins can edit it */}
+      <Card>
+        <CardHeader>
+          <CardTitle><Lock className="h-4 w-4 inline mr-2" />Auto-Reply Footer</CardTitle>
+          {footerData?.default !== undefined && footer !== footerData.default && (
+            <button onClick={() => setFooter(footerData.default)} className="text-xs text-dark-500 hover:text-dark-200 inline-flex items-center gap-1">
+              <RotateCcw className="h-3 w-3" /> Reset to default
+            </button>
+          )}
+        </CardHeader>
+        <p className="text-xs text-dark-400 mb-3">
+          This text is automatically added after every user&apos;s auto-reply message (two lines below it).
+          Users can write their own message but can never edit or remove this footer — only you can.
+        </p>
+        <textarea
+          className="w-full h-24 rounded-lg border border-dark-600 bg-dark-950 px-3 py-2.5 text-sm text-dark-200 focus:outline-none focus:ring-2 focus:ring-accent/40 resize-none"
+          value={footer}
+          onChange={(e) => setFooter(e.target.value)}
+          placeholder={footerData?.default || "For HQAdz AdBot, visit @HQAdz…"}
+        />
+        <div className="flex justify-end mt-3">
+          <Button onClick={saveFooter} loading={savingFooter} size="sm"><Save className="h-4 w-4" /> Save Footer</Button>
+        </div>
+      </Card>
 
       <div className="flex flex-wrap gap-3">
         <select value={bot} onChange={(e) => setBot(e.target.value)} className="rounded-lg border border-dark-600 bg-dark-800 px-3 py-2 text-sm text-dark-100 focus:outline-none focus:ring-2 focus:ring-accent/40">
