@@ -152,8 +152,8 @@ export default function UserAutoReplyPage() {
                     <span className="text-sm font-semibold text-dark-100">{m.sender_name || "Unknown"}</span>
                     {m.sender_username && <span className="text-xs text-dark-500">@{m.sender_username}</span>}
                     {m.sender_id ? (
-                      <a href={`tg://user?id=${m.sender_id}`} className="text-accent hover:underline inline-flex items-center gap-0.5 text-[11px]">
-                        Open profile <ExternalLink className="h-3 w-3" />
+                      <a href={`tg://user?id=${m.sender_id}`} className="inline-flex items-center gap-1 rounded-md bg-accent/10 text-accent px-2 py-0.5 text-[11px] hover:bg-accent/20 transition-colors" title="Open sender profile">
+                        ID {m.sender_id} <ExternalLink className="h-3 w-3" />
                       </a>
                     ) : null}
                   </div>

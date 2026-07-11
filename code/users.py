@@ -2562,18 +2562,25 @@ async def _async_session_loop(
                     ev_ts = time.time()
                 if ev_ts < dm_watch_since - 5:
                     return
-                # Resolve sender: display name + bare @username (kept separate for the inbox/notify)
-                display_name = "Unknown User"
+                # Resolve sender: display name + bare @username (kept separate for the inbox/notify).
+                # Prefer event.get_sender() — it resolves from the update's own context and, unlike
+                # client.get_entity(id), doesn't fail with "Could not find the input entity" right
+                # after receiving a DM (which is why senders were showing as "Unknown User").
+                display_name = ""
                 sender_username = ""
                 try:
-                    user = await client.get_entity(event.sender_id)
+                    user = await event.get_sender()
+                    if user is None:
+                        user = await client.get_entity(event.sender_id)
                     if user:
                         first = (getattr(user, "first_name", None) or "").strip()
                         last = (getattr(user, "last_name", None) or "").strip()
-                        display_name = (first + " " + last).strip() or "Unknown User"
                         sender_username = (getattr(user, "username", None) or "").strip()
+                        display_name = (first + " " + last).strip() or (f"@{sender_username}" if sender_username else "")
                 except Exception:
                     pass
+                if not display_name:
+                    display_name = f"@{sender_username}" if sender_username else f"User {user_id}"
                 # Resolve this account's own @username once (for the "Account:" line).
                 if not dm_account["username"]:
                     try:
@@ -3721,7 +3728,11 @@ def _apply_worker_result(msg: dict) -> None:
             user_id = msg.get("user_id", 0)
             if session_file and user_id:
                 loop.create_task(notify.notify_dm_received(
-                    session_file, msg.get("from_name", "Unknown User"), user_id, msg.get("message_text", "")
+                    session_file, msg.get("from_name", "Unknown User"), user_id, msg.get("message_text", ""),
+                    account_username=msg.get("account_username", ""),
+                    sender_username=msg.get("sender_username", ""),
+                    media_type=msg.get("media_type", ""),
+                    caption=msg.get("caption", ""),
                 ))
         except Exception as e:
             logger.warning("dm_alert handling failed: %s", e)

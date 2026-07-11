@@ -144,12 +144,15 @@ export default function AdminDmInboxPage() {
                 </Td>
                 <Td className="text-xs text-dark-300">{r.account_username ? `@${r.account_username}` : (r.session_file || "—")}</Td>
                 <Td className="text-xs">
-                  {r.sender_id ? (
-                    <a href={`tg://user?id=${r.sender_id}`} className="text-accent hover:underline inline-flex items-center gap-1">
-                      {r.sender_name || "Unknown"}{r.sender_username ? ` @${r.sender_username}` : ""}
-                      <ExternalLink className="h-3 w-3" />
-                    </a>
-                  ) : (r.sender_name || "Unknown")}
+                  <div className="flex flex-col gap-1 items-start">
+                    <span className="text-dark-100 font-medium">{r.sender_name || "Unknown"}</span>
+                    {r.sender_username && <span className="text-dark-500">@{r.sender_username}</span>}
+                    {r.sender_id ? (
+                      <a href={`tg://user?id=${r.sender_id}`} className="inline-flex items-center gap-1 rounded-md bg-accent/10 text-accent px-2 py-0.5 hover:bg-accent/20 transition-colors" title="Open sender profile">
+                        ID {r.sender_id} <ExternalLink className="h-3 w-3" />
+                      </a>
+                    ) : null}
+                  </div>
                 </Td>
                 <Td className="max-w-[320px]">
                   {r.media_type ? (

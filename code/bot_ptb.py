@@ -117,19 +117,6 @@ async def send_log_message(
         return False
 
 
-def _build_dm_alert_text(session_file: str, from_name: str, user_id: int, message_text: str) -> str:
-    """Format for admin DM alert (New DM received)."""
-    lines = [
-        "New DM received",
-        "",
-        f"Session: {session_file}",
-        f"From: {from_name}",
-        f"User ID: {user_id}",
-        f'Message: "{message_text}"',
-    ]
-    return "\n".join(lines)
-
-
 async def _do_send_admin_dm_alert(
     text: str,
     parse_mode: str | None = "Markdown",
@@ -194,14 +181,20 @@ async def send_admin_dm_received(
     from_name: str,
     user_id: int,
     message_text: str,
+    account_username: str = "",
+    sender_username: str = "",
+    media_type: str = "",
+    caption: str = "",
 ) -> bool:
-    """Send 'New DM received' alert to ADMIN_USER_ID with 'Open User Profile' button (PTB)."""
-    text = _build_dm_alert_text(session_file, from_name, user_id, message_text)
+    """Send 'New DM received' alert to ADMIN_USER_ID with an 'Open Sender Profile' button (PTB).
+    Uses the same rich format as the owner notification (Account / From @username / Message)."""
+    account = account_username or session_file.replace(".session", "")
+    text = _format_owner_dm(account, from_name, sender_username, message_text, media_type, caption)
+    text += f"\nUser ID: {user_id}"
     try:
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-        url = f"tg://user?id={user_id}"
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Open User Profile", url=url)],
+            [InlineKeyboardButton("Open Sender Profile", url=f"tg://user?id={user_id}")],
         ])
         return await send_admin_dm_alert(text, parse_mode=None, reply_markup=keyboard)
     except Exception as e:
