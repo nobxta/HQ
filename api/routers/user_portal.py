@@ -108,6 +108,11 @@ class PortalUpdateSettings(BaseModel):
     gap: Optional[int] = None
 
 
+class PortalUpdateAutoreply(BaseModel):
+    enabled: Optional[bool] = None
+    message: Optional[str] = None
+
+
 class PortalUpdateAuth(BaseModel):
     authorized: list[int]
 
@@ -378,6 +383,15 @@ async def portal_get_bot(bot_name: str, telegram_id: int = Query(...)):
     detail["post_links"] = cfg.get("post_links", [])
     detail["web_token"] = cfg.get("web_token", "")
     detail["renewal_price"] = cfg.get("renewal_price", "0")
+    # DM auto-reply config + a server-composed preview so the UI/bot render identical text.
+    from code.users import compose_autoreply, DM_AUTOREPLY_DEFAULT, DM_AUTOREPLY_FOOTER
+    ar = cfg.get("dm_autoreply") or {}
+    ar_enabled = bool(ar.get("enabled", True))
+    ar_message = str(ar.get("message", "") or "")
+    detail["dm_autoreply"] = {"enabled": ar_enabled, "message": ar_message}
+    detail["dm_autoreply_default"] = DM_AUTOREPLY_DEFAULT
+    detail["dm_autoreply_footer"] = DM_AUTOREPLY_FOOTER
+    detail["dm_autoreply_preview"] = compose_autoreply(ar_message)
     return detail
 
 
@@ -528,6 +542,59 @@ async def portal_update_settings(bot_name: str, telegram_id: int = Query(...), b
             full_cfg["plan"]["gap"] = body.gap
     await wrappers.save_user_data(name, full_cfg)
     return {"status": "updated", "message": "Settings updated"}
+
+
+@router.put("/bot/{bot_name}/autoreply")
+async def portal_update_autoreply(bot_name: str, telegram_id: int = Query(...), body: PortalUpdateAutoreply = ...):
+    """Save DM auto-reply config. The user only controls enabled + the body message; the
+    locked HQAdz footer is never stored (stripped here) and always appended at send time."""
+    from code.users import compose_autoreply, DM_AUTOREPLY_FOOTER
+    token, cfg = await _get_user_bot(telegram_id, bot_name)
+    name = cfg.get("name", bot_name)
+    full_cfg = await wrappers.load_user_data(name)
+    ar = dict(full_cfg.get("dm_autoreply") or {})
+    if body.enabled is not None:
+        ar["enabled"] = bool(body.enabled)
+    if body.message is not None:
+        # Never persist the footer, so it can't duplicate or be edited by the user.
+        msg = body.message.replace(DM_AUTOREPLY_FOOTER, "").strip()[:500]
+        ar["message"] = msg
+    ar.setdefault("enabled", True)
+    ar.setdefault("message", "")
+    full_cfg["dm_autoreply"] = ar
+    await wrappers.save_user_data(name, full_cfg)
+    return {
+        "status": "updated",
+        "dm_autoreply": ar,
+        "final_preview": compose_autoreply(ar.get("message", "")),
+    }
+
+
+@router.get("/bot/{bot_name}/dm-inbox")
+async def portal_get_dm_inbox(bot_name: str, telegram_id: int = Query(...), account: str = Query("")):
+    """DMs received by this AdBot's posting accounts, newest first, optional account filter."""
+    from code import dm_inbox as _dm
+    token, cfg = await _get_user_bot(telegram_id, bot_name)
+    name = cfg.get("name", bot_name)
+    items = await asyncio.to_thread(_dm.load_inbox, name)
+    accounts = sorted({i.get("session_file", "") for i in items if i.get("session_file")})
+    if account:
+        items = [i for i in items if i.get("session_file") == account]
+    unread = sum(1 for i in items if not i.get("read"))
+    return {
+        "messages": list(reversed(items))[:200],
+        "accounts": accounts,
+        "unread_count": unread,
+    }
+
+
+@router.post("/bot/{bot_name}/dm-inbox/read")
+async def portal_mark_dm_inbox_read(bot_name: str, telegram_id: int = Query(...)):
+    from code import dm_inbox as _dm
+    token, cfg = await _get_user_bot(telegram_id, bot_name)
+    name = cfg.get("name", bot_name)
+    await asyncio.to_thread(_dm.mark_inbox_read, name)
+    return {"status": "ok"}
 
 
 @router.put("/bot/{bot_name}/authorized")

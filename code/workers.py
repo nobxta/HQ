@@ -290,8 +290,13 @@ async def worker_main_async(
             "worker_alive": True,
         })
 
-    def report_dm_alert(session_file: str, from_name: str, user_id: int, message_text: str) -> None:
-        """Notify admin of new DM (private message to ADMIN_USER_ID via PTB); not sent to log group."""
+    def report_dm_alert(
+        session_file: str, from_name: str, user_id: int, message_text: str,
+        account_username: str = "", sender_username: str = "",
+        media_type: str = "", caption: str = "",
+    ) -> None:
+        """Report an incoming DM to the controller: it records the DM in the owner's inbox,
+        raises the web notification, and DMs the owner via the AdBot's control bot."""
         result_queue.put({
             "type": "dm_alert",
             "bot_token": bot_token,
@@ -300,6 +305,10 @@ async def worker_main_async(
             "from_name": from_name,
             "user_id": user_id,
             "message_text": message_text,
+            "account_username": account_username,
+            "sender_username": sender_username,
+            "media_type": media_type,
+            "caption": caption,
         })
 
     def report_audit_log(session_file: str, event: str, **kwargs: object) -> None:

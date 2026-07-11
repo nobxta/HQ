@@ -14,7 +14,7 @@ from api.runtime.state import set_main_loop, mark_api_started
 from api.middleware.logging import RequestLoggingMiddleware
 from api.middleware.security import RateLimitMiddleware, SecurityHeadersMiddleware
 
-from api.routers import auth, dashboard, bots, sessions, orders, groups, users, system, broadcast, user_portal, session_client, coupons
+from api.routers import auth, dashboard, bots, sessions, orders, groups, users, system, broadcast, user_portal, session_client, coupons, dm_inbox
 from api.websocket import router as ws_router
 
 logger = logging.getLogger("api")
@@ -76,6 +76,7 @@ app.include_router(groups.router)
 app.include_router(users.router)
 app.include_router(system.router)
 app.include_router(coupons.router)
+app.include_router(dm_inbox.router)
 app.include_router(broadcast.router)
 app.include_router(user_portal.router)
 app.include_router(session_client.router)

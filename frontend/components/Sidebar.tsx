@@ -7,7 +7,7 @@ import { useState } from "react";
 import {
   LayoutDashboard, Bot, HardDrive, FolderOpen,
   CreditCard, Tag, Settings, Megaphone, Shield, X,
-  ChevronDown, HelpCircle, KeyRound, ScrollText, Ticket,
+  ChevronDown, HelpCircle, KeyRound, ScrollText, Ticket, MessageSquare,
 } from "lucide-react";
 
 const mainNav = [
@@ -21,6 +21,7 @@ const mainNav = [
 const manageNav = [
   { href: "/admin/payments", label: "Payments", icon: CreditCard },
   { href: "/admin/coupons", label: "Coupons", icon: Ticket },
+  { href: "/admin/dm-inbox", label: "Auto Reply", icon: MessageSquare },
   { href: "/admin/plans", label: "Plans", icon: Tag },
   { href: "/admin/tokens", label: "Bot Tokens", icon: KeyRound },
   { href: "/admin/support", label: "Support", icon: HelpCircle },

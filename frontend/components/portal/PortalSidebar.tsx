@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { clearPortalSession, getPortalSession } from "@/lib/portal-api";
 import {
   LayoutDashboard, Terminal, Link2, List,
-  Settings, CreditCard, LogOut, X, Users,
+  Settings, CreditCard, LogOut, X, Users, MessageSquare,
 } from "lucide-react";
 
 const nav = [
@@ -15,6 +15,7 @@ const nav = [
   { href: "/user/logs", label: "Live Logs", icon: Terminal },
   { href: "/user/campaign", label: "Campaign", icon: Link2 },
   { href: "/user/chatlist", label: "Chat List", icon: List },
+  { href: "/user/auto-reply", label: "Auto Reply", icon: MessageSquare },
   { href: "/user/settings", label: "Settings", icon: Settings },
   { href: "/user/billing", label: "Billing", icon: CreditCard },
 ];

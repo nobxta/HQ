@@ -209,6 +209,78 @@ async def send_admin_dm_received(
         return await send_admin_dm_alert(text, parse_mode=None)
 
 
+def _format_owner_dm(
+    account_username: str, from_name: str, from_username: str,
+    text: str, media_type: str, caption: str,
+) -> str:
+    """Owner-facing 'New DM Received' text (no parse_mode — plain text)."""
+    account = f"@{account_username}" if account_username else "an ad account"
+    who = from_name or "Unknown User"
+    if from_username:
+        who += f" @{from_username}"
+    lines = ["New DM Received", "", f"Account: {account}", f"From: {who}"]
+    if media_type:
+        lines.append(f"Media: {media_type}")
+        if caption:
+            lines.append(f"Caption: {caption}")
+    else:
+        lines.append(f'Message: {text}' if text else "Message: (empty)")
+    return "\n".join(lines)
+
+
+async def send_owner_dm_received(
+    bot_token: str,
+    owner_id: int,
+    account_username: str,
+    from_name: str,
+    from_username: str,
+    sender_id: int,
+    text: str = "",
+    media_type: str = "",
+    caption: str = "",
+) -> bool:
+    """DM the AdBot owner about an incoming DM to one of their posting accounts, via the
+    AdBot's own control bot, with an 'Open Sender Profile' button. Best-effort."""
+    if not (bot_token and owner_id):
+        return False
+    body = _format_owner_dm(account_username, from_name, from_username, text, media_type, caption)
+    try:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Open Sender Profile", url=f"tg://user?id={sender_id}")],
+        ])
+        return await send_message_with_bot(owner_id, body, bot_token=bot_token, reply_markup=keyboard)
+    except Exception as e:
+        logger.warning("send_owner_dm_received failed: %s", e)
+        try:
+            return await send_message_with_bot(owner_id, body, bot_token=bot_token)
+        except Exception:
+            return False
+
+
+async def send_owner_dm_followup(
+    bot_token: str, owner_id: int, account_username: str,
+    from_name: str, from_username: str, sender_id: int, extra_count: int,
+) -> bool:
+    """Coalesced follow-up after the instant notification: 'N more messages from X'."""
+    if not (bot_token and owner_id) or extra_count <= 0:
+        return False
+    who = from_name or "Unknown User"
+    if from_username:
+        who += f" @{from_username}"
+    account = f"@{account_username}" if account_username else "an ad account"
+    body = f"+{extra_count} more message{'s' if extra_count != 1 else ''} from {who} to {account}"
+    try:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Open Sender Profile", url=f"tg://user?id={sender_id}")],
+        ])
+        return await send_message_with_bot(owner_id, body, bot_token=bot_token, reply_markup=keyboard)
+    except Exception as e:
+        logger.warning("send_owner_dm_followup failed: %s", e)
+        return False
+
+
 async def edit_admin_message(chat_id: int, message_id: int, text: str, parse_mode: str | None = None) -> bool:
     """Edit a message sent by the admin bot (e.g. Create AdBot progress/result). Uses PTB."""
     return await edit_message_with_bot(chat_id, message_id, text, parse_mode=parse_mode, bot_token=None)

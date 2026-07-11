@@ -30,6 +30,7 @@ except ImportError:
 from . import config
 from . import bot_ptb
 from . import notify
+from . import dm_inbox
 from .ui.emoji_entities_telethon import build_panel_message, panel_button
 from .user_config import get_plan_mode
 from .maintenance import (
@@ -412,6 +413,12 @@ CB_REP_SKIP = b"rep_skip"         # Skip / continue without
 CB_REP_CONFIRM_FREE = b"rep_cf"   # Confirm free replacement
 PREFIX_REP_CRYPTO = b"rep_cry:"   # rep_cry:USDT_TRC20 — crypto selection for replacement payment
 CB_REP_STATUS = b"rep_status"     # Check replacement status
+# DM auto-reply menu
+CB_AR_MENU = b"ar_menu"           # Open Auto Reply submenu
+CB_AR_TOGGLE = b"ar_toggle"       # Turn auto-reply ON/OFF
+CB_AR_EDIT = b"ar_edit"           # Change the auto-reply message
+CB_AR_RECENT = b"ar_recent"       # View recent DMs received
+CB_AR_BACK = b"ar_back"           # Back to main menu from Auto Reply
 
 # Posting: asyncio tasks on main loop (legacy); bot_token -> (stop_event, [asyncio.Task, ...], [session_file, ...])
 _posting_handles: dict[str, tuple[asyncio.Event, list[asyncio.Task], list[str]]] = {}
@@ -734,10 +741,155 @@ def _classify_post_error(error_message: str) -> str | None:
 
 # DM auto-reply: only reply to same user once per 24 hours (anti-spam)
 DM_AUTOREPLY_COOLDOWN_SEC = 24 * 3600
+# Legacy constant kept for backward-compat imports; live replies now go through
+# compose_autoreply() so they carry the per-AdBot message + the locked footer.
 DM_AUTOREPLY_MESSAGE = (
     "This is an automated AdBot account. DMs may not be reviewed. "
     "For promotions and advertising, contact @Pacific or check @HQAdz."
 )
+
+# Shown when the owner hasn't written a custom auto-reply.
+DM_AUTOREPLY_DEFAULT = (
+    "Hey, this is an automated advertising account. Please contact the main account for assistance."
+)
+# Locked HQAdz disclosure appended to EVERY auto-reply (default, custom, or preset).
+# The owner cannot edit or remove it; never appended twice.
+DM_AUTOREPLY_FOOTER = "For HQAdz AdBot, visit @HQAdz or HQAdz.io\nDirect support: @fairs"
+
+
+def compose_autoreply(custom: str | None) -> str:
+    """Build the exact auto-reply text: (custom message or the default) + the locked
+    HQAdz footer, separated by a blank line. Idempotent — never appends the footer twice.
+    Single source of truth for the worker (send), the API (preview), and the control bot."""
+    body = (custom or "").strip() or DM_AUTOREPLY_DEFAULT
+    if DM_AUTOREPLY_FOOTER in body:
+        return body
+    return f"{body}\n\n{DM_AUTOREPLY_FOOTER}"
+
+
+# Short-TTL disk cache so a portal/control-bot toggle of dm_autoreply reaches the
+# posting worker (separate process) within ~30s without a restart — the worker
+# cannot be pushed to directly, so it re-reads the user-data file on a cadence.
+_autoreply_cfg_cache: dict[str, tuple[float, dict]] = {}
+_AUTOREPLY_CFG_TTL = 30.0
+
+
+def get_autoreply_config(name: str) -> dict:
+    """Return {'enabled': bool, 'message': str} for an AdBot, defaulting to ON with an
+    empty (→ default) message when unset. Cached for _AUTOREPLY_CFG_TTL seconds."""
+    now = time.time()
+    hit = _autoreply_cfg_cache.get(name)
+    if hit and (now - hit[0]) < _AUTOREPLY_CFG_TTL:
+        return hit[1]
+    ar: dict = {}
+    try:
+        ar = (load_user_data(name) or {}).get("dm_autoreply") or {}
+    except Exception:
+        ar = {}
+    val = {"enabled": bool(ar.get("enabled", True)), "message": str(ar.get("message", "") or "")}
+    _autoreply_cfg_cache[name] = (now, val)
+    return val
+
+
+# Owner DM-notification debounce: first message from a sender fires instantly (web bell +
+# control-bot DM); further messages from the same sender within the window are counted and
+# flushed as a single "+N more" follow-up, so a spammer can't flood the owner. The inbox
+# still records every message. Keyed by (bot_token, sender_id); controller-process only.
+_dm_owner_notify: dict[tuple, dict] = {}
+_DM_NOTIFY_WINDOW_SEC = 45.0
+
+
+def _dm_bell_summary(from_name: str, sender_username: str, text: str, media_type: str, caption: str) -> str:
+    who = from_name or "Someone"
+    if sender_username:
+        who += f" (@{sender_username})"
+    if media_type:
+        body = f"[{media_type}]" + (f" {caption}" if caption else "")
+    else:
+        body = text or ""
+    body = body.strip()
+    if len(body) > 120:
+        body = body[:117] + "…"
+    return f"{who}: {body}" if body else f"{who} sent a message"
+
+
+async def _dm_owner_flush(key: tuple) -> None:
+    """After the coalesce window, send one follow-up if more messages arrived."""
+    try:
+        await asyncio.sleep(_DM_NOTIFY_WINDOW_SEC)
+    except Exception:
+        pass
+    st = _dm_owner_notify.pop(key, None)
+    if not st or st.get("count", 0) <= 0:
+        return
+    try:
+        await bot_ptb.send_owner_dm_followup(
+            st["bot_token"], st["owner_id"], st["account_username"],
+            st["from_name"], st["sender_username"], st["sender_id"], st["count"],
+        )
+    except Exception as e:
+        logger.warning("dm owner follow-up failed: %s", e)
+
+
+async def _handle_dm_alert(msg: dict) -> None:
+    """Controller-side handling of a worker's incoming-DM report: record it in the owner's
+    inbox, raise the web bell, and DM the owner via the AdBot's own control bot (debounced)."""
+    bot_token = msg.get("bot_token", "")
+    sender_id = int(msg.get("user_id", 0) or 0)
+    cfg = _get_cfg(bot_token) or {}
+    name = cfg.get("name") or get_name_by_token(bot_token) or ""
+    if not (name and sender_id):
+        return
+    session_file = msg.get("session_file", "")
+    from_name = msg.get("from_name", "Unknown User")
+    sender_username = msg.get("sender_username", "")
+    account_username = msg.get("account_username", "")
+    text = msg.get("message_text", "")
+    media_type = msg.get("media_type", "")
+    caption = msg.get("caption", "")
+
+    # 1) Always record in the inbox (every message).
+    try:
+        dm_inbox.add_dm(
+            name, session_file=session_file, account_username=account_username,
+            sender_id=sender_id, sender_name=from_name, sender_username=sender_username,
+            text=text, media_type=media_type, caption=caption,
+        )
+    except Exception as e:
+        logger.warning("dm inbox write failed: %s", e)
+
+    # 2) + 3) Web bell + owner Telegram: instant on the first message of a burst, then coalesce.
+    owner_id = int(cfg.get("owner_id") or 0)
+    key = (bot_token, sender_id)
+    st = _dm_owner_notify.get(key)
+    if st is None:
+        _dm_owner_notify[key] = {
+            "count": 0, "bot_token": bot_token, "owner_id": owner_id,
+            "account_username": account_username, "from_name": from_name,
+            "sender_username": sender_username, "sender_id": sender_id,
+        }
+        try:
+            dm_inbox.add_portal_notification(
+                name, "New DM received",
+                _dm_bell_summary(from_name, sender_username, text, media_type, caption),
+                "info",
+            )
+        except Exception as e:
+            logger.warning("dm bell write failed: %s", e)
+        if owner_id:
+            try:
+                await bot_ptb.send_owner_dm_received(
+                    bot_token, owner_id, account_username, from_name, sender_username,
+                    sender_id, text, media_type, caption,
+                )
+            except Exception as e:
+                logger.warning("dm owner notify failed: %s", e)
+        try:
+            asyncio.get_running_loop().create_task(_dm_owner_flush(key))
+        except Exception:
+            _dm_owner_notify.pop(key, None)
+    else:
+        st["count"] = st.get("count", 0) + 1
 
 
 def _universal_admin() -> int | None:
@@ -796,7 +948,33 @@ def _menu_buttons() -> list:
             panel_button("Logs", CB_LOGS, "panel_logs"),
             panel_button("Validity", CB_VALIDITY, "panel_validity"),
         ],
+        [
+            Button.inline("💬 Auto Reply", CB_AR_MENU),
+        ],
     ]
+
+
+def _autoreply_menu_text_and_buttons(cfg: dict) -> tuple[str, list]:
+    """Auto Reply submenu: status, current reply preview, and action buttons."""
+    ar = cfg.get("dm_autoreply") or {}
+    enabled = bool(ar.get("enabled", True))
+    message = str(ar.get("message", "") or "")
+    preview = compose_autoreply(message)
+    status = "🟢 ON" if enabled else "🔴 OFF"
+    using = "custom message" if message.strip() else "default message"
+    body = (
+        f"**Auto Reply** — {status}\n\n"
+        f"When someone DMs one of your ad accounts (while the AdBot is running), it replies with "
+        f"your {using}:\n\n"
+        f"{preview}"
+    )
+    buttons = [
+        [Button.inline("Turn OFF" if enabled else "Turn ON", CB_AR_TOGGLE)],
+        [Button.inline("✏️ Change Message", CB_AR_EDIT)],
+        [Button.inline("📥 View Recent Messages", CB_AR_RECENT)],
+        [Button.inline("‹ Back", CB_AR_BACK)],
+    ]
+    return body, buttons
 
 
 def _menu_buttons_expired() -> list:
@@ -2045,7 +2223,7 @@ async def _async_session_loop(
     report_ban_error: Optional[Callable[[str, int, int | None], None]] = None,
     report_alert: Optional[Callable[[str, str], None]] = None,
     report_log: Optional[Callable[..., None]] = None,
-    report_dm_alert: Optional[Callable[[str, str, int, str], None]] = None,
+    report_dm_alert: Optional[Callable[..., None]] = None,
     report_audit_log: Optional[Callable[..., None]] = None,
     report_heartbeat: Optional[Callable[[], None]] = None,
     report_user_log: Optional[Callable[[str], None]] = None,
@@ -2107,6 +2285,12 @@ async def _async_session_loop(
         joined_log_group = False
         # In-memory anti-spam: user_id -> last_reply_timestamp (persists across cycles for this session)
         dm_replied_users: dict[int, float] = {}
+        # DMs received before this instant (worker start) are catch-up/stale from a previous
+        # run — never auto-reply to or record them, so restarting a stopped AdBot can't flood
+        # old senders. Only messages that arrive while the bot is actively running count.
+        dm_watch_since = time.time()
+        # Resolved once per worker: this posting account's own @username (for the "Account:" line).
+        dm_account: dict[str, str] = {"username": ""}
         # Enterprise/stagger: one-time random startup offset before first posting cycle (avoids all workers posting in sync)
         first_cycle = True
         run_first_cycle_done = False  # One-shot: run first cycle immediately when run_first_cycle_immediately is True
@@ -2354,7 +2538,9 @@ async def _async_session_loop(
                         slept += chunk
                     continue
             # DM auto-reply: same client, no extra connection. Handler runs concurrently with posting.
-            # Admin DM alerts: sent to ADMIN_USER_ID via PTB (report_dm_alert), NOT to log groups.
+            # Every non-stale DM is reported to the controller (inbox + owner notification); the
+            # auto-reply itself only fires when the owner has it enabled and the 24h per-sender
+            # cooldown has passed. Config is read fresh (cached) so a toggle applies without restart.
             async def _on_incoming_dm(event: events.NewMessage.Event) -> None:
                 # Only private (1:1) DMs: skip own messages, groups, and channels
                 if event.out:
@@ -2366,43 +2552,77 @@ async def _async_session_loop(
                 user_id = event.sender_id
                 if not user_id:
                     return
-                # Resolve user entity for display name (Telethon)
+                # Catch-up guard: ignore messages that arrived before this worker started
+                # listening (stale updates replayed on reconnect). 5s grace for clock skew.
+                try:
+                    ev_ts = event.date.timestamp() if getattr(event, "date", None) else time.time()
+                except Exception:
+                    ev_ts = time.time()
+                if ev_ts < dm_watch_since - 5:
+                    return
+                # Resolve sender: display name + bare @username (kept separate for the inbox/notify)
                 display_name = "Unknown User"
+                sender_username = ""
                 try:
                     user = await client.get_entity(event.sender_id)
                     if user:
                         first = (getattr(user, "first_name", None) or "").strip()
                         last = (getattr(user, "last_name", None) or "").strip()
                         display_name = (first + " " + last).strip() or "Unknown User"
-                        username = getattr(user, "username", None)
-                        if username:
-                            display_name += f" (@{username})"
+                        sender_username = (getattr(user, "username", None) or "").strip()
                 except Exception:
                     pass
-                # Message content: text or media type
-                if getattr(event, "raw_text", None) and (event.raw_text or "").strip():
-                    message_text = (event.raw_text or "").strip()[:500]
-                else:
-                    if event.photo:
-                        message_text = "Received Media: Photo"
-                    elif event.video:
-                        message_text = "Received Media: Video"
-                    elif event.document:
-                        message_text = "Received Media: Document"
-                    elif event.voice:
-                        message_text = "Received Media: Voice"
-                    elif event.sticker:
-                        message_text = "Received Media: Sticker"
-                    else:
-                        message_text = "Received Media: Media"
+                # Resolve this account's own @username once (for the "Account:" line).
+                if not dm_account["username"]:
+                    try:
+                        me = await client.get_me()
+                        dm_account["username"] = (getattr(me, "username", None) or "").strip()
+                    except Exception:
+                        pass
+                # Message content: text and/or media type (incl. GIF / video note)
+                media_type = ""
+                if getattr(event, "gif", False):
+                    media_type = "GIF"
+                elif event.photo:
+                    media_type = "Photo"
+                elif getattr(event, "video_note", False):
+                    media_type = "Video Note"
+                elif event.video:
+                    media_type = "Video"
+                elif event.voice:
+                    media_type = "Voice Message"
+                elif event.sticker:
+                    media_type = "Sticker"
+                elif event.document:
+                    media_type = "Document"
+                elif getattr(event, "media", None):
+                    media_type = "Media"
+                raw = (getattr(event, "raw_text", None) or "").strip()
+                # For media, raw text is the caption; for plain text it's the message body.
+                message_text = "" if media_type else raw[:500]
+                caption = raw[:500] if media_type else ""
                 now = time.time()
+                # Report EVERY non-stale DM (controller stores it + debounces owner notify),
+                # independent of the auto-reply cooldown.
+                if report_dm_alert:
+                    try:
+                        report_dm_alert(
+                            session_file, display_name, user_id, message_text,
+                            account_username=dm_account["username"],
+                            sender_username=sender_username,
+                            media_type=media_type,
+                            caption=caption,
+                        )
+                    except Exception as e:
+                        logger.warning("report_dm_alert failed %s: %s", session_file, e)
+                # Auto-reply: only if enabled by the owner and not within the per-sender cooldown.
+                ar = get_autoreply_config(cfg.get("name") or bot_name)
+                if not ar.get("enabled", True):
+                    return
                 if (now - dm_replied_users.get(user_id, 0)) < DM_AUTOREPLY_COOLDOWN_SEC:
                     return
-                # Notify admin via PTB (private message to ADMIN_USER_ID with Open User Profile button); NOT to log group
-                if report_dm_alert:
-                    report_dm_alert(session_file, display_name, user_id, message_text)
                 try:
-                    await event.respond(DM_AUTOREPLY_MESSAGE)
+                    await event.respond(compose_autoreply(ar.get("message", "")))
                     dm_replied_users[user_id] = now
                     logger.info("Auto-DM reply sent from %s to user %s", session_file, user_id)
                 except Exception as e:
@@ -3490,17 +3710,19 @@ def _apply_worker_result(msg: dict) -> None:
     elif msg_type == "admin_alert":
         add_admin_alert(msg.get("kind", "worker_alert"), msg.get("message", ""))
     elif msg_type == "dm_alert":
-        # Incoming DM notification: send to ADMIN_USER_ID via PTB (not to log group), with Open User Profile button
-        session_file = msg.get("session_file", "")
-        from_name = msg.get("from_name", "Unknown User")
-        user_id = msg.get("user_id", 0)
-        message_text = msg.get("message_text", "")
-        if session_file and user_id:
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(notify.notify_dm_received(session_file, from_name, user_id, message_text))
-            except Exception as e:
-                logger.warning("dm_alert send failed: %s", e)
+        # Incoming DM: record in the owner's inbox, raise the web bell, and DM the owner via
+        # the AdBot's control bot (debounced). Admin also still gets the legacy alert.
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_handle_dm_alert(msg))
+            session_file = msg.get("session_file", "")
+            user_id = msg.get("user_id", 0)
+            if session_file and user_id:
+                loop.create_task(notify.notify_dm_received(
+                    session_file, msg.get("from_name", "Unknown User"), user_id, msg.get("message_text", "")
+                ))
+        except Exception as e:
+            logger.warning("dm_alert handling failed: %s", e)
     elif msg_type == "log":
         message = msg.get("message", "")
         entity_spec = msg.get("entity_spec")
@@ -4795,6 +5017,62 @@ async def create_user_bot(bot_token: str) -> None:
                     pass
             return
         raw = event.data
+        if raw in (CB_AR_MENU, CB_AR_TOGGLE, CB_AR_EDIT, CB_AR_RECENT, CB_AR_BACK):
+            await event.answer()
+            if raw == CB_AR_BACK:
+                try:
+                    await event.edit("**AdBot** — What would you like to do?", buttons=_menu_buttons(), parse_mode="md")
+                except MessageNotModifiedError:
+                    pass
+                return
+            if raw == CB_AR_TOGGLE:
+                def _upd(c):
+                    ar = dict(c.get("dm_autoreply") or {})
+                    ar["enabled"] = not bool(ar.get("enabled", True))
+                    ar.setdefault("message", "")
+                    c["dm_autoreply"] = ar
+                _save_bot_config(bot_token, _upd)
+            if raw == CB_AR_EDIT:
+                _config_custom_state.setdefault(bot_token, {})[event.sender_id] = "autoreply_msg"
+                _config_custom_message_id[(bot_token, event.sender_id)] = (event.chat_id, event.message.id)
+                try:
+                    await event.edit(
+                        "Send the **auto-reply message** you want (max 500 chars). The HQAdz line is "
+                        "always added automatically. Send `default` to use the default, or /start to cancel.",
+                        parse_mode="md", buttons=[[Button.inline("‹ Back", CB_AR_MENU)]],
+                    )
+                except MessageNotModifiedError:
+                    pass
+                return
+            if raw == CB_AR_RECENT:
+                try:
+                    name = get_name_by_token(bot_token) or ""
+                    items = list(reversed(dm_inbox.load_inbox(name)))[:10] if name else []
+                except Exception:
+                    items = []
+                if not items:
+                    body = "**Recent DMs** — nothing yet."
+                else:
+                    lines = ["**Recent DMs received:**", ""]
+                    for it in items:
+                        who = it.get("sender_name") or "Unknown"
+                        if it.get("sender_username"):
+                            who += f" @{it['sender_username']}"
+                        what = f"[{it['media_type']}] {it.get('caption', '')}".strip() if it.get("media_type") else (it.get("text") or "")
+                        lines.append(f"• {who}: {what[:120]}")
+                    body = "\n".join(lines)
+                try:
+                    await event.edit(body, parse_mode="md", buttons=[[Button.inline("‹ Back", CB_AR_MENU)]])
+                except MessageNotModifiedError:
+                    pass
+                return
+            cfg = get_cfg()
+            body, buttons = _autoreply_menu_text_and_buttons(cfg or {})
+            try:
+                await event.edit(body, parse_mode="md", buttons=buttons)
+            except MessageNotModifiedError:
+                pass
+            return
         if raw == CB_FIX_MENU:
             if not _is_admin(event.sender_id):
                 await event.answer("Restricted to administrators.", alert=True)
@@ -6596,6 +6874,28 @@ async def create_user_bot(bot_token: str) -> None:
                     _config_custom_message_id[key] = (chat_id, msg_id)
                     await event.reply("Send a non-negative number (e.g. 4 or 5).")
                     return
+            elif config_state == "autoreply_msg":
+                # "default" clears the custom message (falls back to the built-in default).
+                # The locked HQAdz footer is stripped so it can't be stored or duplicated.
+                new_msg = "" if text.strip().lower() == "default" else text.replace(DM_AUTOREPLY_FOOTER, "").strip()[:500]
+                def upd(c):
+                    ar = dict(c.get("dm_autoreply") or {})
+                    ar["message"] = new_msg
+                    ar.setdefault("enabled", True)
+                    c["dm_autoreply"] = ar
+                _save_bot_config(bot_token, upd)
+                cfg2 = get_cfg()
+                body2, buttons2 = _autoreply_menu_text_and_buttons(cfg2 or {})
+                if chat_id is not None and msg_id is not None:
+                    try:
+                        await client.edit_message(chat_id, msg_id, body2, parse_mode="md", buttons=buttons2)
+                    except MessageNotModifiedError:
+                        pass
+                    except Exception:
+                        await event.reply(body2, parse_mode="md", buttons=buttons2)
+                else:
+                    await event.reply(body2, parse_mode="md", buttons=buttons2)
+                return
             if chat_id is not None and msg_id is not None:
                 cfg = get_cfg()
                 if cfg:
