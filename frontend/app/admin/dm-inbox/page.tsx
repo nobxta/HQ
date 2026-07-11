@@ -10,7 +10,7 @@ import {
   Search, ChevronRight, User, Bot, AtSign, FileText, CheckCircle2, XCircle,
   MinusCircle, Clock, Image as ImageIcon,
 } from "lucide-react";
-import { formatDateTime } from "@/lib/utils";
+import { formatDateTime, telegramProfileUrl } from "@/lib/utils";
 import toast from "react-hot-toast";
 
 interface DmRow {
@@ -281,10 +281,15 @@ function Field({ label, value, mono }: { label: string; value: ReactNode; mono?:
     </div>
   );
 }
-function TgLink({ id, children }: { id?: number; children: ReactNode }) {
+// Only a public @username can be opened from a browser (https://t.me/<username>).
+// A bare numeric ID has no working web link, so it renders as plain text instead of
+// a dead "profile" button.
+function TgLink({ id, username, children }: { id?: number; username?: string; children: ReactNode }) {
   if (!id) return <>{children}</>;
+  const url = telegramProfileUrl(username);
+  if (!url) return <span className="text-dark-100">{children}</span>;
   return (
-    <a href={`tg://user?id=${id}`} className="inline-flex items-center gap-1 text-accent hover:underline" title="Open Telegram profile">
+    <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-accent hover:underline" title="Open Telegram profile">
       {children} <ExternalLink className="h-3 w-3" />
     </a>
   );
@@ -330,14 +335,14 @@ function DetailDrawer({ row, onClose }: { row: DmRow; onClose: () => void }) {
           <Section icon={User} title="Receiving Account">
             <Field label="Name" value={row.account_name || undefined} />
             <Field label="Username" value={row.account_username ? `@${row.account_username}` : undefined} />
-            <Field label="Session file" value={<TgLink id={row.account_user_id}>{row.session_file}</TgLink>} mono />
-            <Field label="Telegram ID" value={row.account_user_id ? <TgLink id={row.account_user_id}>{row.account_user_id}</TgLink> : undefined} mono />
+            <Field label="Session file" value={<TgLink id={row.account_user_id} username={row.account_username}>{row.session_file}</TgLink>} mono />
+            <Field label="Telegram ID" value={row.account_user_id ? <TgLink id={row.account_user_id} username={row.account_username}>{row.account_user_id}</TgLink> : undefined} mono />
           </Section>
 
           <Section icon={AtSign} title="Sender">
             <Field label="Name" value={row.sender_name || "Unknown"} />
             <Field label="Username" value={row.sender_username ? `@${row.sender_username}` : undefined} />
-            <Field label="Telegram ID" value={row.sender_id ? <TgLink id={row.sender_id}>{row.sender_id}</TgLink> : undefined} mono />
+            <Field label="Telegram ID" value={row.sender_id ? <TgLink id={row.sender_id} username={row.sender_username}>{row.sender_id}</TgLink> : undefined} mono />
           </Section>
 
           <Section icon={row.media_type ? ImageIcon : FileText} title="Message">

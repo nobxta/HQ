@@ -13,6 +13,7 @@ import {
   Check, CheckCheck, Copy, RotateCcw, FileText, Image as ImageIcon, Lock, Filter,
 } from "lucide-react";
 import toast from "react-hot-toast";
+import { telegramProfileUrl } from "@/lib/utils";
 
 /* ── types ────────────────────────────────────────────────────────────── */
 interface DmMsg {
@@ -409,8 +410,8 @@ function MessageCard({ m, onOpen, onMarkRead }: { m: DmMsg; onOpen: (m: DmMsg) =
         </div>
         {/* actions */}
         <div className="shrink-0 flex flex-col items-end gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-          {m.sender_id ? (
-            <a href={`tg://user?id=${m.sender_id}`} onClick={(e) => e.stopPropagation()} className="p-1.5 rounded-lg text-dark-400 hover:text-accent hover:bg-dark-800" title="Open sender"><ExternalLink className="h-3.5 w-3.5" /></a>
+          {telegramProfileUrl(m.sender_username) ? (
+            <a href={telegramProfileUrl(m.sender_username)!} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="p-1.5 rounded-lg text-dark-400 hover:text-accent hover:bg-dark-800" title="Open sender"><ExternalLink className="h-3.5 w-3.5" /></a>
           ) : null}
           {unread && (
             <button onClick={(e) => { e.stopPropagation(); onMarkRead(m.id); }} className="p-1.5 rounded-lg text-dark-400 hover:text-dark-100 hover:bg-dark-800" title="Mark read"><Check className="h-3.5 w-3.5" /></button>
@@ -455,14 +456,14 @@ function DetailsDrawer({ msg, botUsername, onClose, onMarkRead }: { msg: DmMsg; 
           <Section title="Sender">
             <Field label="Name" value={msg.sender_name || "Unknown"} />
             <Field label="Username" value={msg.sender_username ? `@${msg.sender_username}` : undefined} />
-            <Field label="Telegram ID" value={msg.sender_id ? <Tg id={msg.sender_id}>{msg.sender_id}</Tg> : undefined} mono />
+            <Field label="Telegram ID" value={msg.sender_id ? <Tg id={msg.sender_id} username={msg.sender_username}>{msg.sender_id}</Tg> : undefined} mono />
           </Section>
 
           <Section title="Receiving account">
             <Field label="Name" value={msg.account_name || undefined} />
             <Field label="Username" value={msg.account_username ? `@${msg.account_username}` : undefined} />
-            <Field label="Session file" value={<Tg id={msg.account_user_id}>{msg.session_file}</Tg>} mono />
-            <Field label="Telegram ID" value={msg.account_user_id ? <Tg id={msg.account_user_id}>{msg.account_user_id}</Tg> : undefined} mono />
+            <Field label="Session file" value={<Tg id={msg.account_user_id} username={msg.account_username}>{msg.session_file}</Tg>} mono />
+            <Field label="Telegram ID" value={msg.account_user_id ? <Tg id={msg.account_user_id} username={msg.account_username}>{msg.account_user_id}</Tg> : undefined} mono />
             <Field label="AdBot" value={botUsername ? `@${botUsername}` : undefined} />
           </Section>
 
@@ -483,7 +484,11 @@ function DetailsDrawer({ msg, botUsername, onClose, onMarkRead }: { msg: DmMsg; 
           </Section>
 
           <div className="grid grid-cols-2 gap-2 pt-1">
-            {msg.sender_id ? <a href={`tg://user?id=${msg.sender_id}`} className="col-span-2"><Button size="sm" className="w-full"><ExternalLink className="h-4 w-4" /> Open Sender Profile</Button></a> : null}
+            {telegramProfileUrl(msg.sender_username) ? (
+              <a href={telegramProfileUrl(msg.sender_username)!} target="_blank" rel="noopener noreferrer" className="col-span-2"><Button size="sm" className="w-full"><ExternalLink className="h-4 w-4" /> Open Sender Profile</Button></a>
+            ) : msg.sender_id ? (
+              <p className="col-span-2 text-[11px] text-dark-500 -mb-1">No public username — the sender&apos;s profile can&apos;t be opened from a browser. You can still copy their ID.</p>
+            ) : null}
             {msg.sender_id ? <Button size="sm" variant="secondary" onClick={() => copy(String(msg.sender_id), "Sender ID")}><Copy className="h-3.5 w-3.5" /> Copy ID</Button> : null}
             <Button size="sm" variant="secondary" onClick={() => copy(msg.text || msg.caption || "", "Message")}><Copy className="h-3.5 w-3.5" /> Copy Message</Button>
             {!msg.read && <Button size="sm" variant="ghost" className="col-span-2" onClick={() => onMarkRead(msg.id)}><Check className="h-4 w-4" /> Mark as Read</Button>}
@@ -520,7 +525,12 @@ function Field({ label, value, mono }: { label: string; value: ReactNode; mono?:
     </div>
   );
 }
-function Tg({ id, children }: { id?: number; children: ReactNode }) {
+// Only a public @username can be opened from a browser (https://t.me/<username>).
+// A bare numeric ID has no working web link — showing a "profile" link for it would
+// just be a dead button, so it renders as plain text instead.
+function Tg({ id, username, children }: { id?: number; username?: string; children: ReactNode }) {
   if (!id) return <>{children}</>;
-  return <a href={`tg://user?id=${id}`} className="inline-flex items-center gap-1 text-accent hover:underline" title="Open Telegram profile">{children} <ExternalLink className="h-3 w-3" /></a>;
+  const url = telegramProfileUrl(username);
+  if (!url) return <span className="text-dark-100">{children}</span>;
+  return <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-accent hover:underline" title="Open Telegram profile">{children} <ExternalLink className="h-3 w-3" /></a>;
 }

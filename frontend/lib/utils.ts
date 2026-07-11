@@ -78,6 +78,17 @@ export function truncate(str: string, len: number): string {
   return str.slice(0, len) + "…";
 }
 
+// Telegram profile link that actually works in a browser. `tg://user?id=` only resolves
+// inside Telegram's own app/webview — clicking it on a normal website silently fails (no
+// registered protocol handler), which reads as a broken/fake button. https://t.me/<username>
+// is Telegram's real web deep link (opens the app via universal link, or web.telegram.org,
+// or the store page if the app isn't installed) — but it only exists for accounts with a
+// public username. There is no public web URL to open a profile by numeric ID alone.
+export function telegramProfileUrl(username?: string | null): string | null {
+  const u = (username || "").trim().replace(/^@/, "");
+  return u ? `https://t.me/${u}` : null;
+}
+
 export function statusColor(status: string): string {
   const s = status.toLowerCase();
   if (["running", "active", "completed", "paid"].includes(s)) return "text-success";
