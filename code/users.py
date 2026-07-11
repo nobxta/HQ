@@ -2335,6 +2335,131 @@ async def _async_session_loop(
 
         if is_worker:
             asyncio.create_task(_prewarm_connect())
+
+        # DM auto-reply: attached ONCE for the life of this worker, not per posting cycle — so an
+        # account keeps listening and replying whenever the AdBot itself is running, even while this
+        # session is between cycles, FloodWait-paused, or has nothing assigned this cycle. Only a full
+        # AdBot stop (or the session going genuinely dead) ends listening, via remove_event_handler in
+        # the `finally` block below. Every non-stale DM is reported to the controller (inbox + owner
+        # notification); the auto-reply itself only fires when the owner has it enabled and the 24h
+        # per-sender cooldown has passed. `cfg` is read fresh via closure below — it's reassigned every
+        # loop iteration, so a config toggle (or a new cycle's `cfg`) applies without restart.
+        cfg: dict = {}
+
+        async def _on_incoming_dm(event: events.NewMessage.Event) -> None:
+            # Only private (1:1) DMs: skip own messages, groups, and channels
+            if event.out:
+                return
+            if not getattr(event, "is_private", False):
+                return
+            if getattr(event, "is_group", False) or getattr(event, "is_channel", False):
+                return
+            user_id = event.sender_id
+            if not user_id:
+                return
+            # Catch-up guard: ignore messages that arrived before this worker started
+            # listening (stale updates replayed on reconnect). 5s grace for clock skew.
+            try:
+                ev_ts = event.date.timestamp() if getattr(event, "date", None) else time.time()
+            except Exception:
+                ev_ts = time.time()
+            if ev_ts < dm_watch_since - 5:
+                return
+            # Resolve sender: display name + bare @username (kept separate for the inbox/notify).
+            # Prefer event.get_sender() — it resolves from the update's own context and, unlike
+            # client.get_entity(id), doesn't fail with "Could not find the input entity" right
+            # after receiving a DM (which is why senders were showing as "Unknown User").
+            display_name = ""
+            sender_username = ""
+            try:
+                user = await event.get_sender()
+                if user is None:
+                    user = await client.get_entity(event.sender_id)
+                if user:
+                    first = (getattr(user, "first_name", None) or "").strip()
+                    last = (getattr(user, "last_name", None) or "").strip()
+                    sender_username = (getattr(user, "username", None) or "").strip()
+                    display_name = (first + " " + last).strip() or (f"@{sender_username}" if sender_username else "")
+            except Exception:
+                pass
+            if not display_name:
+                display_name = f"@{sender_username}" if sender_username else f"User {user_id}"
+            # Resolve this account's own name/@username/user_id once (for the "Account:" line,
+            # the session→profile deep link, and the inbox record).
+            if not dm_account.get("resolved"):
+                try:
+                    me = await client.get_me()
+                    dm_account["username"] = (getattr(me, "username", None) or "").strip()
+                    _af = (getattr(me, "first_name", None) or "").strip()
+                    _al = (getattr(me, "last_name", None) or "").strip()
+                    dm_account["name"] = (_af + " " + _al).strip()
+                    dm_account["user_id"] = int(getattr(me, "id", 0) or 0)
+                    dm_account["resolved"] = True
+                except Exception:
+                    pass
+            # Message content: text and/or media type (incl. GIF / video note)
+            media_type = ""
+            if getattr(event, "gif", False):
+                media_type = "GIF"
+            elif event.photo:
+                media_type = "Photo"
+            elif getattr(event, "video_note", False):
+                media_type = "Video Note"
+            elif event.video:
+                media_type = "Video"
+            elif event.voice:
+                media_type = "Voice Message"
+            elif event.sticker:
+                media_type = "Sticker"
+            elif event.document:
+                media_type = "Document"
+            elif getattr(event, "media", None):
+                media_type = "Media"
+            raw = (getattr(event, "raw_text", None) or "").strip()
+            # For media, raw text is the caption; for plain text it's the message body.
+            message_text = "" if media_type else raw[:500]
+            caption = raw[:500] if media_type else ""
+            now = time.time()
+            # Decide the auto-reply outcome first, so the record carries an accurate status.
+            #   disabled — owner turned auto-reply off
+            #   pending  — a reply was already sent to this sender within the 24h cooldown
+            #   sent     — reply delivered now
+            #   failed   — reply attempt raised
+            ar = get_autoreply_config(cfg.get("name") or bot_name)
+            reply_text = ""
+            if not ar.get("enabled", True):
+                reply_status = "disabled"
+            elif (now - dm_replied_users.get(user_id, 0)) < DM_AUTOREPLY_COOLDOWN_SEC:
+                reply_status = "pending"
+            else:
+                reply_text = compose_autoreply(ar.get("message", ""))
+                try:
+                    await event.respond(reply_text)
+                    dm_replied_users[user_id] = now
+                    reply_status = "sent"
+                    logger.info("Auto-DM reply sent from %s to user %s", session_file, user_id)
+                except Exception as e:
+                    reply_status = "failed"
+                    logger.warning("Auto-DM reply failed %s to user %s: %s", session_file, user_id, e)
+            # Report EVERY non-stale DM (controller stores it + debounces owner notify),
+            # independent of the auto-reply cooldown, with the reply outcome.
+            if report_dm_alert:
+                try:
+                    report_dm_alert(
+                        session_file, display_name, user_id, message_text,
+                        account_username=dm_account.get("username", ""),
+                        account_name=dm_account.get("name", ""),
+                        account_user_id=dm_account.get("user_id", 0),
+                        sender_username=sender_username,
+                        media_type=media_type,
+                        caption=caption,
+                        reply_status=reply_status,
+                        reply_text=reply_text,
+                    )
+                except Exception as e:
+                    logger.warning("report_dm_alert failed %s: %s", session_file, e)
+
+        client.add_event_handler(_on_incoming_dm, events.NewMessage(incoming=True))
         while True:
             _worker_last_activity.setdefault(bot_token, {})[session_file] = time.time()
             if stop_event and stop_event.is_set():
@@ -2552,124 +2677,6 @@ async def _async_session_loop(
                         await asyncio.sleep(chunk)
                         slept += chunk
                     continue
-            # DM auto-reply: same client, no extra connection. Handler runs concurrently with posting.
-            # Every non-stale DM is reported to the controller (inbox + owner notification); the
-            # auto-reply itself only fires when the owner has it enabled and the 24h per-sender
-            # cooldown has passed. Config is read fresh (cached) so a toggle applies without restart.
-            async def _on_incoming_dm(event: events.NewMessage.Event) -> None:
-                # Only private (1:1) DMs: skip own messages, groups, and channels
-                if event.out:
-                    return
-                if not getattr(event, "is_private", False):
-                    return
-                if getattr(event, "is_group", False) or getattr(event, "is_channel", False):
-                    return
-                user_id = event.sender_id
-                if not user_id:
-                    return
-                # Catch-up guard: ignore messages that arrived before this worker started
-                # listening (stale updates replayed on reconnect). 5s grace for clock skew.
-                try:
-                    ev_ts = event.date.timestamp() if getattr(event, "date", None) else time.time()
-                except Exception:
-                    ev_ts = time.time()
-                if ev_ts < dm_watch_since - 5:
-                    return
-                # Resolve sender: display name + bare @username (kept separate for the inbox/notify).
-                # Prefer event.get_sender() — it resolves from the update's own context and, unlike
-                # client.get_entity(id), doesn't fail with "Could not find the input entity" right
-                # after receiving a DM (which is why senders were showing as "Unknown User").
-                display_name = ""
-                sender_username = ""
-                try:
-                    user = await event.get_sender()
-                    if user is None:
-                        user = await client.get_entity(event.sender_id)
-                    if user:
-                        first = (getattr(user, "first_name", None) or "").strip()
-                        last = (getattr(user, "last_name", None) or "").strip()
-                        sender_username = (getattr(user, "username", None) or "").strip()
-                        display_name = (first + " " + last).strip() or (f"@{sender_username}" if sender_username else "")
-                except Exception:
-                    pass
-                if not display_name:
-                    display_name = f"@{sender_username}" if sender_username else f"User {user_id}"
-                # Resolve this account's own name/@username/user_id once (for the "Account:" line,
-                # the session→profile deep link, and the inbox record).
-                if not dm_account.get("resolved"):
-                    try:
-                        me = await client.get_me()
-                        dm_account["username"] = (getattr(me, "username", None) or "").strip()
-                        _af = (getattr(me, "first_name", None) or "").strip()
-                        _al = (getattr(me, "last_name", None) or "").strip()
-                        dm_account["name"] = (_af + " " + _al).strip()
-                        dm_account["user_id"] = int(getattr(me, "id", 0) or 0)
-                        dm_account["resolved"] = True
-                    except Exception:
-                        pass
-                # Message content: text and/or media type (incl. GIF / video note)
-                media_type = ""
-                if getattr(event, "gif", False):
-                    media_type = "GIF"
-                elif event.photo:
-                    media_type = "Photo"
-                elif getattr(event, "video_note", False):
-                    media_type = "Video Note"
-                elif event.video:
-                    media_type = "Video"
-                elif event.voice:
-                    media_type = "Voice Message"
-                elif event.sticker:
-                    media_type = "Sticker"
-                elif event.document:
-                    media_type = "Document"
-                elif getattr(event, "media", None):
-                    media_type = "Media"
-                raw = (getattr(event, "raw_text", None) or "").strip()
-                # For media, raw text is the caption; for plain text it's the message body.
-                message_text = "" if media_type else raw[:500]
-                caption = raw[:500] if media_type else ""
-                now = time.time()
-                # Decide the auto-reply outcome first, so the record carries an accurate status.
-                #   disabled — owner turned auto-reply off
-                #   pending  — a reply was already sent to this sender within the 24h cooldown
-                #   sent     — reply delivered now
-                #   failed   — reply attempt raised
-                ar = get_autoreply_config(cfg.get("name") or bot_name)
-                reply_text = ""
-                if not ar.get("enabled", True):
-                    reply_status = "disabled"
-                elif (now - dm_replied_users.get(user_id, 0)) < DM_AUTOREPLY_COOLDOWN_SEC:
-                    reply_status = "pending"
-                else:
-                    reply_text = compose_autoreply(ar.get("message", ""))
-                    try:
-                        await event.respond(reply_text)
-                        dm_replied_users[user_id] = now
-                        reply_status = "sent"
-                        logger.info("Auto-DM reply sent from %s to user %s", session_file, user_id)
-                    except Exception as e:
-                        reply_status = "failed"
-                        logger.warning("Auto-DM reply failed %s to user %s: %s", session_file, user_id, e)
-                # Report EVERY non-stale DM (controller stores it + debounces owner notify),
-                # independent of the auto-reply cooldown, with the reply outcome.
-                if report_dm_alert:
-                    try:
-                        report_dm_alert(
-                            session_file, display_name, user_id, message_text,
-                            account_username=dm_account.get("username", ""),
-                            account_name=dm_account.get("name", ""),
-                            account_user_id=dm_account.get("user_id", 0),
-                            sender_username=sender_username,
-                            media_type=media_type,
-                            caption=caption,
-                            reply_status=reply_status,
-                            reply_text=reply_text,
-                        )
-                    except Exception as e:
-                        logger.warning("report_dm_alert failed %s: %s", session_file, e)
-
-            client.add_event_handler(_on_incoming_dm, events.NewMessage(incoming=True))
             assigned, total_groups = _assigned_groups_for_session(bot_token, cfg, session_file, session_ordinal, total_workers)
             mode = get_plan_mode(cfg)
 
@@ -3248,11 +3255,7 @@ async def _async_session_loop(
             if report_audit_log:
                 report_audit_log(session_file, "SESSION_CYCLE_DONE", timestamp=scheduled_run_ts, success_count=posts_success_cycle)
             # Cycle count is incremented in stats file when controller processes cycle_done (no user JSON write).
-            # Unregister DM handler (keep connection alive between cycles for fast next cycle)
-            try:
-                client.remove_event_handler(_on_incoming_dm, events.NewMessage(incoming=True))
-            except Exception:
-                pass
+            # (DM auto-reply handler stays attached across cycles now — see the comment above `while True:`.)
             # --- DETERMINISTIC TIMING: next run = last_cycle_time + cycle_sec ---
             # We sleep until next_scheduled (scheduled_run_ts + cycle_sec), NOT until loop completion.
             # So per-group interval = cycle_sec: each group is attempted every cycle at the fixed boundary.
@@ -3278,6 +3281,10 @@ async def _async_session_loop(
                 await asyncio.sleep(chunk)
     finally:
         _active_posting_sessions.discard(session_key)
+        try:
+            client.remove_event_handler(_on_incoming_dm, events.NewMessage(incoming=True))
+        except Exception:
+            pass
         try:
             await client.disconnect()
         except Exception:
