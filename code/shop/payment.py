@@ -189,6 +189,56 @@ def validate_payment_config() -> None:
     logger.info("[PAYMENT] Config OK: base_url=%s dev_mode=%s", base, dev)
 
 
+_MIN_AMOUNT_CACHE: dict[str, tuple[float, float]] = {}  # provider_currency -> (min_usd, fetched_at_epoch)
+_MIN_AMOUNT_CACHE_TTL_SEC = 6 * 3600
+
+
+def get_min_amount_usd(provider_currency: str) -> float | None:
+    """
+    GET /v1/min-amount for a direct (no-conversion) payment in this currency, fiat-equivalent
+    in USD. NOWPayments' real minimum varies by coin (~$2-$12+, driven by network fees) — an
+    invoice created below it can accept an unrefundable underpayment that never confirms.
+
+    Cached in-process for a few hours per currency (safety-net lookup at invoice-creation time,
+    not a per-keystroke call). Returns None on any failure — callers should fail OPEN on this
+    check (never block checkout on a provider hiccup) and rely on the flat coupon-floor safety
+    net (coupons.MIN_PAYABLE_USD_FLOOR) as the backstop instead.
+    """
+    cur = (provider_currency or "").strip().lower()
+    if not cur:
+        return None
+    cached = _MIN_AMOUNT_CACHE.get(cur)
+    now = time.time()
+    if cached and (now - cached[1]) < _MIN_AMOUNT_CACHE_TTL_SEC:
+        return cached[0]
+
+    api_key = _api_key()
+    if not api_key or api_key == "your_api_key":
+        return None
+
+    url = f"{_base_url()}/min-amount"
+    params = {"currency_from": cur, "currency_to": cur, "fiat_equivalent": "usd"}
+    _log_payment_debug("GET", url)
+    try:
+        import requests
+        resp = requests.get(url, params=params, headers=_np_headers(), timeout=10)
+        if resp.status_code != 200:
+            logger.warning("[PAYMENT] GET /min-amount failed for %s: HTTP %s", cur, resp.status_code)
+            return None
+        out = resp.json()
+        min_usd = out.get("fiat_equivalent")
+        if not min_usd:
+            min_usd = out.get("min_amount")
+        min_usd = float(min_usd or 0)
+        if min_usd <= 0:
+            return None
+        _MIN_AMOUNT_CACHE[cur] = (min_usd, now)
+        return min_usd
+    except Exception as e:
+        logger.warning("[PAYMENT] GET /min-amount error for %s: %s", cur, e)
+        return None
+
+
 def create_invoice(
     amount_usd: float,
     currency: str,

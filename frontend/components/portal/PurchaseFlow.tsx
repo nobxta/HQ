@@ -32,7 +32,7 @@ interface CryptoCurrency {
 
 interface OrderData {
   order_id: string; plan_name: string; amount_usd: number; base_amount_usd: number;
-  coupon: string; coupon_percent: number; pay_address: string; pay_amount: number;
+  coupon: string; coupon_type: string; coupon_value: number; pay_address: string; pay_amount: number;
   pay_currency: string; invoice_expires_at: string; queued: boolean; display_name: string;
 }
 
@@ -95,9 +95,12 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
   const [tgId, setTgId] = useState("");
   const [addDetails, setAddDetails] = useState<boolean | null>(null);
 
-  // coupon
+  // coupon — discount_usd/final_amount_usd come from the server, which already knows how to
+  // apply both percent and fixed-$ coupons plus every filter (expiry, plan, billing, min/max
+  // order, per-user cap); the client never re-derives the math.
   const [coupon, setCoupon] = useState("");
-  const [couponPct, setCouponPct] = useState(0);
+  const [couponDiscount, setCouponDiscount] = useState(0);
+  const [couponFinal, setCouponFinal] = useState<number | null>(null);
   const [couponMsg, setCouponMsg] = useState("");
   const [checkingCoupon, setCheckingCoupon] = useState(false);
 
@@ -119,7 +122,7 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
   // creation progress animation
   const [progressIdx, setProgressIdx] = useState(0);
 
-  const price = couponPct > 0 ? +(plan.price * (1 - couponPct / 100)).toFixed(2) : plan.price;
+  const price = couponFinal ?? plan.price;
   const per = plan.billing === "month" ? "mo" : "wk";
 
   /* lock body scroll */
@@ -146,15 +149,24 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
   /* coupon */
   const applyCoupon = useCallback(async () => {
     const code = coupon.trim();
-    if (!code) { setCouponPct(0); setCouponMsg(""); return; }
+    if (!code) { setCouponDiscount(0); setCouponFinal(null); setCouponMsg(""); return; }
     setCheckingCoupon(true);
     try {
-      const r = await axios.post(`${API}/api/portal/coupon/validate`, { code });
-      if (r.data?.valid) { setCouponPct(r.data.percent); setCouponMsg(`-${r.data.percent}% applied`); }
-      else { setCouponPct(0); setCouponMsg("Invalid coupon"); }
-    } catch { setCouponPct(0); setCouponMsg("Could not validate"); }
+      const r = await axios.post(`${API}/api/portal/coupon/validate`, {
+        code, plan_id: plan.id, plan_mode: plan.mode, billing: plan.billing,
+      });
+      if (r.data?.valid) {
+        setCouponDiscount(r.data.discount_usd);
+        setCouponFinal(r.data.final_amount_usd);
+        const label = r.data.type === "fixed" ? `-$${r.data.discount_usd.toFixed(2)}` : `-${r.data.value}%`;
+        setCouponMsg(`${label} applied`);
+      } else {
+        setCouponDiscount(0); setCouponFinal(null);
+        setCouponMsg(r.data?.reason || "Invalid coupon");
+      }
+    } catch { setCouponDiscount(0); setCouponFinal(null); setCouponMsg("Could not validate"); }
     setCheckingCoupon(false);
-  }, [coupon]);
+  }, [coupon, plan.id, plan.mode, plan.billing]);
 
   /* create order + invoice */
   const createOrder = useCallback(async () => {
@@ -409,7 +421,7 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
                 <Row label={`${plan.label} — ${plan.durationDays} days`} value={`$${plan.price.toFixed(2)}`} />
                 <Row label="Estimated posts / day" value={plan.posts} muted />
                 <Row label="Replacements" value={plan.replacements} muted />
-                {couponPct > 0 && <Row label={`Coupon ${coupon.toUpperCase()}`} value={`-${couponPct}%`} accent />}
+                {couponDiscount > 0 && <Row label={`Coupon ${coupon.toUpperCase()}`} value={`-$${couponDiscount.toFixed(2)}`} accent />}
                 <div className="flex items-center justify-between px-4 py-3">
                   <span className="text-[13px] font-semibold text-white">Total</span>
                   <span className="text-[18px] font-semibold text-white tabular-nums">${price.toFixed(2)}</span>
@@ -430,7 +442,7 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
                     {checkingCoupon ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Apply"}
                   </button>
                 </div>
-                {couponMsg && <p className={`text-[11px] mt-1.5 ${couponPct > 0 ? "text-emerald-400" : "text-[#8b8b93]"}`}>{couponMsg}</p>}
+                {couponMsg && <p className={`text-[11px] mt-1.5 ${couponFinal !== null ? "text-emerald-400" : "text-[#8b8b93]"}`}>{couponMsg}</p>}
               </div>
 
               {/* details recap + edit */}
@@ -508,7 +520,7 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
                     <CoinLogo c={selected} size={20} /> {selected.symbol}{selected.network ? ` · ${selected.network}` : ""}
                   </span>
                 </div>
-                {couponPct > 0 && <Row label={`Coupon ${coupon.toUpperCase()}`} value={`-${couponPct}%`} accent />}
+                {couponDiscount > 0 && <Row label={`Coupon ${coupon.toUpperCase()}`} value={`-$${couponDiscount.toFixed(2)}`} accent />}
                 <div className="flex items-center justify-between px-4 py-3">
                   <span className="text-[13px] font-semibold text-white">Total</span>
                   <span className="text-[18px] font-semibold text-white tabular-nums">${price.toFixed(2)}</span>

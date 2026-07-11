@@ -16,7 +16,7 @@ interface OrderRow {
   order_id: string; user_id?: number | string; status: string; source?: string;
   order_type?: string;
   plan_name?: string; plan_mode?: string; mode?: string; duration_days?: number;
-  amount_usd?: number; base_amount_usd?: number; coupon?: string; coupon_percent?: number;
+  amount_usd?: number; base_amount_usd?: number; coupon?: string; coupon_type?: string; coupon_value?: number;
   payment_id?: string; pay_currency?: string; pay_amount?: string | number; amount_received?: number;
   pay_address?: string; network?: string; tx_hash?: string; invoice_expires_at?: string;
   ref_name?: string; ref_email?: string; ref_username?: string;
@@ -359,7 +359,7 @@ export default function PaymentsPage() {
                 </>
               )}
               <Row label="Original price" value={detail.amount_usd != null ? `${formatUSD(detail.amount_usd)} USD` : ""} />
-              {detail.coupon ? <Row label="Coupon" value={`${detail.coupon} (-${detail.coupon_percent}%)`} /> : null}
+              {detail.coupon ? <Row label="Coupon" value={`${detail.coupon} (${detail.coupon_type === "fixed" ? `-${formatUSD(detail.coupon_value)}` : `-${detail.coupon_value}%`})`} /> : null}
               <Row label="Pay price" value={detail.pay_amount ? `${detail.pay_amount} ${(detail.pay_currency || "").toUpperCase()}` : ""} />
               <Row label="Actually paid" value={`${detail.amount_received || 0} ${(detail.pay_currency || "").toUpperCase()}`} />
               <Row label="Network" value={detail.network} />

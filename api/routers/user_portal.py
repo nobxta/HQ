@@ -2120,6 +2120,9 @@ class PurchaseCreateRequest(BaseModel):
 
 class CouponValidateRequest(BaseModel):
     code: str
+    plan_id: str
+    plan_mode: str
+    billing: str            # "week" | "month"
 
 
 class PurchaseContactRequest(BaseModel):
@@ -2130,32 +2133,6 @@ class PurchaseContactRequest(BaseModel):
 
 class BotTokenAddRequest(BaseModel):
     tokens: list[str]
-
-
-def _load_coupons() -> dict:
-    """Optional coupon store at data/coupons.json: { "CODE": {"percent": 10, "active": true} }."""
-    import json
-    from code import config as appcfg
-    path = appcfg.DATA_DIR / "coupons.json"
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def _coupon_percent(code: Optional[str]) -> float:
-    if not code:
-        return 0.0
-    c = _load_coupons().get(code.strip().upper())
-    if c and c.get("active", True):
-        try:
-            return max(0.0, min(90.0, float(c.get("percent", 0))))
-        except Exception:
-            return 0.0
-    return 0.0
 
 
 def _find_plan(plan_mode: str, plan_id: str):
@@ -2194,16 +2171,34 @@ def _creation_progress(order: dict) -> dict:
 
 @router.post("/coupon/validate")
 async def portal_coupon_validate(body: CouponValidateRequest):
-    pct = _coupon_percent(body.code)
-    return {"valid": pct > 0, "code": body.code.strip().upper(), "percent": pct}
+    from code.shop import coupons as coupons_mod
+
+    plan, mode = _find_plan(body.plan_mode, body.plan_id)
+    if not plan:
+        raise HTTPException(404, "Plan not found")
+    if body.billing not in ("week", "month"):
+        raise HTTPException(400, "billing must be 'week' or 'month'")
+    base = float(plan.get("price_month" if body.billing == "month" else "price_week", 0) or 0)
+
+    r = coupons_mod.validate_coupon(body.code, plan_id=body.plan_id, billing=body.billing, base_amount_usd=base)
+    return {
+        "valid": r["ok"],
+        "reason": r["reason"],
+        "code": body.code.strip().upper(),
+        "type": (r["coupon"] or {}).get("type", ""),
+        "value": (r["coupon"] or {}).get("value", 0),
+        "discount_usd": r["discount_usd"],
+        "final_amount_usd": r["final_amount_usd"],
+    }
 
 
 @router.post("/purchase/create")
 async def portal_purchase_create(body: PurchaseCreateRequest):
     """Create a web purchase: NOWPayments invoice + reserve a pooled bot token + store order."""
     from code.shop.storage import create_order, update_order
-    from code.shop.payment import create_invoice
-    from code.shop import token_pool
+    from code.shop.payment import create_invoice, get_min_amount_usd
+    from code.shop.payment_constants import internal_to_provider
+    from code.shop import token_pool, coupons as coupons_mod
 
     plan, mode = _find_plan(body.plan_mode, body.plan_id)
     if not plan:
@@ -2216,14 +2211,40 @@ async def portal_purchase_create(body: PurchaseCreateRequest):
     base = float(plan.get("price_month" if body.billing == "month" else "price_week", 0) or 0)
     if base <= 0:
         raise HTTPException(400, "Plan price is not configured")
-    pct = _coupon_percent(body.coupon)
-    amount = round(base * (1 - pct / 100.0), 2)
-    duration_days = 30 if body.billing == "month" else 7
 
     ref = body.reference or PurchaseReference()
     display = (ref.name or ref.telegram_username or ref.email or "").strip()
     user_id = int(ref.telegram_id) if ref.telegram_id else 0
     plan_name = plan.get("name") or body.plan_id.capitalize()
+
+    coupon_code = (body.coupon or "").strip()
+    coupon_type = ""
+    coupon_value: float = 0
+    amount = base
+    if coupon_code:
+        user_key = str(user_id) if user_id else (ref.email or "").strip().lower()
+        r = coupons_mod.validate_coupon(coupon_code, plan_id=body.plan_id, billing=body.billing, base_amount_usd=base, user_key=user_key)
+        if not r["ok"]:
+            raise HTTPException(400, r["reason"] or "Invalid coupon")
+        amount = r["final_amount_usd"]
+        coupon_type = r["coupon"]["type"]
+        coupon_value = r["coupon"]["value"]
+
+    duration_days = 30 if body.billing == "month" else 7
+
+    # Payment-floor safety net: NOWPayments' real minimum varies by coin (~$2-$12+). Applies to
+    # every order, not just coupon ones — a full-price cheap plan paid in a high-minimum coin
+    # has the same failure mode. Fails OPEN (skips the check) if the lookup itself fails; the
+    # flat MIN_PAYABLE_USD_FLOOR inside validate_coupon already caught the coupon-specific case.
+    provider_currency = internal_to_provider(body.currency)
+    if provider_currency:
+        min_usd = get_min_amount_usd(provider_currency)
+        if min_usd is not None and amount < min_usd:
+            raise HTTPException(
+                400,
+                f"This order total (${amount:.2f}) is below the ${min_usd:.2f} minimum for {body.currency}. "
+                f"Choose a different currency{' or a smaller discount' if coupon_code else ''}.",
+            )
 
     # Idempotency: if this identifiable buyer already has an OPEN, unexpired invoice for the
     # exact same plan + billing + currency, return THAT one instead of minting a duplicate
@@ -2263,7 +2284,8 @@ async def portal_purchase_create(body: PurchaseCreateRequest):
                     "display_name": _o.get("bot_name") or display,
                     "base_amount_usd": float(_o.get("base_amount_usd") or base),
                     "coupon": (_o.get("coupon") or "").upper(),
-                    "coupon_percent": float(_o.get("coupon_percent") or 0),
+                    "coupon_type": _o.get("coupon_type") or "",
+                    "coupon_value": float(_o.get("coupon_value") or 0),
                     "amount_usd": float(_o.get("amount_usd") or amount),
                     "pay_address": _o.get("pay_address") or "",
                     "pay_amount": _o.get("pay_amount"),
@@ -2310,8 +2332,9 @@ async def portal_purchase_create(body: PurchaseCreateRequest):
         "ref_name": ref.name or "",
         "ref_email": ref.email or "",
         "ref_username": ref.telegram_username or "",
-        "coupon": (body.coupon or "").strip().upper(),
-        "coupon_percent": pct,
+        "coupon": coupon_code.upper(),
+        "coupon_type": coupon_type,
+        "coupon_value": coupon_value,
         "base_amount_usd": base,
         "source": "web",
         # Token is reserved at PAYMENT time (apply_confirmed_payment), never at creation —
@@ -2328,8 +2351,9 @@ async def portal_purchase_create(body: PurchaseCreateRequest):
         "duration_days": duration_days,
         "display_name": display,
         "base_amount_usd": base,
-        "coupon": (body.coupon or "").strip().upper(),
-        "coupon_percent": pct,
+        "coupon": coupon_code.upper(),
+        "coupon_type": coupon_type,
+        "coupon_value": coupon_value,
         "amount_usd": amount,
         "pay_address": invoice.get("pay_address") or "",
         "pay_amount": invoice.get("pay_amount"),

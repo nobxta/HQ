@@ -389,6 +389,13 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
     if (o.get("source") or "") == "web":
         from . import token_pool
         update_order_status(order_id, "paid", paid_at=now)
+        # Redemption is counted HERE (payment confirmed), not at order creation, so an
+        # abandoned/unpaid checkout never burns a real coupon use. redeem_coupon is
+        # idempotent per order_id, matching this function's own idempotency guarantee.
+        if o.get("coupon"):
+            from . import coupons as coupons_mod
+            user_key = str(o.get("user_id")) if o.get("user_id") else (o.get("ref_email") or "").strip().lower()
+            coupons_mod.redeem_coupon(o.get("coupon"), order_id, user_key=user_key, email=o.get("ref_email") or "")
         # Issue the Secret Code NOW so the buyer can log in immediately — even if we have to
         # queue the build (no token / low sessions). The same code is bound to the bot later.
         # Format: ADB-XXXX-XXXX (unambiguous chars) so it reads like a real access code.
