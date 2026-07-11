@@ -246,6 +246,93 @@ export interface PoolOverview {
   dead_sessions: string[];
 }
 
+// Aggregated /api/sessions/overview
+export type SessionHealth =
+  | "healthy" | "limited" | "frozen" | "unauthorized" | "dead" | "unknown";
+export type SessionPool =
+  | "free" | "assigned" | "dead" | "frozen" | "limited" | "unauth";
+export type SessionDerivedStatus =
+  | "ready" | "running" | "stopped" | "disabled" | "floodwait"
+  | "paused" | "dead" | "limited" | "frozen" | "unauthorized" | "unknown";
+
+export interface SessionOverviewItem {
+  filename: string;
+  resolved_path_type: "active" | "user" | "dead" | "frozen" | "limited" | "unauth";
+  file_present: boolean;
+  pool: SessionPool;
+  starred: boolean;
+
+  real_name: string | null;
+  user_id: number | null;
+  username: string | null;
+  phone_from_file: string | null;
+  phone_verified: boolean;
+
+  bot_name: string | null;
+  bot_state: string | null;
+  bot_plan: string | null;
+  disabled: boolean;
+
+  health: SessionHealth;
+  validation_status: string | null;
+  validation_reason: string | null;
+  last_validated_at: number | null;
+
+  derived_status: SessionDerivedStatus;
+  pause_until: number | null;
+  pause_remaining_sec: number | null;
+
+  attention: boolean;
+  attention_reason: string | null;
+
+  sent: number;
+  failed: number;
+  flood: number;
+  success_rate: number | null;
+  last_active_at: number | null;
+  last_error: string | null;
+  last_error_at: number | null;
+  last_cycle_ts: number | null;
+}
+
+export interface SessionsOverviewSummary {
+  total: number;
+  ready: number;
+  assigned: number;
+  enabled: number;
+  disabled: number;
+  needs_attention: number;
+  dead: number;
+  frozen: number;
+  limited: number;
+  unauthorized: number;
+  healthy: number;
+  unknown: number;
+  starred: number;
+}
+
+export interface SessionsOverview {
+  generated_at: string;
+  range: string;
+  summary: SessionsOverviewSummary;
+  sessions: SessionOverviewItem[];
+}
+
+// Structured bulk-operation result shape returned by the safe session endpoints.
+export interface BulkOpFailure {
+  filename: string;
+  code: string;
+  message: string;
+  bot_name?: string;
+  bot_running?: boolean;
+}
+export interface BulkOpResult {
+  success: string[];
+  failed: BulkOpFailure[];
+  skipped: BulkOpFailure[];
+  summary: { requested: number; succeeded: number; failed: number; skipped: number };
+}
+
 // ── Orders ──
 export interface OrderInfo {
   order_id: string;

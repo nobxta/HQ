@@ -1,776 +1,460 @@
 "use client";
-import { useState, useRef, useCallback, useEffect } from "react";
-import { useSessions, usePool } from "@/lib/hooks/useSessions";
-import Badge from "@/components/ui/Badge";
-import Button from "@/components/ui/Button";
-import Card from "@/components/ui/Card";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useRouter } from "next/navigation";
+import toast from "react-hot-toast";
 import ConfirmModal from "@/components/ConfirmModal";
 import { TableSkeleton } from "@/components/ui/Skeleton";
+import { AlertCircle } from "lucide-react";
+
+import { useSessionsOverview, useAuditLog } from "@/lib/sessions";
 import {
-  Upload, Trash2, Search, ShieldCheck, Shield, Eye,
-  CheckSquare, Square, Loader2, AlertCircle, CheckCircle, XCircle,
-  Crown, Ban, AtSign, Phone, Hash, FileText, ChevronDown, ChevronRight,
-  Star, ArrowRightLeft, MoveRight, ExternalLink,
-} from "lucide-react";
-import Link from "next/link";
-import api from "@/lib/api";
-import toast from "react-hot-toast";
+  validateSessions, validateAssignedSession, spambotCheck, starSession, setSessionEnabled,
+  unassignSession,
+} from "@/lib/sessions";
+import type { SessionOverviewItem, BulkOpResult } from "@/lib/types";
 
-type SessionInfo = {
-  file: string;
-  real_name?: string;
-  user_id?: number;
-  username?: string;
-  phone?: string;
-  bio?: string;
-  premium?: boolean;
-  restricted?: boolean;
-  status?: string;
-  reason?: string;
-  error?: string;
-  spambot_status?: string;
-};
+import SessionsHeader from "@/components/admin/sessions/SessionsHeader";
+import AttentionBanner from "@/components/admin/sessions/AttentionBanner";
+import SummaryCards from "@/components/admin/sessions/SummaryCards";
+import HealthStrip from "@/components/admin/sessions/HealthStrip";
+import Toolbar from "@/components/admin/sessions/Toolbar";
+import FiltersPanel from "@/components/admin/sessions/FiltersPanel";
+import SessionsTable from "@/components/admin/sessions/SessionsTable";
+import BulkActionBar, { type BulkHandlers } from "@/components/admin/sessions/BulkActionBar";
+import SessionDetailsDrawer from "@/components/admin/sessions/SessionDetailsDrawer";
+import type { SessionActions } from "@/components/admin/sessions/SessionActionsMenu";
+import { OperationResultDialog, UploadSessionsDialog, MoveSessionsDialog, DeleteSessionsDialog, errMsg } from "@/components/admin/sessions/dialogs";
+import { AssignSessionDialog, UnassignSessionDialog, ReplaceSessionDialog } from "@/components/admin/sessions/assignmentDialogs";
+import {
+  EMPTY_FILTERS, type SessionFilters, type SessionView,
+  matchesView, matchesFilters, matchesSearch, viewCount,
+} from "@/components/admin/sessions/views";
+import {
+  loadVisible, saveVisible, loadDensity, saveDensity, type ColumnKey, type Density,
+} from "@/components/admin/sessions/columns";
+import type { SessionHealth } from "@/lib/types";
 
-const BUCKETS = ["free", "dead", "frozen", "limited", "unauth"] as const;
-type Bucket = typeof BUCKETS[number];
+function readUrl(): { view: SessionView; session: string | null; q: string } {
+  if (typeof window === "undefined") return { view: "all", session: null, q: "" };
+  const p = new URLSearchParams(window.location.search);
+  return {
+    view: (p.get("view") as SessionView) || "all",
+    session: p.get("session"),
+    q: p.get("q") || "",
+  };
+}
 
 export default function SessionsPage() {
-  const [statusFilter, setStatusFilter] = useState("");
-  const { data, isLoading, mutate } = useSessions(statusFilter);
-  const { data: pool, mutate: mutatePool } = usePool();
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const router = useRouter();
+  const { data, error, isLoading, mutate } = useSessionsOverview("24h");
+  const { data: auditData } = useAuditLog(300);
+  const audit = auditData?.entries || [];
+
+  const sessions = useMemo(() => data?.sessions || [], [data]);
+  const byName = useMemo(() => {
+    const m = new Map<string, SessionOverviewItem>();
+    sessions.forEach((s) => m.set(s.filename, s));
+    return m;
+  }, [sessions]);
+
+  // ── URL-backed view + open drawer ──
+  const [view, setViewState] = useState<SessionView>("all");
+  const [openFilename, setOpenFilename] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [uploading, setUploading] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const dropRef = useRef<HTMLDivElement>(null);
-  const [dragging, setDragging] = useState(false);
+  const [debounced, setDebounced] = useState("");
 
-  // Selection
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-
-  // Starred
-  const [starred, setStarred] = useState<Set<string>>(new Set());
-
-  // Move modal
-  const [moveTarget, setMoveTarget] = useState<{ files: string[]; fromBucket: string } | null>(null);
-  const [moveToBucket, setMoveToBucket] = useState<Bucket>("free");
-  const [moving, setMoving] = useState(false);
-
-  // Bulk action state
-  const [bulkAction, setBulkAction] = useState<"" | "validating" | "spambot" | "info" | "deleting">("");
-  const [sessionInfoMap, setSessionInfoMap] = useState<Record<string, SessionInfo>>({});
-  const [bulkResult, setBulkResult] = useState<any>(null);
-  const [expandedInfo, setExpandedInfo] = useState<Set<string>>(new Set());
-
-  // Load starred sessions
   useEffect(() => {
-    api.get("/api/sessions/starred").then(({ data }) => {
-      setStarred(new Set(data.starred || []));
-    }).catch(() => {});
+    const u = readUrl();
+    setViewState(u.view); setOpenFilename(u.session); setSearch(u.q); setDebounced(u.q);
+    const onPop = () => { const n = readUrl(); setViewState(n.view); setOpenFilename(n.session); };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  const sessions = (data?.sessions || []).filter(
-    (s: any) => !search || s.filename.toLowerCase().includes(search.toLowerCase())
-  );
+  const writeUrl = useCallback((next: { view?: SessionView; session?: string | null; q?: string }, push = false) => {
+    if (typeof window === "undefined") return;
+    const cur = readUrl();
+    const p = new URLSearchParams();
+    const v = next.view ?? cur.view;
+    const s = next.session === undefined ? cur.session : next.session;
+    const q = next.q ?? cur.q;
+    if (v && v !== "all") p.set("view", v);
+    if (q) p.set("q", q);
+    if (s) p.set("session", s);
+    const url = `${window.location.pathname}${p.toString() ? `?${p}` : ""}`;
+    if (push) window.history.pushState({}, "", url);
+    else window.history.replaceState({}, "", url);
+  }, []);
 
-  // Sort: starred first
-  const sortedSessions = [...sessions].sort((a: any, b: any) => {
-    const aStarred = starred.has(a.filename) ? 0 : 1;
-    const bStarred = starred.has(b.filename) ? 0 : 1;
-    return aStarred - bStarred;
-  });
+  const setView = useCallback((v: SessionView) => { setViewState(v); writeUrl({ view: v }); }, [writeUrl]);
+  const openSession = useCallback((fn: string) => { setOpenFilename(fn); writeUrl({ session: fn }, true); }, [writeUrl]);
+  const closeDrawer = useCallback(() => { setOpenFilename(null); writeUrl({ session: null }); }, [writeUrl]);
 
-  // Toggle selection
-  const toggleSelect = (filename: string) => {
+  // debounce search → URL + applied
+  useEffect(() => {
+    const t = setTimeout(() => { setDebounced(search); writeUrl({ q: search }); }, 250);
+    return () => clearTimeout(t);
+  }, [search, writeUrl]);
+
+  // ── filters, columns, density ──
+  const [filters, setFilters] = useState<SessionFilters>(EMPTY_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [visible, setVisible] = useState<Record<ColumnKey, boolean>>(loadVisible());
+  const [density, setDensity] = useState<Density>("comfortable");
+  useEffect(() => { setVisible(loadVisible()); setDensity(loadDensity()); }, []);
+  const toggleColumn = (k: ColumnKey) => setVisible((v) => { const n = { ...v, [k]: !v[k] }; saveVisible(n); return n; });
+  const changeDensity = (d: Density) => { setDensity(d); saveDensity(d); };
+
+  // ── selection ──
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const lastIndexRef = useRef<number | null>(null);
+  const [validating, setValidating] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState<Set<string>>(new Set());
+  const [updated, setUpdated] = useState<Set<string>>(new Set());
+  const [refreshing, setRefreshing] = useState(false);
+
+  // ── dialogs ──
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [moveTargets, setMoveTargets] = useState<SessionOverviewItem[] | null>(null);
+  const [deleteTargets, setDeleteTargets] = useState<SessionOverviewItem[] | null>(null);
+  const [assignTargets, setAssignTargets] = useState<SessionOverviewItem[] | null>(null);
+  const [unassignTarget, setUnassignTarget] = useState<SessionOverviewItem | null>(null);
+  const [replaceTarget, setReplaceTarget] = useState<SessionOverviewItem | null>(null);
+  const [confirmDisable, setConfirmDisable] = useState<SessionOverviewItem | null>(null);
+  const [opResult, setOpResult] = useState<{ title: string; result: BulkOpResult } | null>(null);
+  const tableRef = useRef<HTMLDivElement>(null);
+
+  // ── derived lists ──
+  const filtered = useMemo(() => sessions.filter(
+    (s) => matchesView(s, view) && matchesFilters(s, filters) && matchesSearch(s, debounced),
+  ), [sessions, view, filters, debounced]);
+
+  const viewCounts = useMemo(() => ({
+    all: sessions.length,
+    ready: viewCount(sessions, "ready"),
+    assigned: viewCount(sessions, "assigned"),
+    needs_action: viewCount(sessions, "needs_action"),
+    unchecked: viewCount(sessions, "unchecked"),
+    starred: viewCount(sessions, "starred"),
+  }), [sessions]) as Record<SessionView, number>;
+
+  const selectedSessions = useMemo(() => filtered.filter((s) => selected.has(s.filename)), [filtered, selected]);
+  const openSessionObj = openFilename ? byName.get(openFilename) || null : null;
+  const knownFilenames = useMemo(() => new Set(sessions.map((s) => s.filename)), [sessions]);
+  const freeSessions = useMemo(() => sessions.filter((s) => s.pool === "free"), [sessions]);
+  const botNames = useMemo(() => Array.from(new Set(sessions.map((s) => s.bot_name).filter(Boolean))) as string[], [sessions]);
+
+  // keep selection valid as data changes
+  useEffect(() => {
+    setSelected((prev) => { const n = new Set(Array.from(prev).filter((f) => byName.has(f))); return n.size === prev.size ? prev : n; });
+  }, [byName]);
+
+  const highlight = useCallback((fn: string) => {
+    setUpdated((prev) => new Set(prev).add(fn));
+    setTimeout(() => setUpdated((prev) => { const n = new Set(prev); n.delete(fn); return n; }), 900);
+  }, []);
+
+  const lastSyncedSec = useMemo(() => {
+    if (!data?.generated_at) return null;
+    return (Date.now() - new Date(data.generated_at).getTime()) / 1000;
+  }, [data]);
+
+  // ── actions ──
+  const doRefresh = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try { await mutate(); } catch { toast.error("Refresh failed"); }
+    setRefreshing(false);
+  }, [mutate, refreshing]);
+
+  const toastForStatus = (st: string) => {
+    if (st === "active" || st === "valid") toast.success("Session is healthy");
+    else if (st === "busy") toast("Session is in use by a worker — skipped", { icon: "⏳" });
+    else if (st === "dead" || st === "invalid") toast.error("Session is dead — moved to dead pool");
+    else toast(`Result: ${st}`);
+  };
+
+  const validateOne = useCallback(async (s: SessionOverviewItem) => {
+    setValidating((p) => new Set(p).add(s.filename));
+    try {
+      if (s.bot_name) {
+        const r = await validateAssignedSession(s.bot_name, s.filename);
+        toastForStatus(r.status);
+      } else {
+        const r = await validateSessions([s.filename]);
+        if (r.skipped[0]) toast.error(r.skipped[0].message);
+        else {
+          const item = r.sessions[0];
+          toastForStatus(item?.status || "unknown");
+          if (item?.status === "busy") setBusy((p) => new Set(p).add(s.filename));
+        }
+      }
+      highlight(s.filename);
+      await mutate();
+    } catch (e) { toast.error(errMsg(e, "Validation failed")); }
+    setValidating((p) => { const n = new Set(p); n.delete(s.filename); return n; });
+  }, [mutate, highlight]);
+
+  const spambotOne = useCallback(async (s: SessionOverviewItem) => {
+    setValidating((p) => new Set(p).add(s.filename));
+    try {
+      const r = await spambotCheck([s.filename]);
+      if (r.skipped[0]) toast.error(r.skipped[0].message);
+      else toast.success(`SpamBot: ${r.sessions[0]?.spambot_status || "checked"}`);
+      highlight(s.filename);
+      await mutate();
+    } catch (e) { toast.error(errMsg(e, "SpamBot check failed")); }
+    setValidating((p) => { const n = new Set(p); n.delete(s.filename); return n; });
+  }, [mutate, highlight]);
+
+  const toggleStar = useCallback(async (s: SessionOverviewItem) => {
+    const on = !s.starred;
+    // optimistic
+    mutate((cur) => cur ? { ...cur, sessions: cur.sessions.map((x) => x.filename === s.filename ? { ...x, starred: on } : x) } : cur, { revalidate: false });
+    try { await starSession(s.filename, on); } catch { toast.error("Failed to update star"); await mutate(); }
+  }, [mutate]);
+
+  const applyEnabled = useCallback(async (s: SessionOverviewItem, enabled: boolean) => {
+    try {
+      await setSessionEnabled(s.bot_name!, s.filename, enabled);
+      toast.success(enabled ? "Session enabled" : "Session disabled");
+      highlight(s.filename);
+      await mutate();
+    } catch (e) { toast.error(errMsg(e, "Failed")); }
+  }, [mutate, highlight]);
+
+  const toggleEnabled = useCallback((s: SessionOverviewItem) => {
+    if (!s.bot_name) return;
+    if (s.disabled) applyEnabled(s, true);
+    else setConfirmDisable(s);
+  }, [applyEnabled]);
+
+  const actions: SessionActions = {
+    onDetails: (s) => openSession(s.filename),
+    onOpenClient: (s) => window.open(`/admin/sessions/${encodeURIComponent(s.filename)}`, "_blank"),
+    onOpenBot: (s) => s.bot_name && router.push(`/admin/adbots/${encodeURIComponent(s.bot_name)}`),
+    onValidate: validateOne,
+    onSpambot: spambotOne,
+    onAssign: (s) => setAssignTargets([s]),
+    onMove: (s) => setMoveTargets([s]),
+    onStar: toggleStar,
+    onDelete: (s) => setDeleteTargets([s]),
+    onUnassign: (s) => setUnassignTarget(s),
+    onToggleEnabled: toggleEnabled,
+    onReplace: (s) => setReplaceTarget(s),
+  };
+
+  // ── selection helpers ──
+  const toggleSelect = (filename: string, shift: boolean) => {
+    const idx = filtered.findIndex((s) => s.filename === filename);
     setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(filename)) next.delete(filename);
-      else next.add(filename);
-      return next;
+      const n = new Set(prev);
+      if (shift && lastIndexRef.current != null && idx >= 0) {
+        const [a, b] = [lastIndexRef.current, idx].sort((x, y) => x - y);
+        for (let i = a; i <= b; i++) n.add(filtered[i].filename);
+      } else {
+        if (n.has(filename)) n.delete(filename); else n.add(filename);
+      }
+      return n;
     });
+    lastIndexRef.current = idx;
   };
-
   const selectAll = () => {
-    if (selected.size === sortedSessions.length) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(sortedSessions.map((s: any) => s.filename)));
-    }
+    setSelected((prev) => prev.size === filtered.length ? new Set() : new Set(filtered.map((s) => s.filename)));
   };
+  const clearSelection = () => setSelected(new Set());
 
-  const selectedFiles = () => Array.from(selected);
-
-  // Star/unstar
-  const toggleStar = async (filename: string) => {
-    const isStarred = starred.has(filename);
+  // ── bulk handlers ──
+  const bulkValidate = async () => {
+    const free = selectedSessions.filter((s) => !s.bot_name).map((s) => s.filename);
+    const assigned = selectedSessions.filter((s) => s.bot_name);
+    setValidating((p) => { const n = new Set(p); selectedSessions.forEach((s) => n.add(s.filename)); return n; });
     try {
-      if (isStarred) {
-        await api.delete(`/api/sessions/${filename}/star`);
-        setStarred((prev) => { const n = new Set(prev); n.delete(filename); return n; });
-      } else {
-        await api.post(`/api/sessions/${filename}/star`);
-        setStarred((prev) => { const n = new Set(prev); n.add(filename); return n; });
-      }
-    } catch {
-      toast.error("Failed to update star");
-    }
+      if (free.length) await validateSessions(free);
+      for (const s of assigned) { try { await validateAssignedSession(s.bot_name!, s.filename); } catch { /* per-session */ } }
+      toast.success(`Validated ${selectedSessions.length} session(s)`);
+      await mutate();
+    } catch (e) { toast.error(errMsg(e, "Bulk validate failed")); }
+    setValidating(new Set());
+  };
+  const bulkSpambot = async () => {
+    const free = selectedSessions.filter((s) => s.pool === "free").map((s) => s.filename);
+    if (!free.length) { toast.error("SpamBot check only runs on ready sessions"); return; }
+    try { const r = await spambotCheck(free); toast.success(`Checked ${r.total} · ${r.summary.moved} moved`); await mutate(); }
+    catch (e) { toast.error(errMsg(e, "SpamBot failed")); }
+  };
+  const bulkStar = async () => {
+    const allStarred = selectedSessions.every((s) => s.starred);
+    await Promise.all(selectedSessions.map((s) => starSession(s.filename, !allStarred).catch(() => {})));
+    await mutate();
+  };
+  const bulkEnable = async (enabled: boolean) => {
+    const assigned = selectedSessions.filter((s) => s.bot_name);
+    let ok = 0;
+    for (const s of assigned) { try { await setSessionEnabled(s.bot_name!, s.filename, enabled); ok++; } catch { /* skip */ } }
+    toast.success(`${enabled ? "Enabled" : "Disabled"} ${ok} session(s)`);
+    await mutate();
+  };
+  const bulkUnassign = async () => {
+    const assigned = selectedSessions.filter((s) => s.bot_name);
+    let ok = 0;
+    for (const s of assigned) { try { await unassignSession(s.bot_name!, s.filename); ok++; } catch { /* skip */ } }
+    toast.success(`Unassigned ${ok} session(s)`);
+    clearSelection();
+    await mutate();
   };
 
-  // Move session(s)
-  const openMoveModal = (files: string[], fromBucket: string) => {
-    setMoveTarget({ files, fromBucket });
-    const defaultTo = fromBucket === "free" ? "dead" : "free";
-    setMoveToBucket(defaultTo as Bucket);
+  const bulkHandlers: BulkHandlers = {
+    onValidate: bulkValidate,
+    onSpambot: bulkSpambot,
+    onAssign: () => setAssignTargets(selectedSessions.filter((s) => s.pool === "free")),
+    onMove: () => setMoveTargets(selectedSessions),
+    onStar: bulkStar,
+    onDelete: () => setDeleteTargets(selectedSessions),
+    onEnable: () => bulkEnable(true),
+    onDisable: () => bulkEnable(false),
+    onUnassign: bulkUnassign,
+    onClear: clearSelection,
   };
 
-  const handleMove = async () => {
-    if (!moveTarget) return;
-    setMoving(true);
-    try {
-      if (moveTarget.files.length === 1) {
-        await api.post(`/api/sessions/${moveTarget.files[0]}/move`, {
-          from_bucket: moveTarget.fromBucket,
-          to_bucket: moveToBucket,
-        });
-        toast.success(`Moved ${moveTarget.files[0]} to ${moveToBucket}`);
-      } else {
-        const { data } = await api.post("/api/sessions/bulk-move", {
-          filenames: moveTarget.files,
-          from_bucket: moveTarget.fromBucket,
-          to_bucket: moveToBucket,
-        });
-        toast.success(`Moved ${data.moved} session(s) to ${moveToBucket}`);
-        if (data.failed > 0) toast.error(`${data.failed} failed to move`);
-      }
-      mutate();
-      mutatePool();
-      setSelected(new Set());
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || "Move failed");
-    }
-    setMoving(false);
-    setMoveTarget(null);
+  // header more-menu
+  const reviewAttention = () => {
+    setFilters(EMPTY_FILTERS);
+    setSearch("");
+    setView("needs_action");
+    setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
   };
-
-  // Upload
-  const handleUpload = async (files: FileList | File[]) => {
-    if (!files?.length) return;
-    setUploading(true);
-    const form = new FormData();
-    Array.from(files).forEach((f) => form.append("files", f));
-    try {
-      const { data } = await api.post("/api/sessions/upload", form, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      toast.success(`Uploaded: ${data.total_added} added, ${data.duplicates} duplicates`);
-      mutate();
-      mutatePool();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || "Upload failed");
-    }
-    setUploading(false);
-    if (fileRef.current) fileRef.current.value = "";
+  const validateAllReady = async () => {
+    const ready = sessions.filter((s) => s.pool === "free").map((s) => s.filename);
+    if (!ready.length) { toast.error("No ready sessions"); return; }
+    toast.loading("Validating ready sessions…", { id: "vall" });
+    try { const r = await validateSessions(ready); toast.success(`${r.active} active · ${r.dead} dead`, { id: "vall" }); await mutate(); }
+    catch (e) { toast.error(errMsg(e, "Validate failed"), { id: "vall" }); }
   };
-
-  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) handleUpload(e.target.files);
+  const spambotReady = async () => {
+    const ready = sessions.filter((s) => s.pool === "free").map((s) => s.filename);
+    if (!ready.length) { toast.error("No ready sessions"); return; }
+    toast.loading("Running SpamBot check…", { id: "sall" });
+    try { const r = await spambotCheck(ready); toast.success(`${r.active} clean · ${r.summary.moved} moved`, { id: "sall" }); await mutate(); }
+    catch (e) { toast.error(errMsg(e, "SpamBot failed"), { id: "sall" }); }
   };
+  const viewActivity = () => { if (sessions[0]) openSession(sessions[0].filename); };
 
-  // Drag and drop
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragging(true);
-  }, []);
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragging(false);
-  }, []);
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragging(false);
-    const files = e.dataTransfer.files;
-    if (files?.length) {
-      const validFiles = Array.from(files).filter(
-        (f) => f.name.endsWith(".session") || f.name.endsWith(".zip")
-      );
-      if (validFiles.length) handleUpload(validFiles);
-      else toast.error("Only .session and .zip files are accepted");
-    }
-  }, []);
-
-  // Delete single
-  const handleDelete = async () => {
-    if (!deleteTarget) return;
-    try {
-      await api.delete(`/api/sessions/${deleteTarget}`);
-      toast.success(`Deleted ${deleteTarget}`);
-      selected.delete(deleteTarget);
-      setSelected(new Set(selected));
-      mutate();
-      mutatePool();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || "Delete failed");
-    }
-    setDeleteTarget(null);
-  };
-
-  // Bulk delete
-  const handleBulkDelete = async () => {
-    const files = selectedFiles();
-    if (!files.length) return;
-    setBulkAction("deleting");
-    try {
-      const { data } = await api.post("/api/sessions/bulk-delete", { filenames: files });
-      toast.success(`Deleted ${data.total_deleted} session(s)`);
-      setSelected(new Set());
-      mutate();
-      mutatePool();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || "Bulk delete failed");
-    }
-    setBulkAction("");
-  };
-
-  // Bulk validate
-  const runValidate = async () => {
-    const files = selectedFiles();
-    if (!files.length) { toast.error("Select sessions first"); return; }
-    setBulkAction("validating");
-    setBulkResult(null);
-    try {
-      const { data } = await api.post("/api/sessions/validate", { filenames: files });
-      const map: Record<string, SessionInfo> = { ...sessionInfoMap };
-      for (const s of data.sessions) map[s.file] = s;
-      setSessionInfoMap(map);
-      setExpandedInfo(new Set(files));
-      setBulkResult({ type: "validate", active: data.active, dead: data.dead, dead_moved: data.dead_moved });
-      if (data.dead > 0) {
-        toast.error(`${data.dead} dead session(s) moved to dead pool`);
-        const alive = new Set(selected);
-        for (const fn of data.dead_moved || []) alive.delete(fn);
-        setSelected(alive);
-        mutate();
-        mutatePool();
-      } else {
-        toast.success(`All ${data.active} session(s) are valid`);
-      }
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || "Validation failed");
-    }
-    setBulkAction("");
-  };
-
-  // Bulk spambot
-  const runSpambot = async () => {
-    const files = selectedFiles();
-    if (!files.length) { toast.error("Select sessions first"); return; }
-    setBulkAction("spambot");
-    setBulkResult(null);
-    try {
-      const { data } = await api.post("/api/sessions/spambot-check", { filenames: files });
-      const map: Record<string, SessionInfo> = { ...sessionInfoMap };
-      for (const s of data.sessions) {
-        map[s.file] = { ...map[s.file], ...s };
-      }
-      setSessionInfoMap(map);
-      const movedCount = (data.moved_limited?.length || 0) + (data.moved_frozen?.length || 0);
-      setBulkResult({
-        type: "spambot", active: data.active, limited: data.limited,
-        frozen: data.frozen || 0, total: data.total,
-        moved_limited: data.moved_limited || [], moved_frozen: data.moved_frozen || [],
-      });
-      if (movedCount > 0) {
-        toast.error(`${movedCount} session(s) moved to limited/frozen pool`);
-        const alive = new Set(selected);
-        for (const fn of [...(data.moved_limited || []), ...(data.moved_frozen || [])]) alive.delete(fn);
-        setSelected(alive);
-        mutate();
-        mutatePool();
-      } else if (data.limited > 0 || (data.frozen || 0) > 0) {
-        toast.error(`${data.limited + (data.frozen || 0)} session(s) are spam-limited/frozen`);
-      } else {
-        toast.success(`All ${data.active} session(s) clean`);
-      }
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || "SpamBot check failed");
-    }
-    setBulkAction("");
-  };
-
-  // Bulk info
-  const runInfo = async () => {
-    const files = selectedFiles();
-    if (!files.length) { toast.error("Select sessions first"); return; }
-    setBulkAction("info");
-    setBulkResult(null);
-    try {
-      const { data } = await api.get("/api/sessions/info", {
-        params: { filenames: files.join(",") },
-      });
-      const map: Record<string, SessionInfo> = { ...sessionInfoMap };
-      for (const s of data.sessions) map[s.file] = s;
-      setSessionInfoMap(map);
-      setExpandedInfo(new Set(files));
-      setBulkResult({ type: "info" });
-      toast.success("Session info loaded");
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || "Info check failed");
-    }
-    setBulkAction("");
-  };
-
-  const toggleExpand = (fn: string) => {
-    setExpandedInfo((prev) => {
-      const next = new Set(prev);
-      if (next.has(fn)) next.delete(fn);
-      else next.add(fn);
-      return next;
-    });
-  };
-
-  // Spambot badge
-  const spambotBadge = (status: string) => {
-    switch (status) {
-      case "ACTIVE": return <span className="inline-flex items-center gap-1 rounded bg-success/10 px-1.5 py-0.5 text-[10px] font-medium text-success"><CheckCircle className="h-3 w-3" />Clean</span>;
-      case "TEMP_LIMITED": return <span className="inline-flex items-center gap-1 rounded bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"><AlertCircle className="h-3 w-3" />Temp Limited</span>;
-      case "HARD_LIMITED": return <span className="inline-flex items-center gap-1 rounded bg-danger/10 px-1.5 py-0.5 text-[10px] font-medium text-danger"><XCircle className="h-3 w-3" />Hard Limited</span>;
-      case "FROZEN": return <span className="inline-flex items-center gap-1 rounded bg-danger/10 px-1.5 py-0.5 text-[10px] font-medium text-danger"><XCircle className="h-3 w-3" />Frozen</span>;
-      default: return <span className="inline-flex items-center gap-1 rounded bg-dark-700 px-1.5 py-0.5 text-[10px] font-medium text-dark-400">Unknown</span>;
-    }
-  };
-
-  const validationBadge = (status: string) => {
-    switch (status) {
-      case "active": return <span className="inline-flex items-center gap-1 rounded bg-success/10 px-1.5 py-0.5 text-[10px] font-medium text-success"><CheckCircle className="h-3 w-3" />Valid</span>;
-      case "dead": return <span className="inline-flex items-center gap-1 rounded bg-danger/10 px-1.5 py-0.5 text-[10px] font-medium text-danger"><XCircle className="h-3 w-3" />Dead</span>;
-      case "error": return <span className="inline-flex items-center gap-1 rounded bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"><AlertCircle className="h-3 w-3" />Error</span>;
-      default: return null;
-    }
-  };
-
-  // Determine bucket for a session
-  const getBucket = (s: any): string => s.status || s.bucket || "free";
-
+  // ── render ──
   return (
-    <div
-      ref={dropRef}
-      className={`space-y-6 animate-fade-in min-h-[60vh] ${dragging ? "ring-2 ring-accent ring-offset-2 ring-offset-dark-950 rounded-xl" : ""}`}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-    >
-      {/* Drop overlay */}
-      {dragging && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-950/60 backdrop-blur-sm pointer-events-none">
-          <div className="rounded-2xl border-2 border-dashed border-accent bg-dark-900/90 px-12 py-10 text-center">
-            <Upload className="h-10 w-10 text-accent mx-auto mb-3" />
-            <p className="text-lg font-bold text-dark-100">Drop .session or .zip files here</p>
-            <p className="text-sm text-dark-400 mt-1">Files will be added to the free pool</p>
-          </div>
-        </div>
-      )}
-
-      {/* Pool overview */}
-      {pool && (
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
-          {[
-            { label: "Free", val: pool.free, color: "text-success" },
-            { label: "Dead", val: pool.dead, color: "text-danger" },
-            { label: "Frozen", val: pool.frozen, color: "text-info" },
-            { label: "Limited", val: pool.limited, color: "text-warning" },
-            { label: "Unauth", val: pool.unauth, color: "text-dark-400" },
-          ].map((item) => (
-            <Card key={item.label} className="text-center !p-4">
-              <p className={`text-xl font-bold ${item.color}`}>{item.val}</p>
-              <p className="text-xs text-dark-500">{item.label}</p>
-            </Card>
-          ))}
-        </div>
-      )}
-
-      {/* Toolbar */}
-      <div className="space-y-3">
-        <div className="flex items-center gap-3">
-          <div className="relative flex-1 min-w-0">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-dark-500" />
-            <input
-              className="w-full rounded-lg border border-dark-600 bg-dark-800 pl-9 pr-3 py-2 text-sm text-dark-100 placeholder:text-dark-500 focus:outline-none focus:ring-2 focus:ring-accent/40"
-              placeholder="Search sessions…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
-          <div className="shrink-0">
-            <input ref={fileRef} type="file" accept=".session,.zip" multiple className="hidden" onChange={handleFileInput} />
-            <Button size="sm" onClick={() => fileRef.current?.click()} loading={uploading}>
-              <Upload className="h-4 w-4" /> <span className="hidden sm:inline">Upload</span>
-            </Button>
-          </div>
-        </div>
-
-        {/* Status filters */}
-        <div className="flex gap-1 rounded-lg bg-dark-800 p-0.5 overflow-x-auto">
-          {["", "active", "free", "dead", "frozen", "limited", "unauth"].map((s) => (
-            <button
-              key={s}
-              onClick={() => setStatusFilter(s)}
-              className={`px-3 py-1.5 text-xs rounded-md transition-all whitespace-nowrap ${
-                statusFilter === s ? "bg-accent text-white" : "text-dark-400 hover:text-dark-200"
-              }`}
-            >
-              {s || "All"}
-            </button>
-          ))}
-        </div>
-
-        {/* Bulk actions bar */}
-        <div className="flex flex-wrap items-center gap-2 py-2 border-t border-dark-800">
-          <span className="text-xs text-dark-500 mr-1">
-            {selected.size > 0 ? `${selected.size} selected` : "Select sessions to run actions"}
-          </span>
-          <Button variant="secondary" size="sm" onClick={runInfo}
-            loading={bulkAction === "info"} disabled={!!bulkAction || !selected.size}>
-            <Eye className="h-3.5 w-3.5" /> Info
-          </Button>
-          <Button variant="secondary" size="sm" onClick={runValidate}
-            loading={bulkAction === "validating"} disabled={!!bulkAction || !selected.size}>
-            <ShieldCheck className="h-3.5 w-3.5" /> Validate
-          </Button>
-          <Button variant="secondary" size="sm" onClick={runSpambot}
-            loading={bulkAction === "spambot"} disabled={!!bulkAction || !selected.size}>
-            <Shield className="h-3.5 w-3.5" /> SpamBot
-          </Button>
-          <Button variant="secondary" size="sm"
-            onClick={() => {
-              const files = selectedFiles();
-              if (!files.length) { toast.error("Select sessions first"); return; }
-              const firstSession = sortedSessions.find((s: any) => selected.has(s.filename));
-              const fromBucket = firstSession ? getBucket(firstSession) : "free";
-              openMoveModal(files, fromBucket);
-            }}
-            disabled={!!bulkAction || !selected.size}>
-            <ArrowRightLeft className="h-3.5 w-3.5" /> Move
-          </Button>
-          <Button variant="danger" size="sm" onClick={handleBulkDelete}
-            loading={bulkAction === "deleting"} disabled={!!bulkAction || !selected.size}>
-            <Trash2 className="h-3.5 w-3.5" /> Delete ({selected.size})
-          </Button>
-        </div>
-      </div>
-
-      {/* Bulk result summary */}
-      {bulkResult && (
-        <div className={`rounded-lg border p-3 text-sm flex items-center gap-3 flex-wrap ${
-          bulkResult.type === "validate" && bulkResult.dead > 0
-            ? "border-danger/30 bg-danger/5"
-            : bulkResult.type === "spambot" && bulkResult.limited > 0
-            ? "border-warning/30 bg-warning/5"
-            : "border-success/30 bg-success/5"
-        }`}>
-          {bulkResult.type === "validate" && (
-            <>
-              <span className="font-medium text-dark-200">Validation Complete</span>
-              <span className="text-success text-xs">{bulkResult.active} active</span>
-              {bulkResult.dead > 0 && (
-                <span className="text-danger text-xs">{bulkResult.dead} dead (moved to dead pool)</span>
-              )}
-            </>
-          )}
-          {bulkResult.type === "spambot" && (
-            <>
-              <span className="font-medium text-dark-200">SpamBot Check</span>
-              <span className="text-success text-xs">{bulkResult.active} clean</span>
-              {bulkResult.limited > 0 && <span className="text-warning text-xs">{bulkResult.limited} limited</span>}
-              {bulkResult.frozen > 0 && <span className="text-danger text-xs">{bulkResult.frozen} frozen</span>}
-              {((bulkResult.moved_limited?.length || 0) + (bulkResult.moved_frozen?.length || 0)) > 0 && (
-                <span className="text-dark-400 text-xs">
-                  ({(bulkResult.moved_limited?.length || 0) + (bulkResult.moved_frozen?.length || 0)} moved to pool)
-                </span>
-              )}
-            </>
-          )}
-          {bulkResult.type === "info" && <span className="font-medium text-dark-200">Info loaded</span>}
-          <button onClick={() => setBulkResult(null)} className="ml-auto text-dark-500 hover:text-dark-300 text-xs">dismiss</button>
-        </div>
-      )}
-
-      {/* Sessions table */}
-      {isLoading ? (
-        <TableSkeleton rows={10} cols={5} />
-      ) : (
-        <div className="rounded-xl border border-dark-700 overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-dark-700 bg-dark-800/50">
-                <th className="w-10 px-3 py-2.5">
-                  <button onClick={selectAll} className="text-dark-400 hover:text-dark-200">
-                    {selected.size === sortedSessions.length && sortedSessions.length > 0
-                      ? <CheckSquare className="h-4 w-4 text-accent" />
-                      : <Square className="h-4 w-4" />
-                    }
-                  </button>
-                </th>
-                <th className="w-8 px-1 py-2.5"></th>
-                <th className="text-left px-3 py-2.5 text-xs font-medium text-dark-400 uppercase tracking-wider">Session</th>
-                <th className="text-left px-3 py-2.5 text-xs font-medium text-dark-400 uppercase tracking-wider">Status</th>
-                <th className="text-left px-3 py-2.5 text-xs font-medium text-dark-400 uppercase tracking-wider hidden sm:table-cell">Assigned To</th>
-                <th className="text-left px-3 py-2.5 text-xs font-medium text-dark-400 uppercase tracking-wider hidden md:table-cell">Info</th>
-                <th className="text-right px-3 py-2.5 text-xs font-medium text-dark-400 uppercase tracking-wider w-24"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {sortedSessions.length === 0 ? (
-                <tr><td className="text-center py-12 text-dark-500" colSpan={7}>No sessions found</td></tr>
-              ) : (
-                sortedSessions.map((s: any) => {
-                  const info = sessionInfoMap[s.filename];
-                  const isExpanded = expandedInfo.has(s.filename);
-                  const isSelected = selected.has(s.filename);
-                  const isStarred = starred.has(s.filename);
-
-                  return (
-                    <tr key={s.filename} className={`border-b border-dark-800/50 transition-colors ${
-                      isSelected ? "bg-accent/5" : isStarred ? "bg-amber-500/[0.03]" : "hover:bg-dark-800/30"
-                    }`}>
-                      {/* Checkbox */}
-                      <td className="px-3 py-2.5 align-top">
-                        <button onClick={() => toggleSelect(s.filename)} className="text-dark-400 hover:text-dark-200">
-                          {isSelected
-                            ? <CheckSquare className="h-4 w-4 text-accent" />
-                            : <Square className="h-4 w-4" />
-                          }
-                        </button>
-                      </td>
-
-                      {/* Star */}
-                      <td className="px-1 py-2.5 align-top">
-                        <button
-                          onClick={() => toggleStar(s.filename)}
-                          className={`p-0.5 rounded transition-colors ${
-                            isStarred ? "text-amber-400 hover:text-amber-300" : "text-dark-700 hover:text-dark-400"
-                          }`}
-                          title={isStarred ? "Unstar session" : "Star session"}
-                        >
-                          <Star className={`h-3.5 w-3.5 ${isStarred ? "fill-current" : ""}`} />
-                        </button>
-                      </td>
-
-                      {/* Filename + expand */}
-                      <td className="px-3 py-2.5 align-top">
-                        <div className="flex items-center gap-2">
-                          {info && (
-                            <button onClick={() => toggleExpand(s.filename)} className="text-dark-500 hover:text-dark-300 shrink-0">
-                              {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                            </button>
-                          )}
-                          <span className="font-mono text-xs text-dark-200 truncate">{s.filename}</span>
-                        </div>
-                        {/* Expanded info */}
-                        {info && isExpanded && (
-                          <div className="mt-2 ml-5 rounded-lg bg-dark-800/60 border border-dark-700/50 p-3 space-y-2">
-                            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                              {info.real_name && (
-                                <div className="flex items-center gap-1.5">
-                                  <span className="text-dark-500">Name:</span>
-                                  <span className="text-dark-200 font-medium">{info.real_name}</span>
-                                  {info.premium && <span title="Premium"><Crown className="h-3 w-3 text-warning" /></span>}
-                                  {info.restricted && <span title="Restricted"><Ban className="h-3 w-3 text-danger" /></span>}
-                                </div>
-                              )}
-                              {info.user_id && (
-                                <div className="flex items-center gap-1.5">
-                                  <Hash className="h-3 w-3 text-dark-600" />
-                                  <span className="font-mono text-dark-300">{info.user_id}</span>
-                                </div>
-                              )}
-                              {info.username && (
-                                <div className="flex items-center gap-1.5">
-                                  <AtSign className="h-3 w-3 text-dark-600" />
-                                  <span className="text-accent">@{info.username}</span>
-                                </div>
-                              )}
-                              {info.phone && (
-                                <div className="flex items-center gap-1.5">
-                                  <Phone className="h-3 w-3 text-dark-600" />
-                                  <span className="font-mono text-dark-400">{info.phone}</span>
-                                </div>
-                              )}
-                            </div>
-                            {info.bio && (
-                              <div className="flex items-center gap-1.5 text-xs">
-                                <FileText className="h-3 w-3 text-dark-600 shrink-0" />
-                                <span className="text-dark-400">{info.bio}</span>
-                              </div>
-                            )}
-                            {(info.reason || info.error) && (
-                              <div className="rounded bg-danger/10 px-2 py-1 text-xs text-danger">
-                                {info.reason || info.error}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </td>
-
-                      {/* Status badges */}
-                      <td className="px-3 py-2.5 align-top">
-                        <div className="flex flex-wrap gap-1">
-                          <Badge status={s.status || s.bucket || "unknown"} />
-                          {info?.status && validationBadge(info.status)}
-                          {info?.spambot_status && spambotBadge(info.spambot_status)}
-                        </div>
-                      </td>
-
-                      {/* Assigned to */}
-                      <td className="px-3 py-2.5 align-top hidden sm:table-cell">
-                        {s.bot_name ? (
-                          <span className="text-xs text-dark-200">{s.bot_name}</span>
-                        ) : (
-                          <span className="text-xs text-dark-600">—</span>
-                        )}
-                      </td>
-
-                      {/* Quick info */}
-                      <td className="px-3 py-2.5 align-top hidden md:table-cell">
-                        {info?.real_name ? (
-                          <span className="text-xs text-dark-300">{info.real_name}</span>
-                        ) : info?.user_id ? (
-                          <span className="text-xs text-dark-400 font-mono">{info.user_id}</span>
-                        ) : (
-                          <span className="text-xs text-dark-600">—</span>
-                        )}
-                      </td>
-
-                      {/* Actions */}
-                      <td className="px-3 py-2.5 align-top text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          <Link
-                            href={`/admin/sessions/${encodeURIComponent(s.filename)}`}
-                            target="_blank"
-                            className="text-dark-500 hover:text-emerald-400 transition-colors p-1"
-                            title="Open as Telegram client"
-                            onMouseEnter={() => {
-                              // Pre-warm: connects + caches profile+chats on hover
-                              api.get(`/api/session-client/${encodeURIComponent(s.filename)}/init`).catch(() => {});
-                            }}
-                          >
-                            <ExternalLink className="h-3.5 w-3.5" />
-                          </Link>
-                          <button
-                            onClick={() => openMoveModal([s.filename], getBucket(s))}
-                            className="text-dark-500 hover:text-accent transition-colors p-1"
-                            title="Move to another pool"
-                          >
-                            <MoveRight className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            onClick={() => setDeleteTarget(s.filename)}
-                            className="text-dark-500 hover:text-danger transition-colors p-1"
-                            title="Delete"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Delete confirm */}
-      <ConfirmModal
-        open={!!deleteTarget}
-        onClose={() => setDeleteTarget(null)}
-        onConfirm={handleDelete}
-        title="Delete Session"
-        message={`Delete session file "${deleteTarget}"? This cannot be undone.`}
-        confirmText="Delete"
+    <div className="space-y-5 animate-fade-in pb-24">
+      <SessionsHeader
+        lastSyncedSec={lastSyncedSec}
+        refreshing={refreshing || isLoading}
+        onRefresh={doRefresh}
+        onUpload={() => setUploadOpen(true)}
+        onValidateAllReady={validateAllReady}
+        onSpambotReady={spambotReady}
+        onViewActivity={viewActivity}
       />
 
-      {/* Move modal */}
-      {moveTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-950/70 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-dark-700 bg-dark-900 p-6 shadow-xl">
-            <h3 className="text-lg font-semibold text-dark-100 mb-1">Move Session{moveTarget.files.length > 1 ? "s" : ""}</h3>
-            <p className="text-sm text-dark-400 mb-5">
-              {moveTarget.files.length === 1
-                ? <span className="font-mono text-xs">{moveTarget.files[0]}</span>
-                : `${moveTarget.files.length} sessions selected`
-              }
-            </p>
+      <AttentionBanner overview={data} onReview={reviewAttention} />
 
-            <div className="space-y-4">
-              <div>
-                <label className="text-xs font-medium text-dark-400 uppercase tracking-wider">From</label>
-                <div className="mt-1.5 flex gap-2 flex-wrap">
-                  {BUCKETS.map((b) => (
-                    <button
-                      key={b}
-                      onClick={() => setMoveTarget({ ...moveTarget, fromBucket: b })}
-                      className={`px-3 py-1.5 text-xs rounded-lg border transition-all ${
-                        moveTarget.fromBucket === b
-                          ? "border-accent bg-accent/10 text-accent"
-                          : "border-dark-700 text-dark-400 hover:border-dark-500"
-                      }`}
-                    >
-                      {b}
-                    </button>
-                  ))}
-                  <button
-                    onClick={() => setMoveTarget({ ...moveTarget, fromBucket: "assigned" })}
-                    className={`px-3 py-1.5 text-xs rounded-lg border transition-all ${
-                      moveTarget.fromBucket === "assigned"
-                        ? "border-accent bg-accent/10 text-accent"
-                        : "border-dark-700 text-dark-400 hover:border-dark-500"
-                    }`}
-                  >
-                    assigned
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex justify-center">
-                <MoveRight className="h-5 w-5 text-dark-600" />
-              </div>
-
-              <div>
-                <label className="text-xs font-medium text-dark-400 uppercase tracking-wider">To</label>
-                <div className="mt-1.5 flex gap-2 flex-wrap">
-                  {BUCKETS.map((b) => (
-                    <button
-                      key={b}
-                      onClick={() => setMoveToBucket(b)}
-                      className={`px-3 py-1.5 text-xs rounded-lg border transition-all ${
-                        moveToBucket === b
-                          ? "border-emerald-500 bg-emerald-500/10 text-emerald-400"
-                          : "border-dark-700 text-dark-400 hover:border-dark-500"
-                      }`}
-                    >
-                      {b}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-3 mt-6">
-              <Button variant="secondary" size="sm" onClick={() => setMoveTarget(null)}>Cancel</Button>
-              <Button size="sm" onClick={handleMove} loading={moving}
-                disabled={moveTarget.fromBucket === moveToBucket}>
-                <MoveRight className="h-4 w-4" /> Move to {moveToBucket}
-              </Button>
-            </div>
-          </div>
-        </div>
+      {data && (
+        <SummaryCards summary={data.summary} activeView={view} onPick={setView} />
       )}
+      {data && (
+        <HealthStrip
+          summary={data.summary}
+          activeHealth={filters.health}
+          onPick={(h: SessionHealth) => setFilters((f) => ({ ...f, health: f.health === h ? "" : h }))}
+        />
+      )}
+
+      <Toolbar
+        view={view} viewCounts={viewCounts} onView={setView}
+        search={search} onSearch={setSearch}
+        filters={filters}
+        onOpenFilters={() => setFiltersOpen(true)}
+        onRemoveFilter={(k) => setFilters((f) => ({ ...f, [k]: typeof f[k] === "boolean" ? false : "" }))}
+        onClearFilters={() => setFilters(EMPTY_FILTERS)}
+        visible={visible} onToggleColumn={toggleColumn}
+        density={density} onDensity={changeDensity}
+      />
+
+      <div ref={tableRef}>
+        {error && !data ? (
+          <div className="rounded-xl border border-danger/25 bg-danger/5 p-8 text-center">
+            <AlertCircle className="h-8 w-8 mx-auto mb-2 text-danger" />
+            <p className="text-sm text-dark-200">Failed to load sessions</p>
+            <button onClick={doRefresh} className="mt-3 rounded-lg bg-accent px-3.5 py-1.5 text-xs font-medium text-white hover:bg-accent-600">Retry</button>
+          </div>
+        ) : isLoading && !data ? (
+          <TableSkeleton rows={8} cols={6} />
+        ) : filtered.length === 0 ? (
+          <div className="rounded-xl border border-dark-700/60 bg-dark-850 p-12 text-center">
+            {sessions.length === 0 ? (
+              <>
+                <p className="text-base font-semibold text-dark-100">No sessions uploaded</p>
+                <p className="text-sm text-dark-500 mt-1 mb-4">Upload session files to create your ready pool.</p>
+                <button onClick={() => setUploadOpen(true)} className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-600">Upload sessions</button>
+              </>
+            ) : (
+              <>
+                <p className="text-base font-semibold text-dark-100">No sessions match these filters</p>
+                <button onClick={() => { setFilters(EMPTY_FILTERS); setSearch(""); setView("all"); }} className="mt-3 rounded-lg border border-dark-700 bg-dark-800 px-3.5 py-1.5 text-xs text-dark-200 hover:bg-dark-700">Clear filters</button>
+              </>
+            )}
+          </div>
+        ) : (
+          <SessionsTable
+            sessions={filtered}
+            visible={visible}
+            density={density}
+            selected={selected}
+            validating={validating}
+            recentlyUpdated={updated}
+            openFilename={openFilename}
+            actions={actions}
+            onToggleSelect={toggleSelect}
+            onSelectAll={selectAll}
+            onRowClick={(s) => openSession(s.filename)}
+          />
+        )}
+      </div>
+
+      <BulkActionBar selected={selectedSessions} handlers={bulkHandlers} />
+
+      {/* Drawer */}
+      <SessionDetailsDrawer
+        session={openSessionObj}
+        actions={actions}
+        audit={audit}
+        validating={openFilename ? validating.has(openFilename) : false}
+        busy={openFilename ? busy.has(openFilename) : false}
+        onClose={closeDrawer}
+      />
+
+      {/* Filters */}
+      <FiltersPanel open={filtersOpen} onClose={() => setFiltersOpen(false)} value={filters} onApply={setFilters} bots={botNames} />
+
+      {/* Dialogs */}
+      <UploadSessionsDialog open={uploadOpen} onClose={() => setUploadOpen(false)} knownFilenames={knownFilenames} onDone={(added) => { mutate(); if (added.length) { setSearch(added[0].replace(/\.session$/, "")); added.forEach(highlight); } }} />
+      <MoveSessionsDialog open={!!moveTargets} onClose={() => setMoveTargets(null)} sessions={moveTargets || []} onDone={() => { mutate(); clearSelection(); }} />
+      <DeleteSessionsDialog open={!!deleteTargets} onClose={() => setDeleteTargets(null)} sessions={deleteTargets || []} onDone={(r) => { mutate(); clearSelection(); if (r && (r.summary.failed || r.summary.skipped)) setOpResult({ title: "Delete result", result: r }); }} />
+      <AssignSessionDialog open={!!assignTargets} onClose={() => setAssignTargets(null)} sessions={assignTargets || []} onDone={() => { mutate(); clearSelection(); }} />
+      <UnassignSessionDialog open={!!unassignTarget} onClose={() => setUnassignTarget(null)} session={unassignTarget} onDone={() => mutate()} />
+      <ReplaceSessionDialog open={!!replaceTarget} onClose={() => setReplaceTarget(null)} session={replaceTarget} freeSessions={freeSessions} onDone={() => mutate()} />
+
+      <OperationResultDialog
+        open={!!opResult} onClose={() => setOpResult(null)}
+        title={opResult?.title || "Result"} result={opResult?.result || null}
+      />
+
+      <ConfirmModal
+        open={!!confirmDisable}
+        onClose={() => setConfirmDisable(null)}
+        onConfirm={() => { if (confirmDisable) applyEnabled(confirmDisable, false); setConfirmDisable(null); }}
+        title="Disable session"
+        message={confirmDisable ? `Disable ${confirmDisable.filename} in ${confirmDisable.bot_name}? It stops being used in ads until re-enabled; the other accounts keep running.` : ""}
+        confirmText="Disable"
+        variant="primary"
+      />
     </div>
   );
 }
