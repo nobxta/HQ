@@ -55,13 +55,12 @@ async def admin_list_dm_inbox(bot: str = Query(""), account: str = Query("")):
 @router.get("/footer")
 async def admin_get_footer():
     from code import dm_inbox as store
-    footer = await asyncio.to_thread(store.get_autoreply_footer, True)
-    return {"footer": footer, "default": store.DEFAULT_AUTOREPLY_FOOTER}
+    return await asyncio.to_thread(store.get_autoreply_footer_meta)
 
 
 @router.put("/footer")
 async def admin_set_footer(body: FooterBody):
     """Admin-only: rewrite the HQAdz footer appended to every auto-reply."""
     from code import dm_inbox as store
-    footer = await asyncio.to_thread(store.set_autoreply_footer, body.footer)
-    return {"footer": footer}
+    await asyncio.to_thread(store.set_autoreply_footer, body.footer)
+    return await asyncio.to_thread(store.get_autoreply_footer_meta)

@@ -176,49 +176,62 @@ async def send_admin_dm_alert(
         return False
 
 
+def _dm_message_line(text: str, media_type: str, caption: str) -> list[str]:
+    """Message/media presentation for a DM alert — never a bare '.' with no context."""
+    if media_type:
+        out = [f"Media: {media_type}"]
+        if caption:
+            out.append(f"Caption: {caption}")
+        return out
+    return [f"Message: {text}"] if (text or "").strip() else ["Message: (no text)"]
+
+
+def _format_owner_dm(
+    session_file: str, account_username: str, from_name: str, from_username: str,
+    text: str, media_type: str, caption: str,
+) -> str:
+    """'New DM Received' text (plain, no parse_mode). The Account line shows the session
+    filename (the account itself is a deep-link button)."""
+    account = session_file or (f"@{account_username}" if account_username else "ad account")
+    who = from_name or "Unknown User"
+    if from_username:
+        who += f" @{from_username}"
+    lines = ["New DM Received", "", f"Account: {account}", f"From: {who}"]
+    lines += _dm_message_line(text, media_type, caption)
+    return "\n".join(lines)
+
+
+def _dm_profile_keyboard(sender_id: int, session_file: str = "", account_user_id: int = 0):
+    """Inline buttons: open the sender's profile, and (if known) the receiving account's
+    profile labelled by its session filename — clicking it opens that account in Telegram."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    rows = [[InlineKeyboardButton("Open Sender Profile", url=f"tg://user?id={sender_id}")]]
+    if account_user_id:
+        label = session_file or "Open Account Profile"
+        rows.append([InlineKeyboardButton(label, url=f"tg://user?id={account_user_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
 async def send_admin_dm_received(
     session_file: str,
     from_name: str,
     user_id: int,
     message_text: str,
     account_username: str = "",
+    account_user_id: int = 0,
     sender_username: str = "",
     media_type: str = "",
     caption: str = "",
 ) -> bool:
-    """Send 'New DM received' alert to ADMIN_USER_ID with an 'Open Sender Profile' button (PTB).
-    Uses the same rich format as the owner notification (Account / From @username / Message)."""
-    account = account_username or session_file.replace(".session", "")
-    text = _format_owner_dm(account, from_name, sender_username, message_text, media_type, caption)
-    text += f"\nUser ID: {user_id}"
+    """Send 'New DM received' alert to ADMIN_USER_ID with sender + account profile buttons."""
+    text = _format_owner_dm(session_file, account_username, from_name, sender_username, message_text, media_type, caption)
+    text += f"\nSender ID: {user_id}"
     try:
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Open Sender Profile", url=f"tg://user?id={user_id}")],
-        ])
+        keyboard = _dm_profile_keyboard(user_id, session_file, account_user_id)
         return await send_admin_dm_alert(text, parse_mode=None, reply_markup=keyboard)
     except Exception as e:
         logger.warning("send_admin_dm_received failed: %s", e)
         return await send_admin_dm_alert(text, parse_mode=None)
-
-
-def _format_owner_dm(
-    account_username: str, from_name: str, from_username: str,
-    text: str, media_type: str, caption: str,
-) -> str:
-    """Owner-facing 'New DM Received' text (no parse_mode — plain text)."""
-    account = f"@{account_username}" if account_username else "an ad account"
-    who = from_name or "Unknown User"
-    if from_username:
-        who += f" @{from_username}"
-    lines = ["New DM Received", "", f"Account: {account}", f"From: {who}"]
-    if media_type:
-        lines.append(f"Media: {media_type}")
-        if caption:
-            lines.append(f"Caption: {caption}")
-    else:
-        lines.append(f'Message: {text}' if text else "Message: (empty)")
-    return "\n".join(lines)
 
 
 async def send_owner_dm_received(
@@ -231,17 +244,17 @@ async def send_owner_dm_received(
     text: str = "",
     media_type: str = "",
     caption: str = "",
+    session_file: str = "",
+    account_user_id: int = 0,
 ) -> bool:
     """DM the AdBot owner about an incoming DM to one of their posting accounts, via the
-    AdBot's own control bot, with an 'Open Sender Profile' button. Best-effort."""
+    AdBot's own control bot, with sender + account profile buttons. Best-effort."""
     if not (bot_token and owner_id):
         return False
-    body = _format_owner_dm(account_username, from_name, from_username, text, media_type, caption)
+    body = _format_owner_dm(session_file, account_username, from_name, from_username, text, media_type, caption)
+    body += f"\nSender ID: {sender_id}"
     try:
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Open Sender Profile", url=f"tg://user?id={sender_id}")],
-        ])
+        keyboard = _dm_profile_keyboard(sender_id, session_file, account_user_id)
         return await send_message_with_bot(owner_id, body, bot_token=bot_token, reply_markup=keyboard)
     except Exception as e:
         logger.warning("send_owner_dm_received failed: %s", e)

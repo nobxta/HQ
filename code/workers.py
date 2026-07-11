@@ -292,8 +292,9 @@ async def worker_main_async(
 
     def report_dm_alert(
         session_file: str, from_name: str, user_id: int, message_text: str,
-        account_username: str = "", sender_username: str = "",
-        media_type: str = "", caption: str = "",
+        account_username: str = "", account_name: str = "", account_user_id: int = 0,
+        sender_username: str = "", media_type: str = "", caption: str = "",
+        reply_status: str = "", reply_text: str = "",
     ) -> None:
         """Report an incoming DM to the controller: it records the DM in the owner's inbox,
         raises the web notification, and DMs the owner via the AdBot's control bot."""
@@ -306,9 +307,13 @@ async def worker_main_async(
             "user_id": user_id,
             "message_text": message_text,
             "account_username": account_username,
+            "account_name": account_name,
+            "account_user_id": account_user_id,
             "sender_username": sender_username,
             "media_type": media_type,
             "caption": caption,
+            "reply_status": reply_status,
+            "reply_text": reply_text,
         })
 
     def report_audit_log(session_file: str, event: str, **kwargs: object) -> None:

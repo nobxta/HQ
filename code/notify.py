@@ -44,15 +44,16 @@ async def notify_dm_received(
     user_id: int,
     message_text: str,
     account_username: str = "",
+    account_user_id: int = 0,
     sender_username: str = "",
     media_type: str = "",
     caption: str = "",
 ) -> bool:
-    """Send 'New DM received' alert to admin via PTB (with Open Sender Profile button)."""
+    """Send 'New DM received' alert to admin via PTB (with sender + account profile buttons)."""
     return await bot_ptb.send_admin_dm_received(
         session_file, from_name, user_id, message_text,
-        account_username=account_username, sender_username=sender_username,
-        media_type=media_type, caption=caption,
+        account_username=account_username, account_user_id=account_user_id,
+        sender_username=sender_username, media_type=media_type, caption=caption,
     )
 
 

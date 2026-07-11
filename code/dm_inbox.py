@@ -49,12 +49,16 @@ def add_dm(
     *,
     session_file: str,
     account_username: str,
+    account_name: str = "",
+    account_user_id: int = 0,
     sender_id: int,
     sender_name: str,
     sender_username: str,
     text: str,
     media_type: str,
     caption: str,
+    reply_status: str = "",
+    reply_text: str = "",
 ) -> dict:
     """Append a received DM; keep the newest _MAX_INBOX. Returns the stored entry."""
     entry = {
@@ -62,12 +66,16 @@ def add_dm(
         "ts": time.time(),
         "session_file": session_file,
         "account_username": account_username,
+        "account_name": account_name,
+        "account_user_id": account_user_id,
         "sender_id": sender_id,
         "sender_name": sender_name,
         "sender_username": sender_username,
         "text": text,
         "media_type": media_type,
         "caption": caption,
+        "reply_status": reply_status,
+        "reply_text": reply_text,
         "read": False,
     }
     with _inbox_lock:
@@ -132,14 +140,23 @@ def get_autoreply_footer(force: bool = False) -> str:
     return ft
 
 
+def get_autoreply_footer_meta() -> dict:
+    """Footer text, its last-updated ISO time (or ''), and the default — for the admin UI."""
+    s = _load_admin_settings()
+    ft = (s.get("dm_autoreply_footer") or "").strip() or DEFAULT_AUTOREPLY_FOOTER
+    return {"footer": ft, "updated_at": s.get("dm_autoreply_footer_updated_at", ""), "default": DEFAULT_AUTOREPLY_FOOTER}
+
+
 def set_autoreply_footer(text: str) -> str:
     """Admin-only: change the footer. Empty falls back to the default (never truly blank).
-    Read-modify-write so other admin settings are preserved."""
+    Read-modify-write so other admin settings are preserved. Records the update time."""
+    from datetime import datetime
     global _footer_cache
     ft = (text or "").strip() or DEFAULT_AUTOREPLY_FOOTER
     with _settings_lock:
         s = _load_admin_settings()
         s["dm_autoreply_footer"] = ft
+        s["dm_autoreply_footer_updated_at"] = datetime.utcnow().isoformat() + "Z"
         p = _admin_settings_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(s, indent=2), "utf-8")
