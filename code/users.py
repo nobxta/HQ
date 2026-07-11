@@ -802,17 +802,15 @@ _DM_NOTIFY_WINDOW_SEC = 45.0
 
 
 def _dm_bell_summary(from_name: str, sender_username: str, text: str, media_type: str, caption: str) -> str:
-    who = from_name or "Someone"
-    if sender_username:
-        who += f" (@{sender_username})"
+    """Short message preview for the notification bell (sender is carried in the title)."""
     if media_type:
-        body = f"[{media_type}]" + (f" {caption}" if caption else "")
+        body = f"{media_type} received" + (f": {caption}" if caption else "")
     else:
-        body = text or ""
+        body = (text or "").strip() or "No text message"
     body = body.strip()
     if len(body) > 120:
         body = body[:117] + "…"
-    return f"{who}: {body}" if body else f"{who} sent a message"
+    return body
 
 
 async def _dm_owner_flush(key: tuple) -> None:
@@ -855,19 +853,22 @@ async def _handle_dm_alert(msg: dict) -> None:
     reply_text = msg.get("reply_text", "")
 
     # 1) Always record in the inbox (every message).
+    entry_id = ""
     try:
-        dm_inbox.add_dm(
+        _entry = dm_inbox.add_dm(
             name, session_file=session_file, account_username=account_username,
             account_name=account_name, account_user_id=account_user_id,
             sender_id=sender_id, sender_name=from_name, sender_username=sender_username,
             text=text, media_type=media_type, caption=caption,
             reply_status=reply_status, reply_text=reply_text,
         )
+        entry_id = _entry.get("id", "")
     except Exception as e:
         logger.warning("dm inbox write failed: %s", e)
 
     # 2) + 3) Web bell + owner Telegram: instant on the first message of a burst, then coalesce.
     owner_id = int(cfg.get("owner_id") or 0)
+    bot_username = cfg.get("bot_username", "")
     key = (bot_token, sender_id)
     st = _dm_owner_notify.get(key)
     if st is None:
@@ -877,10 +878,14 @@ async def _handle_dm_alert(msg: dict) -> None:
             "sender_username": sender_username, "sender_id": sender_id,
         }
         try:
+            _sender = from_name or (f"@{sender_username}" if sender_username else "someone")
+            _via = f" via @{bot_username}" if bot_username else ""
             dm_inbox.add_portal_notification(
-                name, "New DM received",
-                _dm_bell_summary(from_name, sender_username, text, media_type, caption),
-                "info",
+                name,
+                f"New DM from {_sender}",
+                f"{_dm_bell_summary(from_name, sender_username, text, media_type, caption)}\nReceived by {session_file}{_via}",
+                "info", icon="message",
+                href=(f"/user/auto-reply?msg={entry_id}" if entry_id else "/user/auto-reply"),
             )
         except Exception as e:
             logger.warning("dm bell write failed: %s", e)

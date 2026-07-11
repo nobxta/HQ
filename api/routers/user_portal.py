@@ -390,7 +390,7 @@ async def portal_get_bot(bot_name: str, telegram_id: int = Query(...)):
     ar = cfg.get("dm_autoreply") or {}
     ar_enabled = bool(ar.get("enabled", True))
     ar_message = str(ar.get("message", "") or "")
-    detail["dm_autoreply"] = {"enabled": ar_enabled, "message": ar_message}
+    detail["dm_autoreply"] = {"enabled": ar_enabled, "message": ar_message, "updated_at": ar.get("updated_at", "")}
     detail["dm_autoreply_default"] = DM_AUTOREPLY_DEFAULT
     detail["dm_autoreply_footer"] = _dm.get_autoreply_footer()
     detail["dm_autoreply_preview"] = compose_autoreply(ar_message)
@@ -550,6 +550,7 @@ async def portal_update_settings(bot_name: str, telegram_id: int = Query(...), b
 async def portal_update_autoreply(bot_name: str, telegram_id: int = Query(...), body: PortalUpdateAutoreply = ...):
     """Save DM auto-reply config. The user only controls enabled + the body message; the
     admin-managed footer is never stored (stripped here) and always appended at send time."""
+    import time as _time
     from code.users import compose_autoreply
     from code import dm_inbox as _dm
     token, cfg = await _get_user_bot(telegram_id, bot_name)
@@ -564,6 +565,7 @@ async def portal_update_autoreply(bot_name: str, telegram_id: int = Query(...), 
         ar["message"] = msg
     ar.setdefault("enabled", True)
     ar.setdefault("message", "")
+    ar["updated_at"] = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
     full_cfg["dm_autoreply"] = ar
     await wrappers.save_user_data(name, full_cfg)
     return {
@@ -597,6 +599,15 @@ async def portal_mark_dm_inbox_read(bot_name: str, telegram_id: int = Query(...)
     token, cfg = await _get_user_bot(telegram_id, bot_name)
     name = cfg.get("name", bot_name)
     await asyncio.to_thread(_dm.mark_inbox_read, name)
+    return {"status": "ok"}
+
+
+@router.post("/bot/{bot_name}/dm-inbox/{msg_id}/read")
+async def portal_mark_dm_read(bot_name: str, msg_id: str, telegram_id: int = Query(...)):
+    from code import dm_inbox as _dm
+    token, cfg = await _get_user_bot(telegram_id, bot_name)
+    name = cfg.get("name", bot_name)
+    await asyncio.to_thread(_dm.mark_dm_read, name, msg_id)
     return {"status": "ok"}
 
 

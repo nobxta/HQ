@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Bell, X, Check, CheckCheck, ArrowRightLeft, Clock, AlertTriangle, Info, ChevronRight } from "lucide-react";
+import { Bell, X, Check, CheckCheck, ArrowRightLeft, Clock, AlertTriangle, Info, MessageSquare } from "lucide-react";
 import portalApi, { getPortalSession } from "@/lib/portal-api";
 
 type Notification = {
@@ -9,6 +9,7 @@ type Notification = {
   message: string;
   type: "info" | "success" | "warning" | "error";
   icon?: string;
+  href?: string;
   ts: number;
   read: boolean;
 };
@@ -54,6 +55,7 @@ const TYPE_STYLES = {
 
 function NotifIcon({ type, icon }: { type: string; icon?: string }) {
   const cls = `h-4 w-4 ${TYPE_STYLES[type as keyof typeof TYPE_STYLES]?.icon || "text-dark-400"}`;
+  if (icon === "message") return <MessageSquare className={cls} />;
   if (icon === "swap") return <ArrowRightLeft className={cls} />;
   if (icon === "clock") return <Clock className={cls} />;
   if (icon === "alert") return <AlertTriangle className={cls} />;
@@ -170,7 +172,7 @@ export default function NotificationBell() {
       {open && (
         <div
           ref={panelRef}
-          className="absolute right-0 top-full mt-2 w-80 sm:w-96 rounded-2xl border border-dark-700/50 bg-dark-900 shadow-2xl shadow-black/40 overflow-hidden z-50 animate-in fade-in slide-in-from-top-2 duration-200"
+          className="absolute right-0 top-full mt-2 w-80 sm:w-96 max-w-[calc(100vw-1.5rem)] rounded-2xl border border-dark-700/50 bg-dark-900 shadow-2xl shadow-black/40 overflow-hidden z-50 animate-in fade-in slide-in-from-top-2 duration-200"
         >
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-dark-800/50 bg-dark-850/50">
@@ -214,7 +216,8 @@ export default function NotificationBell() {
                   return (
                     <div
                       key={n.id}
-                      className={`group relative px-4 py-3 transition-colors ${
+                      onClick={() => { if (n.href) { setOpen(false); window.location.href = n.href; } }}
+                      className={`group relative px-4 py-3 transition-colors ${n.href ? "cursor-pointer" : ""} ${
                         n.read
                           ? "hover:bg-dark-800/20"
                           : `${style.bg} hover:bg-dark-800/30`
@@ -241,7 +244,7 @@ export default function NotificationBell() {
                               </span>
                             </div>
                           </div>
-                          <p className={`text-[11px] mt-0.5 leading-relaxed ${
+                          <p className={`text-[11px] mt-0.5 leading-relaxed whitespace-pre-line ${
                             n.read ? "text-dark-500" : "text-dark-300"
                           }`}>
                             {n.message}
@@ -265,13 +268,14 @@ export default function NotificationBell() {
           </div>
 
           {/* Footer */}
-          {notifications.length > 5 && (
-            <div className="px-4 py-2.5 border-t border-dark-800/50 bg-dark-850/30">
-              <p className="text-[10px] text-dark-600 text-center">
-                Showing {notifications.length} notification{notifications.length !== 1 ? "s" : ""}
-              </p>
-            </div>
-          )}
+          <div className="px-4 py-2 border-t border-dark-800/50 bg-dark-850/30">
+            <button
+              onClick={() => { setOpen(false); window.location.href = "/user/auto-reply"; }}
+              className="w-full text-[11px] font-semibold text-accent hover:text-accent-400 text-center py-1 transition-colors"
+            >
+              View all messages
+            </button>
+          </div>
         </div>
       )}
     </div>

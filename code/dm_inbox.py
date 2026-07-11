@@ -101,6 +101,19 @@ def mark_inbox_read(bot_name: str) -> None:
             _inbox_path(bot_name).write_text(json.dumps(items, indent=2), "utf-8")
 
 
+def mark_dm_read(bot_name: str, msg_id: str) -> None:
+    """Mark a single DM read by id."""
+    with _inbox_lock:
+        items = load_inbox(bot_name)
+        changed = False
+        for it in items:
+            if it.get("id") == msg_id and not it.get("read"):
+                it["read"] = True
+                changed = True
+        if changed:
+            _inbox_path(bot_name).write_text(json.dumps(items, indent=2), "utf-8")
+
+
 def list_inbox_bots() -> list[str]:
     """Bot names (file stems) that have a DM inbox on disk."""
     d = _inbox_dir()
@@ -186,9 +199,11 @@ def add_portal_notification(
     message: str,
     type: str = "info",
     icon: str = "",
+    href: str = "",
 ) -> None:
     """Append a notification to the portal bell store (data/notifications/<bot>.json).
-    Same format the API's NotificationBell polls. Callable from any process."""
+    Same format the API's NotificationBell polls. `href` lets a click deep-link
+    somewhere (e.g. the exact DM). Callable from any process."""
     with _notif_lock:
         notifs = _load_notifs(bot_name)
         notifs.append({
@@ -197,6 +212,7 @@ def add_portal_notification(
             "message": message,
             "type": type,
             "icon": icon,
+            "href": href,
             "ts": time.time(),
             "read": False,
         })

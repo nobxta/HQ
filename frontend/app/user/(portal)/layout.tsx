@@ -13,6 +13,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/user/logs": "Live Logs",
   "/user/campaign": "Campaigns",
   "/user/chatlist": "Chat List",
+  "/user/auto-reply": "Auto Reply",
   "/user/settings": "Settings",
   "/user/billing": "Billing",
 };
