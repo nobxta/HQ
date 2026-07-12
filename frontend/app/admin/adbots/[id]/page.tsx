@@ -1441,6 +1441,9 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
       const { data } = await api.post(`/api/bots/${encodeURIComponent(name)}/sessions/${encodeURIComponent(file)}/validate`);
       if (data.status === "valid") {
         toast.success(`${file}: Valid ✓`);
+      } else if (data.status === "skipped") {
+        // Held by a live worker — informational, not a failure. Nothing changed.
+        toast(`${file}: validation skipped — session is currently in use by a running AdBot`, { icon: "⏳" });
       } else {
         toast.error(`${file}: ${data.reason}`);
         onUpdate();

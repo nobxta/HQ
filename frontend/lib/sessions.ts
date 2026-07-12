@@ -34,11 +34,15 @@ export async function validateSessions(filenames?: string[]): Promise<ValidateRe
   const { data } = await api.post("/api/sessions/validate", filenames ? { filenames } : {});
   return data;
 }
+// Assigned validation can be skipped when the session is held by a live task
+// (running AdBot worker / chatlist / portal). "skipped" is informational — not a
+// dead/invalid outcome — and the backend does not persist anything for it.
+export type AssignedValidateStatus = "valid" | "invalid" | "skipped";
 export async function validateAssignedSession(botName: string, file: string) {
   const { data } = await api.post(
     `/api/bots/${encodeURIComponent(botName)}/sessions/${encodeURIComponent(file)}/validate`,
   );
-  return data as { file: string; status: string; reason: string };
+  return data as { file: string; status: AssignedValidateStatus; reason: string };
 }
 
 // ── spambot ──

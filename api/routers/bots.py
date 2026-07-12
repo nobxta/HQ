@@ -959,6 +959,16 @@ async def validate_bot_session(name: str, session_file: str):
     path = resolve_session_path(session_file)
 
     valid, reason = await validate_session_with_reason(path)
+
+    # A session held by a live task (posting worker, chatlist, portal) is SKIPPED,
+    # not failed: validate_session_with_reason returns (False, "...is busy:...") /
+    # "in use by posting" without moving or touching the file. Treat that as an
+    # informational skip — do NOT persist validation_status/reason/last_validated_at
+    # and do not change the session's health. (Same rule the startup validator uses.)
+    low = (reason or "").lower()
+    if not valid and ("is busy:" in low or "in use by posting" in low):
+        return {"file": session_file, "status": "skipped", "reason": reason}
+
     status = "valid" if valid else "invalid"
 
     # Persist the outcome onto the session entry so the Sessions page can show the

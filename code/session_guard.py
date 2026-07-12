@@ -146,6 +146,41 @@ def _pid_alive(pid: int) -> bool:
         return True  # unknown platform behaviour: assume alive (TTL still applies)
 
 
+def _proc_start_time(pid: int) -> float | None:
+    """Process creation time (epoch seconds) for `pid`, recorded in the lock payload at
+    acquire so staleness can later detect pid reuse. None if unavailable."""
+    if pid <= 0:
+        return None
+    try:
+        import psutil
+        return float(psutil.Process(pid).create_time())
+    except Exception:
+        return None
+
+
+def _pid_reused_or_gone(pid: int, recorded_start: float) -> bool:
+    """True if the process that took this lock is provably gone or was replaced (pid reuse).
+
+    This is what stops a RECYCLED pid from keeping a no-TTL posting lock alive forever, and
+    also catches an exited holder that ``os.kill(pid, 0)`` still reports as alive (a known
+    Windows quirk for a just-exited pid). Decisive only when psutil is available:
+      * process no longer exists (NoSuchProcess)            -> stale
+      * process exists but started at a different time      -> pid reused -> stale
+      * process exists with the recorded start time         -> live holder -> not stale
+    If psutil is unavailable it returns False, so callers fall back to pid-alive + TTL with
+    no behavioural change."""
+    try:
+        import psutil
+    except Exception:
+        return False
+    try:
+        return abs(float(psutil.Process(pid).create_time()) - float(recorded_start)) > 1.5
+    except psutil.NoSuchProcess:
+        return True
+    except Exception:
+        return False
+
+
 def _read_lock(key: str) -> dict | None:
     try:
         raw = _lock_path(key).read_text(encoding="utf-8")
@@ -158,6 +193,14 @@ def _read_lock(key: str) -> dict | None:
 def _is_stale(holder: dict) -> bool:
     pid = int(holder.get("pid") or 0)
     if not _pid_alive(pid):
+        return True
+    # PID-reuse / exited-holder guard: the holder recorded its process start time at
+    # acquire. If that process is now gone or was replaced by a recycled pid, the lock is
+    # stale — this is what stops a reused pid from keeping a posting lock (expected_sec=
+    # None, no TTL) alive forever. Only applies to locks written since this field was
+    # added; older locks fall back to pid-alive + TTL below.
+    started = holder.get("pid_start")
+    if started is not None and _pid_reused_or_gone(pid, float(started)):
         return True
     expected = holder.get("expected_sec")
     if expected:
@@ -282,6 +325,37 @@ def force_clear_locks(session_files: list[str]) -> list[str]:
     return cleared
 
 
+def clear_posting_locks(session_files: list[str]) -> list[str]:
+    """Clear ONLY orphaned 'posting' locks for these session files; return the keys cleared.
+
+    For the AdBot *stop* path and startup recovery: the caller guarantees no live worker
+    of the owning bot is running (workers joined, or a stopped bot at startup), so any
+    surviving posting lock on the bot's own sessions is orphaned. Unlike force_clear_locks
+    (start path), this touches ONLY locks whose task is 'posting…' — a live portal /
+    chatlist / health-check holder on the same session is left completely untouched, so we
+    never break a lock that belongs to another live task or another AdBot's session."""
+    cleared: list[str] = []
+    for fn in session_files:
+        key = _lock_key(fn)
+        holder = _read_lock(key)
+        if holder is None:
+            continue
+        if not str(holder.get("task") or "").startswith("posting"):
+            continue  # portal / chatlist / health hold — not ours to break
+        logger.warning(
+            "[SessionGuard] Clearing orphaned posting lock on %s (pid=%s held %.0fs) — "
+            "owning bot's workers are stopped, lock is orphaned",
+            key, holder.get("pid"), time.time() - float(holder.get("started_at") or time.time()),
+        )
+        try:
+            _lock_path(key).unlink()
+            cleared.append(key)
+        except OSError:
+            pass
+        _held_tokens.pop(key, None)
+    return cleared
+
+
 async def _acquire(key: str, task: str, wait_timeout: float, expected_sec: Optional[float]) -> None:
     """Acquire the cross-process lock for `key` or raise SessionBusyError."""
     deadline = time.monotonic() + max(0.0, wait_timeout)
@@ -291,6 +365,7 @@ async def _acquire(key: str, task: str, wait_timeout: float, expected_sec: Optio
         payload = json.dumps({
             "task": task,
             "pid": os.getpid(),
+            "pid_start": _proc_start_time(os.getpid()),
             "token": token,
             "started_at": time.time(),
             "expected_sec": expected_sec,

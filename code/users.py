@@ -4569,6 +4569,22 @@ async def _stop_worker_cleanup_background(bot_token: str, workers_list: list, na
         logger.exception("STOP worker cleanup error for bot %s: %s", bot_token[:20], e)
     finally:
         _pending_stop_cleanup.pop(bot_token, None)
+    # Workers are now joined/terminated. Any surviving 'posting' lock on this bot's OWN
+    # sessions is orphaned (crashed worker, or a reused PID that _pid_alive misreports),
+    # so clear only those — never before this point, never another bot's sessions, and
+    # never a live portal/chatlist holder (clear_posting_locks skips non-posting tasks).
+    try:
+        _scfg = _get_cfg(bot_token) or {}
+        _sfiles = [s.get("file") or "" for s in _scfg.get("sessions", []) if s.get("file")]
+        if _sfiles:
+            _cleared = session_guard.clear_posting_locks(_sfiles)
+            if _cleared:
+                logger.info(
+                    "[AdBotLifecycle] Cleared %s orphaned posting lock(s) after stop bot=%s: %s",
+                    len(_cleared), name or bot_token[:20], _cleared,
+                )
+    except Exception as e:
+        logger.warning("clear_posting_locks after stop failed for %s: %s", bot_token[:20], e)
     ts_end = time.time()
     enqueue_log(bot_token, "AdBot stopped")
     logger.info("[AdBotLifecycle] STOPPED bot=%s", name or bot_token[:20])
@@ -4651,6 +4667,42 @@ async def _stop_posting(bot_token: str) -> None:
                 await asyncio.gather(*pending, return_exceptions=True)
     logger.info("Stopped posting for bot %s", bot_token[:20])
     logger.info("[audit] STOP returned bot=%s ts=%.0f duration_sec=%.3f", name or bot_token[:20], time.time(), time.time() - ts_start)
+
+
+def cleanup_stopped_bot_locks() -> int:
+    """Startup recovery: clear orphaned 'posting' locks for bots whose PERSISTED state is
+    not running/activating.
+
+    Such bots will not be resumed, so a posting lock on their sessions is a leftover from a
+    previous unclean exit (crash/kill) — otherwise it would keep the session permanently
+    "busy" until the bot is next started. Running/activating bots are skipped: their resume
+    path force-clears locks right before spawning fresh workers, so touching them here would
+    race. Safe at startup because no posting worker exists yet in this fresh process. Returns
+    the number of locks cleared."""
+    from .utils import load_adbot
+    cleared_total = 0
+    try:
+        data = load_adbot()
+    except Exception as e:
+        logger.warning("cleanup_stopped_bot_locks: could not load bots: %s", e)
+        return 0
+    for token, cfg in data.get("bots", {}).items():
+        if (cfg.get("state") or "stopped") in ("running", "activating"):
+            continue
+        files = [s.get("file") or "" for s in cfg.get("sessions", []) if s.get("file")]
+        if not files:
+            continue
+        try:
+            cleared = session_guard.clear_posting_locks(files)
+            cleared_total += len(cleared)
+            if cleared:
+                logger.info(
+                    "[Startup] Cleared %s orphaned posting lock(s) for stopped bot=%s: %s",
+                    len(cleared), cfg.get("name") or token[:20], cleared,
+                )
+        except Exception as e:
+            logger.warning("cleanup_stopped_bot_locks failed for %s: %s", token[:20], e)
+    return cleared_total
 
 
 async def await_all_pending_stop_cleanup() -> None:

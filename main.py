@@ -277,7 +277,16 @@ async def main() -> None:
     _clean_stale_userbot_sessions()
 
     from code.utils import load_adbot, discover_local_sessions, get_shutdown_clients
-    from code.users import _stop_posting, _log_queue_consumer, run_session_health_monitor, await_all_pending_stop_cleanup, _stats_flush_loop, _drift_check_loop, _user_log_flush_loop, run_miniapp_menu_button_sweep
+    from code.users import _stop_posting, _log_queue_consumer, run_session_health_monitor, await_all_pending_stop_cleanup, _stats_flush_loop, _drift_check_loop, _user_log_flush_loop, run_miniapp_menu_button_sweep, cleanup_stopped_bot_locks
+
+    # Recover orphaned posting locks left by a previous unclean exit for bots that are
+    # NOT going to be resumed (persisted state != running/activating). Runs before
+    # resume_adbots so a stopped bot's sessions aren't stuck "busy". Running bots are
+    # left to their own resume-time lock clear.
+    try:
+        cleanup_stopped_bot_locks()
+    except Exception as _e:
+        logger.warning("startup cleanup_stopped_bot_locks failed: %s", _e)
 
     data = load_adbot()
 

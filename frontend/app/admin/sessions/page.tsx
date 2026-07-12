@@ -169,7 +169,8 @@ export default function SessionsPage() {
 
   const toastForStatus = (st: string) => {
     if (st === "active" || st === "valid") toast.success("Session is healthy");
-    else if (st === "busy") toast("Session is in use by a worker — skipped", { icon: "⏳" });
+    else if (st === "busy" || st === "skipped")
+      toast("Validation skipped because this session is currently being used by a running AdBot", { icon: "⏳" });
     else if (st === "dead" || st === "invalid") toast.error("Session is dead — moved to dead pool");
     else toast(`Result: ${st}`);
   };
@@ -180,6 +181,9 @@ export default function SessionsPage() {
       if (s.bot_name) {
         const r = await validateAssignedSession(s.bot_name, s.filename);
         toastForStatus(r.status);
+        // "skipped" means the session is held by a live worker — surface the in-use
+        // note in the drawer and leave the row's health/validation untouched.
+        if (r.status === "skipped") setBusy((p) => new Set(p).add(s.filename));
       } else {
         const r = await validateSessions([s.filename]);
         if (r.skipped[0]) toast.error(r.skipped[0].message);
