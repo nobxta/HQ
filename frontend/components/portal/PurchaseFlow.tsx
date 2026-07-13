@@ -5,7 +5,7 @@ import axios from "axios";
 import {
   X, ArrowLeft, ArrowRight, Check, Search, Copy, Clock,
   AlertTriangle, Loader2, Tag, ChevronRight, Sparkles, Wallet,
-  Bell, ShieldCheck, RotateCw,
+  Bell, ShieldCheck, RotateCw, Send, Zap,
 } from "lucide-react";
 
 const TELEGRAM_SUPPORT_URL = "https://t.me/hqadz_support";
@@ -13,16 +13,18 @@ const TELEGRAM_SUPPORT_URL = "https://t.me/hqadz_support";
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const TG = "#2AABEE";
 
-/* Plan passed in from the pricing section */
+/* Plan passed in from the pricing section.
+   Both prices are handed in; the billing cycle is chosen inside the drawer. */
 export interface PurchasePlan {
   id: string;
   label: string;
   mode: "starter" | "enterprise";
-  billing: "week" | "month";
-  price: number;
+  priceWeek: number;
+  priceMonth: number;
   posts: string;
   replacements: string;
-  durationDays: number;
+  /* If the user clicked a specific price on the card, preselect it; otherwise null. */
+  billingPreselect?: "week" | "month" | null;
 }
 
 interface CryptoCurrency {
@@ -46,7 +48,7 @@ interface StatusData {
 /* localStorage key so an in-progress payment survives a page refresh */
 const STORE_KEY = "hqadz_pending_purchase";
 
-type Step = "details" | "checkout" | "crypto" | "review" | "pay" | "creating";
+type Step = "billing" | "details" | "checkout" | "crypto" | "review" | "pay" | "creating";
 
 const TOP_COINS = ["BTC", "ETH", "XMR", "LTC", "SOL", "USDT_TRC20"];
 
@@ -85,8 +87,15 @@ const CREATION_STEPS = [
   "Your login is ready",
 ];
 
-export default function PurchaseFlow({ plan, onClose, resume }: { plan: PurchasePlan; onClose: () => void; resume?: { order: OrderData; currency: CryptoCurrency } | null }) {
-  const [step, setStep] = useState<Step>("details");
+export default function PurchaseFlow({ plan, onClose, resume }: { plan: PurchasePlan; onClose: () => void; resume?: { order: OrderData; currency: CryptoCurrency; billing?: "week" | "month" } | null }) {
+  const [step, setStep] = useState<Step>("billing");
+
+  // billing cycle is picked inside the drawer; only "chosen" once the user acts
+  const [billing, setBilling] = useState<"week" | "month">(plan.billingPreselect ?? "week");
+  const [billingChosen, setBillingChosen] = useState<boolean>(!!plan.billingPreselect);
+  const savePct = plan.priceWeek * 4 > 0
+    ? Math.round(((plan.priceWeek * 4 - plan.priceMonth) / (plan.priceWeek * 4)) * 100)
+    : 0;
 
   // reference details
   const [name, setName] = useState("");
@@ -122,8 +131,9 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
   // creation progress animation
   const [progressIdx, setProgressIdx] = useState(0);
 
-  const price = couponFinal ?? plan.price;
-  const per = plan.billing === "month" ? "mo" : "wk";
+  const basePrice = billing === "month" ? plan.priceMonth : plan.priceWeek;
+  const durationDays = billing === "month" ? 30 : 7;
+  const price = couponFinal ?? basePrice;
 
   /* lock body scroll */
   useEffect(() => {
@@ -153,7 +163,7 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
     setCheckingCoupon(true);
     try {
       const r = await axios.post(`${API}/api/portal/coupon/validate`, {
-        code, plan_id: plan.id, plan_mode: plan.mode, billing: plan.billing,
+        code, plan_id: plan.id, plan_mode: plan.mode, billing,
       });
       if (r.data?.valid) {
         setCouponDiscount(r.data.discount_usd);
@@ -166,7 +176,7 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
       }
     } catch { setCouponDiscount(0); setCouponFinal(null); setCouponMsg("Could not validate"); }
     setCheckingCoupon(false);
-  }, [coupon, plan.id, plan.mode, plan.billing]);
+  }, [coupon, plan.id, plan.mode, billing]);
 
   /* create order + invoice */
   const createOrder = useCallback(async () => {
@@ -177,7 +187,7 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
       const r = await axios.post(`${API}/api/portal/purchase/create`, {
         plan_id: plan.id,
         plan_mode: plan.mode,
-        billing: plan.billing,
+        billing,
         currency: selected.code,
         coupon: coupon.trim() || null,
         reference: {
@@ -189,7 +199,7 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
       }, { timeout: 30000 });
       setOrder(r.data);
       setStep("pay");
-      try { localStorage.setItem(STORE_KEY, JSON.stringify({ order: r.data, currency: selected, plan })); } catch {}
+      try { localStorage.setItem(STORE_KEY, JSON.stringify({ order: r.data, currency: selected, plan, billing })); } catch {}
       startPolling(r.data.order_id);
     } catch (e: any) {
       // Surface the real cause so it's debuggable instead of a generic message.
@@ -208,7 +218,7 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
       setOrderErr(msg);
     }
     setCreating(false);
-  }, [selected, plan, coupon, name, email, tgUser, tgId]);
+  }, [selected, plan, billing, coupon, name, email, tgUser, tgId]);
 
   /* poll status */
   const startPolling = useCallback((orderId: string) => {
@@ -266,6 +276,7 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
     restoredRef.current = true;
     setOrder(resume.order);
     setSelected(resume.currency);
+    if (resume.billing) { setBilling(resume.billing); setBillingChosen(true); }
     const oid = resume.order.order_id;
     // peek at status so we land on the right screen (pay vs. creating/ready)
     axios.get(`${API}/api/portal/purchase/${oid}/status`)
@@ -336,43 +347,111 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
       <div className="relative w-full max-w-xl max-h-[92vh] overflow-y-auto rounded-2xl border border-[#1f1f22] bg-[#0a0a0a] shadow-2xl pf-scroll pf-modal-in">
 
         {/* header */}
-        <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-3.5 border-b border-[#1f1f22] bg-[#0a0a0a]/95 backdrop-blur">
-          <div className="flex items-center gap-2.5">
-            {step !== "details" && step !== "creating" && (
-              <button onClick={() => setStep(step === "checkout" ? "details" : step === "crypto" ? "checkout" : step === "review" ? "crypto" : "review")} className="text-[#8b8b93] hover:text-white transition-colors" aria-label="Back">
-                <ArrowLeft className="w-4 h-4" />
+        <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-[#1f1f22] bg-[#0a0a0a]/95 backdrop-blur">
+          <div className="flex items-center gap-2">
+            {step !== "billing" && step !== "creating" && (
+              <button onClick={() => setStep(step === "details" ? "billing" : step === "checkout" ? "details" : step === "crypto" ? "checkout" : step === "review" ? "crypto" : "review")} className="grid place-content-center w-8 h-8 -ml-1.5 rounded-lg text-[#8b8b93] hover:text-white hover:bg-white/[0.06] transition-all duration-200" aria-label="Back">
+                <ArrowLeft className="w-[18px] h-[18px]" />
               </button>
             )}
             <div>
-              <p className="text-[14px] font-semibold text-white leading-tight">{plan.label} plan</p>
-              <p className="text-[11px] text-[#5d5d66] leading-tight">${price}/{per} · {plan.durationDays} days</p>
+              <p className="text-[14px] font-semibold text-white leading-tight">{plan.label}</p>
+              <p className="text-[11px] text-[#5d5d66] leading-tight mt-0.5">
+                {billingChosen ? `$${price} · ${durationDays} days` : `${plan.mode === "enterprise" ? "Enterprise" : "Starter"} plan`}
+              </p>
             </div>
           </div>
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2">
             {isExpired && (
               <span className="flex items-center gap-1.5 rounded-full border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-400">
                 <Clock className="w-3 h-3" /> Expired
               </span>
             )}
-            <button onClick={requestClose} className="text-[#8b8b93] hover:text-white transition-colors" aria-label="Close">
-              <X className="w-5 h-5" />
+            <button onClick={requestClose} className="grid place-content-center w-8 h-8 -mr-1 rounded-lg text-[#8b8b93] hover:text-white hover:bg-white/[0.06] transition-all duration-200" aria-label="Close">
+              <X className="w-[18px] h-[18px]" />
             </button>
           </div>
         </div>
 
         {/* step indicator */}
         {step !== "creating" && !isExpired && (
-          <div className="flex items-center gap-1.5 px-5 pt-4">
-            {(["details", "checkout", "crypto", "review", "pay"] as Step[]).map((s, i) => {
-              const order_ = ["details", "checkout", "crypto", "review", "pay"];
+          <div className="flex items-center gap-2 px-6 pt-5">
+            {(["billing", "details", "checkout", "crypto", "review", "pay"] as Step[]).map((s, i) => {
+              const order_ = ["billing", "details", "checkout", "crypto", "review", "pay"];
               const cur = order_.indexOf(step);
               const on = i <= cur;
-              return <div key={s} className="h-0.5 flex-1 rounded-full transition-colors duration-300" style={{ background: on ? TG : "#1f1f22" }} />;
+              return <div key={s} className="h-[3px] flex-1 rounded-full transition-all duration-300" style={{ background: on ? TG : "#1c1c20" }} />;
             })}
           </div>
         )}
 
-        <div className="p-5">
+        <div className="p-6">
+          {/* ── STEP: billing ── */}
+          {step === "billing" && (
+            <div className="space-y-6 pf-fade-up">
+              {/* compact plan summary */}
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[12.5px] text-[#8b8b93]">
+                <span className="inline-flex items-center gap-2"><Send className="w-4 h-4" style={{ color: TG }} /> {plan.posts} posts/day</span>
+                <span className="inline-flex items-center gap-2"><RotateCw className="w-4 h-4" style={{ color: TG }} /> {plan.replacements} replacements</span>
+              </div>
+
+              {/* billing options */}
+              <div className="space-y-3">
+                {([
+                  { id: "week", title: "Weekly", amount: plan.priceWeek, per: "wk", sub: "Flexible billing" },
+                  { id: "month", title: "Monthly", amount: plan.priceMonth, per: "mo", sub: "Billed monthly", best: true },
+                ] as const).map((o) => {
+                  const on = billingChosen && billing === o.id;
+                  return (
+                    <button
+                      key={o.id}
+                      onClick={() => { setBilling(o.id); setBillingChosen(true); }}
+                      className={`group w-full flex items-center gap-4 rounded-2xl px-5 py-4 text-left transition-all duration-200 ${on ? "" : "bg-[#101013] hover:bg-[#141418]"}`}
+                      style={on
+                        ? { background: "linear-gradient(180deg, rgba(42,171,238,0.10), rgba(42,171,238,0.03))", boxShadow: "inset 0 0 0 1px rgba(42,171,238,0.5), 0 12px 30px -16px rgba(42,171,238,0.7)", transform: "translateY(-1px)" }
+                        : { boxShadow: "inset 0 0 0 1px #1c1c20" }
+                      }
+                    >
+                      <span className="grid place-content-center w-5 h-5 rounded-full flex-shrink-0 transition-all duration-200" style={on ? { background: TG } : { boxShadow: "inset 0 0 0 1.5px #3d3d44" }}>
+                        {on && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[14.5px] font-medium text-white">{o.title}</span>
+                          {"best" in o && o.best && savePct > 0 && (
+                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md" style={{ background: "rgba(42,171,238,0.14)", color: TG }}>Save {savePct}%</span>
+                          )}
+                        </div>
+                        <p className="text-[12px] text-[#8b8b93] mt-0.5">{o.sub}</p>
+                      </div>
+                      <div className="flex-shrink-0 text-right">
+                        <span className="text-[17px] font-semibold text-white tabular-nums">${o.amount}</span>
+                        <span className="text-[11px] text-[#5d5d66] ml-0.5">/{o.per}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* trust row */}
+              <div className="flex items-center justify-center gap-x-5 gap-y-2 flex-wrap text-[11px] text-[#6b6b73]">
+                <span className="inline-flex items-center gap-1.5"><Zap className="w-3.5 h-3.5" /> Instant activation</span>
+                <span className="inline-flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" /> Secure payment</span>
+                <span className="inline-flex items-center gap-1.5"><Wallet className="w-3.5 h-3.5" /> No hidden fees</span>
+              </div>
+
+              {/* CTA */}
+              <button
+                onClick={() => setStep("details")}
+                disabled={!billingChosen}
+                className="w-full inline-flex items-center justify-center gap-2 h-14 rounded-2xl text-[15px] font-semibold text-white transition-all duration-200 hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:brightness-100"
+                style={{ background: TG, boxShadow: billingChosen ? "0 14px 36px -14px rgba(42,171,238,0.75)" : "none" }}
+              >
+                Continue <ArrowRight className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
           {/* ── STEP: details ── */}
           {step === "details" && (
             <div className="space-y-5">
@@ -418,7 +497,7 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
               <h3 className="text-[18px] font-semibold text-white">Order summary</h3>
 
               <div className="rounded-lg border border-[#1f1f22] bg-[#101012] divide-y divide-[#1f1f22]">
-                <Row label={`${plan.label} — ${plan.durationDays} days`} value={`$${plan.price.toFixed(2)}`} />
+                <Row label={`${plan.label} — ${durationDays} days (${billing === "month" ? "monthly" : "weekly"})`} value={`$${basePrice.toFixed(2)}`} />
                 <Row label="Estimated posts / day" value={plan.posts} muted />
                 <Row label="Replacements" value={plan.replacements} muted />
                 {couponDiscount > 0 && <Row label={`Coupon ${coupon.toUpperCase()}`} value={`-$${couponDiscount.toFixed(2)}`} accent />}
@@ -512,7 +591,8 @@ export default function PurchaseFlow({ plan, onClose, resume }: { plan: Purchase
 
               <div className="rounded-lg border border-[#1f1f22] bg-[#101012] divide-y divide-[#1f1f22]">
                 <Row label="Plan" value={`${plan.label} (${plan.mode})`} />
-                <Row label="Validity" value={`${plan.durationDays} days`} muted />
+                <Row label="Billing" value={billing === "month" ? "Monthly" : "Weekly"} muted />
+                <Row label="Validity" value={`${durationDays} days`} muted />
                 <Row label="Reference" value={name || tgUser || email || "Auto (USER-ID)"} muted />
                 <div className="flex items-center justify-between px-4 py-3">
                   <span className="text-[12px] text-[#8b8b93]">Pay with</span>

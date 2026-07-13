@@ -109,16 +109,18 @@ export default function ProvisioningPage() {
     try {
       const raw = localStorage.getItem("hqadz_pending_purchase");
       if (raw) {
-        const { order, plan } = JSON.parse(raw) || {};
+        const { order, plan, billing } = JSON.parse(raw) || {};
         const seed: ProvData = {};
         const tier = (plan?.id || order?.plan_id || "").toLowerCase();
+        // billing cycle is stored at the payload top level (chosen in the drawer)
+        const planPrice = billing === "month" ? plan?.priceMonth : plan?.priceWeek;
         if (plan?.label || order?.plan_name) seed.plan_name = `${plan?.label || order?.plan_name} Plan`.replace(/\s*Plan\s*Plan$/i, " Plan");
         if (tier) seed.plan_id = tier;
         if (tier && ACCOUNTS_BY_TIER[tier]) seed.accounts = ACCOUNTS_BY_TIER[tier];
         if (tier && tier in REPL_BY_TIER) seed.free_replacements = REPL_BY_TIER[tier];
-        if (order?.amount_usd ?? plan?.price) seed.amount_usd = Number(order?.amount_usd ?? plan?.price) || 0;
-        if (plan?.durationDays) seed.duration_days = Number(plan.durationDays) || 0;
-        if (plan?.billing) seed.billing = plan.billing;
+        if (order?.amount_usd ?? planPrice) seed.amount_usd = Number(order?.amount_usd ?? planPrice) || 0;
+        if (billing) seed.duration_days = billing === "month" ? 30 : 7;
+        if (billing) seed.billing = billing;
         if (plan?.mode) seed.plan_mode = plan.mode;
         if (order?.order_id) seed.order_id = order.order_id;
         if (order?.pay_currency) seed.pay_currency = order.pay_currency;

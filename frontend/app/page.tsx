@@ -4,9 +4,11 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
 import {
   Send, Check, CheckCheck, Menu, X, ArrowRight, Plus,
-  User, Building2, Gem, Star, Zap, ShieldCheck, Coins, Headphones,
-  ChevronRight, ChevronLeft, Clock, Tag, TrendingUp, Lock, Users, Activity,
+  User, Building2, Gem, Star, Zap, ShieldCheck,
+  Clock, Lock, Users, Activity, Bot, BarChart3, MessageCircle, RotateCw,
+  Rocket, Crown,
 } from "lucide-react";
+import { motion } from "framer-motion";
 import axios from "axios";
 import PurchaseFlow, { PurchasePlan } from "@/components/portal/PurchaseFlow";
 import BrandMark from "@/components/BrandMark";
@@ -38,6 +40,42 @@ function Tick({ value, className = "" }: { value: string; className?: string }) 
 /* Fixed-locale number formatting — avoids SSR/client hydration mismatch */
 function fmt(n: number) {
   return n.toLocaleString("en-US");
+}
+
+/* Compact number: 4800 → 4.8K, 12000 → 12K */
+function fmtK(n: number) {
+  if (n >= 1000) {
+    const k = n / 1000;
+    return (Number.isInteger(k) ? k.toString() : k.toFixed(1)) + "K";
+  }
+  return String(n);
+}
+
+/* Count-up that eases to its target whenever the value changes */
+function useCountUp(target: number, duration = 550) {
+  const [val, setVal] = useState(target);
+  const fromRef = useRef(target);
+  useEffect(() => {
+    const from = fromRef.current;
+    if (from === target) return;
+    const start = performance.now();
+    let raf = 0;
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setVal(Math.round(from + (target - from) * eased));
+      if (t < 1) raf = requestAnimationFrame(step);
+      else fromRef.current = target;
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [target, duration]);
+  return val;
+}
+
+function AnimatedPrice({ value, className = "" }: { value: number; className?: string }) {
+  const v = useCountUp(value);
+  return <span className={`tabular-nums ${className}`}>{v.toLocaleString()}</span>;
 }
 
 const GROUPS = [
@@ -422,14 +460,14 @@ function OpsBoard({ visible }: { visible: boolean }) {
 interface Plan { id: string; sessions: number; price_week: number; price_month: number; free_replacements: number; cycle?: number; gap?: number }
 interface Plans { starter: Plan[]; enterprise: Plan[] }
 
-const PLAN_META: Record<string, { rec: string }> = {
-  bronze:  { rec: "Testing the waters" },
-  silver:  { rec: "Solo sellers" },
-  gold:    { rec: "Growing channels" },
-  diamond: { rec: "Power sellers" },
-  basic:   { rec: "Small teams" },
-  pro:     { rec: "Agencies" },
-  elite:   { rec: "Networks" },
+const PLAN_META: Record<string, { rec: string; icon: typeof Gem }> = {
+  bronze:  { rec: "Testing the waters", icon: Zap },
+  silver:  { rec: "Built for solo sellers", icon: Gem },
+  gold:    { rec: "Growing channels", icon: Star },
+  diamond: { rec: "Power sellers", icon: Crown },
+  basic:   { rec: "For small teams", icon: Building2 },
+  pro:     { rec: "For growing agencies", icon: Rocket },
+  elite:   { rec: "For large scale teams", icon: Crown },
 };
 
 const FAQS = [
@@ -446,11 +484,27 @@ export default function LandingPage() {
   const [mobileMenu, setMobileMenu] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [plans, setPlans] = useState<Plans | null>(null);
-  const [billing, setBilling] = useState<"month" | "week">("month");
   const [planTab, setPlanTab] = useState<"starter" | "enterprise">("starter");
+  const [billing, setBilling] = useState<"week" | "month">("month");
   const [openFaq, setOpenFaq] = useState<number | null>(null);
   const [buyPlan, setBuyPlan] = useState<PurchasePlan | null>(null);
   const [resumeOrder, setResumeOrder] = useState<any>(null);
+
+  // Mobile in-section plan navigation
+  const [activePlanId, setActivePlanId] = useState<string>("");
+  const [showStickyNav, setShowStickyNav] = useState(false);
+  const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const stickyRef = useRef<HTMLDivElement | null>(null);
+  const NAV_OFFSET = 56; // fixed navbar height (h-14)
+
+  const scrollToPlan = (id: string) => {
+    const el = cardRefs.current[id];
+    if (!el) return;
+    const stickyH = stickyRef.current?.offsetHeight ?? 92;
+    const y = window.scrollY + el.getBoundingClientRect().top - NAV_OFFSET - stickyH - 12;
+    window.scrollTo({ top: y, behavior: "smooth" });
+  };
 
   // Resume an in-progress payment after a page refresh
   useEffect(() => {
@@ -459,7 +513,7 @@ export default function LandingPage() {
       if (saved) {
         const p = JSON.parse(saved);
         if (p?.order?.order_id && p?.plan && p?.currency) {
-          setResumeOrder({ order: p.order, currency: p.currency });
+          setResumeOrder({ order: p.order, currency: p.currency, billing: p.billing });
           setBuyPlan(p.plan);
         }
       }
@@ -490,6 +544,38 @@ export default function LandingPage() {
     return () => window.removeEventListener("scroll", h);
   }, []);
 
+  // Track the plan card currently in view and show the sticky nav only while
+  // scrolling within the cards range (mobile only — desktop shows all at once).
+  useEffect(() => {
+    const tabPlans = plans ? plans[planTab] : [];
+    if (!tabPlans.length) return;
+    setActivePlanId(prev => (tabPlans.some(p => p.id === prev) ? prev : tabPlans[0].id));
+    const measure = () => {
+      const grid = gridRef.current;
+      if (!grid) return;
+      const gr = grid.getBoundingClientRect();
+      const within = gr.top <= NAV_OFFSET + 8 && gr.bottom >= NAV_OFFSET + 120;
+      setShowStickyNav(within && window.innerWidth < 768);
+      if (!within) return;
+      const line = NAV_OFFSET + 140;
+      let active = tabPlans[0].id;
+      for (const p of tabPlans) {
+        const el = cardRefs.current[p.id];
+        if (!el) continue;
+        if (el.getBoundingClientRect().top <= line) active = p.id;
+        else break;
+      }
+      setActivePlanId(active);
+    };
+    window.addEventListener("scroll", measure, { passive: true });
+    window.addEventListener("resize", measure, { passive: true });
+    measure();
+    return () => {
+      window.removeEventListener("scroll", measure);
+      window.removeEventListener("resize", measure);
+    };
+  }, [plans, planTab]);
+
   const hero = useInView(0.05);
   const how = useInView(0.2);
   const live = useInView(0.15);
@@ -499,16 +585,15 @@ export default function LandingPage() {
   const ctaRef = useInView(0.1);
 
   const activePlans = plans ? plans[planTab] : [];
+  const maxSave = Math.max(0, ...activePlans.map(p => {
+    const w4 = p.price_week * 4;
+    return w4 > 0 ? Math.round(((w4 - p.price_month) / w4) * 100) : 0;
+  }));
   const tierLabel: Record<string, string> = {
     bronze: "Bronze", silver: "Silver", gold: "Gold", diamond: "Diamond",
     basic: "Basic", pro: "Pro", elite: "Elite",
   };
   const popularIds = new Set(["gold", "pro"]);
-
-  const maxDailyPosts = activePlans.length ? Math.max(...activePlans.map(p => p.sessions * 1200)) : 0;
-  const maxYearlySaving = activePlans.length
-    ? Math.round(Math.max(0, ...activePlans.map(p => p.price_week * 52 - p.price_month * 12)))
-    : 0;
 
   const reveal = (visible: boolean, delay = 0) => ({
     className: `transition-all duration-700 ease-out ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-5"}`,
@@ -687,214 +772,295 @@ export default function LandingPage() {
       </section>
 
       {/* ── Pricing ── */}
-      <section id="pricing" className="py-16 md:py-24 border-t border-[#1f1f22]">
-        <div ref={pricingRef.ref} className="max-w-5xl mx-auto px-6">
+      <section id="pricing" className="relative py-20 md:py-28 border-t border-[#1f1f22]">
+        <div ref={pricingRef.ref} className="relative z-10 max-w-7xl mx-auto px-6">
 
-          {/* Heading + controls */}
-          <div className="grid lg:grid-cols-[1fr_auto] gap-8 lg:gap-12 mb-8">
-            <div className={reveal(pricingRef.visible).className}>
-              <h2 className="text-[28px] md:text-4xl font-semibold text-white tracking-[-0.02em] flex items-center gap-2.5">
-                Pick your scale.
-                <TrendingUp className="w-6 h-6 md:w-7 md:h-7" style={{ color: TG }} />
-              </h2>
-              <p className="mt-3 text-[14px] text-[#8b8b93] leading-relaxed">
-                More posting bots. More daily posts.<br className="hidden sm:block" /> Choose the plan that fits your campaign.
-              </p>
+          {/* Eyebrow + heading + supporting text */}
+          <div className={`text-center max-w-2xl mx-auto ${reveal(pricingRef.visible).className}`}>
+            <p className="text-[12px] font-semibold uppercase tracking-[0.2em] text-[#5d5d66]">Pricing</p>
+            <h2 className="mt-3 text-[30px] sm:text-[38px] md:text-[46px] lg:text-[50px] font-semibold text-white tracking-[-0.02em] leading-[1.05]">
+              Simple pricing built to scale.
+            </h2>
+            <p className="mt-4 text-[14px] md:text-[15px] text-[#8b8b93] leading-relaxed">
+              Choose the number of bot accounts you need. Upgrade anytime as your campaigns grow.
+            </p>
+          </div>
+
+          {/* Selectors — plan family + billing */}
+          <div className={`mt-8 flex flex-col items-center gap-3 ${reveal(pricingRef.visible, 80).className}`} style={reveal(pricingRef.visible, 80).style}>
+            {/* plan family */}
+            <div className="relative inline-flex rounded-full border border-[#1f1f22] bg-[#0e0e10] p-1">
+              {([
+                { id: "starter", icon: User, name: "Starter" },
+                { id: "enterprise", icon: Building2, name: "Enterprise" },
+              ] as const).map((t) => {
+                const on = planTab === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    onClick={() => setPlanTab(t.id)}
+                    className={`relative z-10 flex items-center gap-2 h-[42px] px-6 rounded-full text-[13.5px] font-medium transition-colors duration-200 cursor-pointer ${on ? "text-white" : "text-[#8b8b93] hover:text-white"}`}
+                  >
+                    {on && (
+                      <motion.span
+                        layoutId="segPill"
+                        className="absolute inset-0 rounded-full"
+                        style={{ background: TG }}
+                        transition={{ type: "spring", stiffness: 480, damping: 34 }}
+                      />
+                    )}
+                    <t.icon className="relative w-4 h-4" />
+                    <span className="relative">{t.name}</span>
+                  </button>
+                );
+              })}
             </div>
 
-            <div className={`space-y-4 ${reveal(pricingRef.visible, 100).className}`} style={reveal(pricingRef.visible, 100).style}>
-              {/* Account type */}
-              <div>
-                <p className="text-[10px] font-medium text-[#5d5d66] uppercase tracking-widest mb-2">Account type</p>
-                <div className="grid grid-cols-2 gap-2.5">
-                  {([
-                    { id: "starter", icon: User, name: "Starter", sub: "For individuals" },
-                    { id: "enterprise", icon: Building2, name: "Enterprise", sub: "For teams & agencies" },
-                  ] as const).map((t) => {
-                    const on = planTab === t.id;
-                    return (
-                      <button
-                        key={t.id}
-                        onClick={() => setPlanTab(t.id)}
-                        className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border text-left transition-all duration-150 cursor-pointer ${
-                          on ? "bg-[#0e0e10]" : "bg-transparent border-[#1f1f22] hover:border-[#3d3d44]"
-                        }`}
-                        style={on ? { borderColor: TG } : undefined}
-                      >
-                        <t.icon className="w-4 h-4 flex-shrink-0" style={{ color: on ? TG : "#8b8b93" }} />
-                        <div className="min-w-0">
-                          <p className={`text-[13px] font-medium leading-tight ${on ? "text-white" : "text-[#c9c9cf]"}`}>{t.name}</p>
-                          <p className="text-[11px] text-[#5d5d66] leading-tight mt-0.5 truncate">{t.sub}</p>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Billing cycle */}
-              <div>
-                <p className="text-[10px] font-medium text-[#5d5d66] uppercase tracking-widest mb-2">Billing cycle</p>
-                <div className="flex flex-wrap items-center gap-3">
-                  <div className="inline-flex bg-[#0e0e10] border border-[#1f1f22] rounded-lg p-0.5">
-                    <button onClick={() => setBilling("month")} className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-all duration-150 cursor-pointer ${
-                      billing === "month" ? "bg-[#1f1f22] text-white" : "text-[#8b8b93] hover:text-white"
-                    }`}>
-                      Monthly
-                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded" style={{ background: "rgba(42,171,238,0.14)", color: TG }}>Save 20%</span>
-                    </button>
-                    <button onClick={() => setBilling("week")} className={`px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-all duration-150 cursor-pointer ${
-                      billing === "week" ? "bg-[#1f1f22] text-white" : "text-[#8b8b93] hover:text-white"
-                    }`}>
-                      Weekly
-                    </button>
-                  </div>
-                  {maxYearlySaving > 0 && (
-                    <span className="flex items-center gap-1.5 text-[12px] text-[#8b8b93]">
-                      <Tag className="w-3.5 h-3.5" style={{ color: TG }} />
-                      Save up to <span className="text-white font-medium">${maxYearlySaving}/yr</span> on monthly
-                    </span>
-                  )}
-                </div>
-              </div>
+            {/* billing */}
+            <div className="relative inline-flex rounded-full border border-[#1f1f22] bg-[#0e0e10] p-1">
+              {([
+                { id: "week", name: "Weekly" },
+                { id: "month", name: "Monthly" },
+              ] as const).map((t) => {
+                const on = billing === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    onClick={() => setBilling(t.id)}
+                    className={`relative z-10 flex items-center gap-1.5 h-8 px-4 rounded-full text-[12.5px] font-medium transition-colors duration-200 cursor-pointer ${on ? "text-white" : "text-[#8b8b93] hover:text-white"}`}
+                  >
+                    {on && (
+                      <motion.span
+                        layoutId="billPill"
+                        className="absolute inset-0 rounded-full"
+                        style={{ background: "rgba(255,255,255,0.08)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.08)" }}
+                        transition={{ type: "spring", stiffness: 480, damping: 34 }}
+                      />
+                    )}
+                    <span className="relative">{t.name}</span>
+                    {t.id === "month" && maxSave > 0 && (
+                      <span className="relative text-[10px] font-semibold" style={{ color: on ? TG : "#5d5d66" }}>−{maxSave}%</span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
           {/* Plan cards */}
           <div
-            className={`grid grid-cols-1 sm:grid-cols-2 gap-4 pt-3 ${
-              activePlans.length === 3 ? "lg:grid-cols-3" : "lg:grid-cols-4"
-            } ${reveal(pricingRef.visible, 200).className}`}
-            style={reveal(pricingRef.visible, 200).style}
+            ref={gridRef}
+            className={`grid grid-cols-1 sm:grid-cols-2 gap-5 mt-12 ${
+              activePlans.length === 3 ? "lg:grid-cols-3 lg:max-w-5xl lg:mx-auto" : "lg:grid-cols-4"
+            } ${reveal(pricingRef.visible, 160).className}`}
+            style={reveal(pricingRef.visible, 160).style}
           >
             {activePlans.map((plan) => {
               const label = tierLabel[plan.id] || plan.id;
-              const price = billing === "month" ? plan.price_month : plan.price_week;
               const isPopular = popularIds.has(plan.id);
-              const meta = PLAN_META[plan.id] || { rec: "—" };
+              const meta = PLAN_META[plan.id] || { rec: "—", icon: Gem };
+              const TierIcon = meta.icon;
               const dailyPosts = plan.sessions * 1200;
-              const fill = maxDailyPosts ? Math.max(8, Math.round((dailyPosts / maxDailyPosts) * 100)) : 0;
+              const weekly4 = plan.price_week * 4;
+              const savePct = weekly4 > 0 ? Math.round(((weekly4 - plan.price_month) / weekly4) * 100) : 0;
+              const price = billing === "month" ? plan.price_month : plan.price_week;
 
+              const openBuy = () => {
+                try { localStorage.removeItem("hqadz_pending_purchase"); } catch {}
+                setResumeOrder(null);
+                setBuyPlan({
+                  id: plan.id,
+                  label,
+                  mode: planTab,
+                  priceWeek: plan.price_week,
+                  priceMonth: plan.price_month,
+                  posts: dailyPosts.toLocaleString(),
+                  replacements: plan.free_replacements === -1 ? "Unlimited" : `${plan.free_replacements} free`,
+                  billingPreselect: billing,
+                });
+              };
+
+              const isActiveMobile = showStickyNav && activePlanId === plan.id;
               return (
                 <div
                   key={plan.id}
-                  className={`relative flex flex-col rounded-xl border p-5 transition-all duration-300 ${
-                    isPopular
-                      ? "bg-gradient-to-b from-[#0f1722] to-[#0a0d11]"
-                      : "bg-gradient-to-b from-[#0d0d10] to-[#0a0a0c] border-[#1f1f22] hover:border-[#3d3d44] hover:-translate-y-1"
-                  }`}
-                  style={isPopular ? { borderColor: TG, boxShadow: `0 0 0 1px ${TG}, 0 16px 50px -18px rgba(42,171,238,0.45)` } : undefined}
+                  ref={(el) => { cardRefs.current[plan.id] = el; }}
+                  className={`snap-card group/card relative transition-transform duration-300 hover:-translate-y-1 ${isPopular ? "lg:z-10" : ""}`}
                 >
-                  {isPopular && (
-                    <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-                      <span className="flex items-center gap-1 text-[10px] font-semibold text-white px-2.5 py-1 rounded-full whitespace-nowrap" style={{ background: TG }}>
-                        <Star className="w-2.5 h-2.5 fill-white" /> MOST POPULAR
-                      </span>
-                    </div>
-                  )}
-
-                  {/* header */}
-                  <div className="flex items-start justify-between mb-4">
-                    <div>
-                      <p className={`text-[17px] font-semibold ${isPopular ? "" : "text-white"}`} style={isPopular ? { color: TG } : undefined}>{label}</p>
-                      <p className="text-[12px] text-[#8b8b93] mt-0.5">{meta.rec}</p>
-                    </div>
-                    <Gem className="w-6 h-6" style={{ color: isPopular ? TG : "#52525b" }} />
-                  </div>
-
-                  {/* price */}
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-[30px] font-semibold text-white tabular-nums tracking-tight leading-none">${price}</span>
-                    <span className="text-[13px] text-[#5d5d66] font-normal">/{billing === "month" ? "mo" : "wk"}</span>
-                  </div>
-                  <p className="text-[11px] text-[#5d5d66] mt-1">Billed {billing === "month" ? "monthly" : "weekly"}</p>
-
-                  {/* estimated posts + bar */}
-                  <div className="mt-5 pt-5 border-t border-[#1f1f22]">
-                    <div className="flex items-baseline justify-between">
-                      <p className="text-[10px] text-[#5d5d66] uppercase tracking-wider">Estimated posts / day</p>
-                      <p className="text-[18px] font-semibold text-white tracking-tight">{dailyPosts.toLocaleString()}</p>
-                    </div>
-                    <div className="h-1 rounded-full bg-[#1f1f22] mt-2 overflow-hidden">
-                      <div
-                        className="h-full rounded-full transition-[width] duration-700 ease-out"
-                        style={{ width: pricingRef.visible ? `${fill}%` : "0%", background: isPopular ? TG : "#3d3d44" }}
-                      />
-                    </div>
-                  </div>
-
-                  {/* benefits */}
-                  <ul className="mt-5 space-y-2.5 flex-1">
-                    {[
-                      `${plan.sessions} posting bots`,
-                      plan.free_replacements === -1 ? "Unlimited replacements" : `${plan.free_replacements} free replacement${plan.free_replacements !== 1 ? "s" : ""}`,
-                      "Live delivery tracking",
-                      "Custom group lists",
-                      "Crypto payments accepted",
-                      ...(planTab === "enterprise" ? ["Priority support"] : []),
-                    ].map((f, j) => (
-                      <li key={j} className="flex items-center gap-2.5">
-                        <span
-                          className="grid place-content-center w-4 h-4 rounded-full flex-shrink-0"
-                          style={{ background: isPopular ? TG : "rgba(42,171,238,0.14)" }}
-                        >
-                          <Check className="w-2.5 h-2.5" style={{ color: isPopular ? "#fff" : TG }} strokeWidth={3} />
-                        </span>
-                        <span className="text-[12px] text-[#c9c9cf]">{f}</span>
-                      </li>
-                    ))}
-                  </ul>
-
-                  <button
-                    onClick={() => {
-                      try { localStorage.removeItem("hqadz_pending_purchase"); } catch {}
-                      setResumeOrder(null);
-                      setBuyPlan({
-                        id: plan.id,
-                        label,
-                        mode: planTab,
-                        billing,
-                        price,
-                        posts: dailyPosts.toLocaleString(),
-                        replacements: plan.free_replacements === -1 ? "Unlimited" : `${plan.free_replacements} free`,
-                        durationDays: billing === "month" ? 30 : 7,
-                      });
-                    }}
-                    className={`mt-6 w-full inline-flex items-center justify-center text-[13px] font-medium px-4 py-2.5 rounded-md transition-all duration-150 cursor-pointer ${
-                      isPopular ? "text-white hover:opacity-90" : "text-[#c9c9cf] border border-[#1f1f22] hover:border-[#3d3d44] hover:text-white"
+                  <div
+                    className={`relative flex flex-col h-full rounded-2xl border overflow-hidden transition-colors duration-300 ${
+                      isPopular ? "" : "border-[#1f1f22] group-hover/card:border-[#2e2e34]"
                     }`}
-                    style={isPopular ? { background: TG } : undefined}
+                    style={
+                      isPopular
+                        ? { borderColor: "rgba(42,171,238,0.55)", background: "#0c1015", boxShadow: "0 20px 60px -34px rgba(42,171,238,0.45)" }
+                        : isActiveMobile
+                          ? { background: "#0d0d10", borderColor: "rgba(42,171,238,0.45)", boxShadow: "0 0 0 1px rgba(42,171,238,0.28)" }
+                          : { background: "#0d0d10" }
+                    }
                   >
-                    Choose {label}
-                  </button>
+                    {/* ── Header — icon tile + name + tagline ── */}
+                    <div className="flex items-center gap-3 px-5 pt-5 pb-1">
+                      <span
+                        className="grid place-content-center w-9 h-9 rounded-xl flex-shrink-0"
+                        style={isPopular
+                          ? { background: "rgba(42,171,238,0.14)", boxShadow: "inset 0 0 0 1px rgba(42,171,238,0.28)" }
+                          : { background: "rgba(255,255,255,0.05)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.08)" }}
+                      >
+                        <TierIcon className="w-[18px] h-[18px]" style={{ color: isPopular ? TG : "#a1a1aa" }} />
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-[17px] font-semibold text-white leading-tight">{label}</p>
+                        <p className="text-[11.5px] text-[#8b8b93] leading-tight mt-0.5">{meta.rec}</p>
+                      </div>
+                      {isPopular && (
+                        <span className="ml-auto self-start flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-white pl-1.5 pr-2 py-1 rounded-full" style={{ background: TG }}>
+                          <Star className="w-2.5 h-2.5 fill-white" /> Popular
+                        </span>
+                      )}
+                    </div>
+
+                    {/* ── Price — single selected billing ── */}
+                    <div className="px-5 pt-4 pb-4">
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="text-[34px] font-bold text-white leading-none tracking-[-0.02em]">$<AnimatedPrice value={price} /></span>
+                        <span className="text-[13px] text-[#8b8b93]">/{billing === "month" ? "month" : "week"}</span>
+                        {billing === "month" && savePct > 0 && (
+                          <span className="ml-1 text-[11px] font-medium text-[#8b8b93]">save {savePct}%</span>
+                        )}
+                      </div>
+                      <p className="mt-1.5 text-[12px] text-[#5d5d66]">
+                        {billing === "month" ? `or $${plan.price_week} billed weekly` : `or $${plan.price_month} billed monthly`}
+                      </p>
+                    </div>
+
+                    {/* ── Body ── */}
+                    <div className="flex flex-col flex-1 px-5 pb-5">
+                      {/* stats */}
+                      <div className="grid grid-cols-2 rounded-xl border border-[#1f1f22] bg-white/[0.015] divide-x divide-[#1f1f22]">
+                        <div className="flex items-center gap-2.5 px-3.5 py-3">
+                          <span className="grid place-content-center w-9 h-9 rounded-lg flex-shrink-0" style={{ background: "rgba(255,255,255,0.05)" }}>
+                            <Bot className="w-[18px] h-[18px]" style={{ color: "#a1a1aa" }} />
+                          </span>
+                          <div className="min-w-0">
+                            <p className="text-[18px] font-semibold text-white leading-none tabular-nums">{plan.sessions}</p>
+                            <p className="text-[11px] text-[#8b8b93] mt-1">Bot Accounts</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2.5 px-3.5 py-3">
+                          <span className="grid place-content-center w-9 h-9 rounded-lg flex-shrink-0" style={{ background: "rgba(255,255,255,0.05)" }}>
+                            <BarChart3 className="w-[18px] h-[18px]" style={{ color: "#a1a1aa" }} />
+                          </span>
+                          <div className="min-w-0">
+                            <p className="text-[18px] font-semibold text-white leading-none tabular-nums">{fmtK(dailyPosts)}</p>
+                            <p className="text-[11px] text-[#8b8b93] mt-1">Posts / Day</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* differentiators — left-aligned rows */}
+                      <div className="mt-3 space-y-2.5">
+                        {[
+                          plan.free_replacements === -1 ? "Unlimited bot replacements" : `${plan.free_replacements} free bot replacement${plan.free_replacements !== 1 ? "s" : ""}`,
+                          "Custom auto replies",
+                          "Custom target groups",
+                          ...(planTab === "enterprise" ? ["Priority support"] : []),
+                        ].map((label, j) => (
+                          <div key={j} className="flex items-center gap-2.5">
+                            <span className="grid place-content-center w-5 h-5 rounded-full flex-shrink-0" style={{ background: "rgba(255,255,255,0.06)" }}>
+                              <Check className="w-3 h-3" style={{ color: "#a1a1aa" }} />
+                            </span>
+                            <span className="text-[13px] text-[#c9c9cf] leading-tight">{label}</span>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* CTA */}
+                      <button
+                        onClick={openBuy}
+                        className={`group/btn mt-6 w-full inline-flex items-center justify-center gap-2 text-[14px] font-semibold h-12 rounded-xl border transition-all duration-200 cursor-pointer ${
+                          isPopular
+                            ? "text-white hover:brightness-110"
+                            : "text-[#e4e4e7] bg-white/[0.02] border-[#26262b] hover:bg-white/[0.05] hover:border-[#33333a]"
+                        }`}
+                        style={isPopular ? { background: TG, borderColor: TG } : undefined}
+                      >
+                        Choose {label}
+                        <ArrowRight className="w-4 h-4 transition-transform duration-150 group-hover/btn:translate-x-0.5" />
+                      </button>
+                    </div>
+                  </div>
                 </div>
               );
             })}
           </div>
 
-          {/* Trust bar */}
-          <div className={`mt-8 rounded-lg border border-[#1f1f22] bg-[#0e0e10] grid grid-cols-2 md:grid-cols-5 divide-y md:divide-y-0 md:divide-x divide-[#1f1f22] ${reveal(pricingRef.visible, 280).className}`} style={reveal(pricingRef.visible, 280).style}>
+          {/* ── Mobile in-section sticky nav (only within the cards range) ── */}
+          <div
+            ref={stickyRef}
+            className={`md:hidden fixed top-14 inset-x-0 z-40 transition-all duration-300 ${showStickyNav ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-2 pointer-events-none"}`}
+          >
+            <div className="bg-[#0a0a0a]/85 backdrop-blur-lg border-b border-[#1f1f22] px-4 py-1.5 space-y-1.5">
+              {/* plan family — sliding pill */}
+              <div className="relative flex rounded-full border border-[#1f1f22] bg-[#0e0e10] p-0.5">
+                {(["starter", "enterprise"] as const).map((t) => {
+                  const on = planTab === t;
+                  return (
+                    <button
+                      key={t}
+                      onClick={() => setPlanTab(t)}
+                      className={`relative z-10 flex-1 h-8 rounded-full text-[12.5px] font-medium capitalize transition-colors ${on ? "text-white" : "text-[#8b8b93]"}`}
+                    >
+                      {on && <motion.span layoutId="stickySegPill" className="absolute inset-0 rounded-full" style={{ background: TG }} transition={{ type: "spring", stiffness: 480, damping: 34 }} />}
+                      <span className="relative">{t}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {/* plan tabs — sliding pill doubles as a progress indicator */}
+              <div className="flex gap-1.5 overflow-x-auto plan-scroll">
+                {activePlans.map((p) => {
+                  const on = activePlanId === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => scrollToPlan(p.id)}
+                      className={`relative z-10 flex flex-shrink-0 items-center gap-1.5 h-8 px-3.5 rounded-full text-[12px] font-medium transition-colors ${on ? "text-white" : "text-[#8b8b93]"}`}
+                      style={on ? undefined : { background: "#141417" }}
+                    >
+                      {on && <motion.span layoutId="stickyPlanPill" className="absolute inset-0 rounded-full" style={{ background: TG }} transition={{ type: "spring", stiffness: 480, damping: 34 }} />}
+                      {on && <span className="relative w-1.5 h-1.5 rounded-full bg-white" />}
+                      <span className="relative">{tierLabel[p.id] || p.id}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* Trust bar — one unified panel with hairline dividers (1px gap over divider bg) */}
+          <div className={`mt-10 rounded-2xl border border-[#1f1f22] overflow-hidden grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-px bg-[#1f1f22] ${reveal(pricingRef.visible, 280).className}`} style={reveal(pricingRef.visible, 280).style}>
             {[
-              { icon: Zap, title: "Fast setup", sub: "1–12 hrs after payment" },
-              { icon: Clock, title: "No contracts", sub: "Weekly or monthly billing" },
-              { icon: ShieldCheck, title: "Secure payments", sub: "Your data is safe" },
-              { icon: Coins, title: "Crypto accepted", sub: "BTC, ETH, USDT +" },
-              { icon: Headphones, title: "Live support", sub: "Get help when you need it" },
+              { icon: Zap, title: "Instant Setup", sub: "Ready in seconds" },
+              { icon: RotateCw, title: "Free Replacements", sub: "Included with your plan" },
+              { icon: Lock, title: "Secure Payments", sub: "Safe crypto checkout" },
+              { icon: Gem, title: "Premium Accounts", sub: "High-quality bot accounts" },
+              { icon: MessageCircle, title: "24/7 Support", sub: "We're here when needed" },
             ].map((t, i) => (
-              <div key={i} className={`flex items-center gap-3 px-4 py-3.5 ${i === 4 ? "col-span-2 md:col-span-1" : ""}`}>
-                <t.icon className="w-4 h-4 flex-shrink-0" style={{ color: TG }} />
+              <div
+                key={i}
+                className={`flex items-center gap-3 px-4 py-4 bg-[#0d0d10] ${i === 4 ? "col-span-2 sm:col-span-1" : ""}`}
+              >
+                <span className="grid place-content-center w-9 h-9 rounded-lg flex-shrink-0" style={{ background: "rgba(255,255,255,0.05)" }}>
+                  <t.icon className="w-[18px] h-[18px]" style={{ color: "#a1a1aa" }} />
+                </span>
                 <div className="min-w-0">
-                  <p className="text-[12px] font-medium text-white leading-tight">{t.title}</p>
-                  <p className="text-[11px] text-[#5d5d66] leading-tight mt-0.5 truncate">{t.sub}</p>
+                  <p className="text-[12.5px] font-semibold text-white leading-tight">{t.title}</p>
+                  <p className="text-[11px] text-[#8b8b93] leading-snug mt-0.5">{t.sub}</p>
                 </div>
               </div>
             ))}
           </div>
-
-          <p className={`mt-6 text-center text-[12px] text-[#5d5d66] flex items-center justify-center gap-1.5 ${reveal(pricingRef.visible, 320).className}`} style={reveal(pricingRef.visible, 320).style}>
-            <Lock className="w-3 h-3" />
-            Secure payments · Your data is always protected
-          </p>
         </div>
       </section>
 
@@ -983,6 +1149,12 @@ export default function LandingPage() {
 
         .plan-scroll::-webkit-scrollbar { height: 0; display: none; }
         .plan-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+
+        /* Mobile: gently snap between plan cards (only near a card, not elsewhere) */
+        @media (max-width: 767px) {
+          html { scroll-snap-type: y proximity; }
+          .snap-card { scroll-snap-align: start; scroll-margin-top: 140px; }
+        }
 
         /* Message / feed item entrance */
         @keyframes msgIn {
