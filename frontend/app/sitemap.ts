@@ -1,26 +1,26 @@
 import type { MetadataRoute } from "next";
 
+const baseUrl = "https://hqadz.io";
+
+// Stable per-route lastmod dates. Bump the date for a route ONLY when that
+// page's meaningful content changes, so the sitemap does not churn on every
+// deploy. changefreq/priority are intentionally omitted — Google ignores them.
+const routes: { path: string; lastModified: string }[] = [
+  { path: "", lastModified: "2026-07-13" },
+  { path: "/telegram-adbot", lastModified: "2026-07-09" },
+  { path: "/features", lastModified: "2026-07-09" },
+  { path: "/pricing", lastModified: "2026-07-09" },
+  { path: "/how-it-works", lastModified: "2026-07-09" },
+  { path: "/telegram-session-management", lastModified: "2026-07-09" },
+  { path: "/telegram-adbot-dashboard", lastModified: "2026-07-09" },
+  { path: "/contact", lastModified: "2026-07-09" },
+  { path: "/privacy-policy", lastModified: "2026-07-09" },
+  { path: "/terms", lastModified: "2026-07-09" },
+];
+
 export default function sitemap(): MetadataRoute.Sitemap {
-  const baseUrl = "https://hqadz.io";
-  const lastModified = new Date();
-
-  const routes = [
-    "",
-    "/telegram-adbot",
-    "/features",
-    "/pricing",
-    "/how-it-works",
-    "/telegram-session-management",
-    "/telegram-adbot-dashboard",
-    "/contact",
-    "/privacy-policy",
-    "/terms"
-  ];
-
-  return routes.map((route) => ({
-    url: `${baseUrl}${route}`,
+  return routes.map(({ path, lastModified }) => ({
+    url: `${baseUrl}${path}`,
     lastModified,
-    changeFrequency: route === "" ? "weekly" : "monthly",
-    priority: route === "" ? 1 : 0.8,
   }));
 }

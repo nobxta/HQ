@@ -3,9 +3,9 @@ import "./globals.css";
 import { Providers } from "./providers";
 
 const SITE = "https://hqadz.io";
-const TITLE = "HQAdz.io | Telegram AdBot Platform for Automated Posting";
+const TITLE = "HQAdz | Telegram AdBot Platform for Automated Posting";
 const DESC =
-  "HQAdz.io is a Telegram AdBot SaaS platform for managing automated Telegram ad posting, Telegram sessions, campaign logs, account health, and crypto payments from one dashboard.";
+  "HQAdz is a Telegram advertising platform for launching campaigns, managing posting bots, selecting groups and tracking every delivery in real time.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE),
