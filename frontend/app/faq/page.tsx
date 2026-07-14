@@ -5,10 +5,17 @@ import MarketingHeader from "@/components/MarketingHeader";
 import MarketingFooter from "@/components/MarketingFooter";
 import Breadcrumbs from "@/components/Breadcrumbs";
 
+const TITLE = "HQAdz FAQ | Telegram AdBot Questions Answered";
+const DESC = "Find answers about HQAdz Telegram AdBot plans, posting accounts, campaign controls, group lists, live logs, replacements and setup.";
+const URL = "https://hqadz.io/faq";
+
 export const metadata: Metadata = {
-  title: "HQAdz FAQ | Telegram AdBot Questions Answered",
-  description: "Find answers about HQAdz Telegram AdBot plans, posting accounts, campaign controls, group lists, live logs, replacements and setup.",
-  alternates: { canonical: "https://hqadz.io/faq" },
+  title: { absolute: TITLE },
+  description: DESC,
+  alternates: { canonical: URL },
+  robots: { index: true, follow: true },
+  openGraph: { title: TITLE, description: DESC, url: URL, type: "website" },
+  twitter: { card: "summary_large_image", title: TITLE, description: DESC },
 };
 
 interface FaqItem {
@@ -38,7 +45,8 @@ const CATEGORIES: FaqCategory[] = [
         a: (
           <>
             You create a campaign, connect the posting accounts included in your plan, add your target groups and
-            advertisement, then start the campaign. See the full flow on{" "}
+            advertisement, then start the campaign. From there the accounts work through your group list on the
+            posting cycle set by your plan, and every attempt is logged. See the full flow on{" "}
             <Link href="/how-it-works" className="text-white underline underline-offset-2 hover:no-underline">how it works</Link>.
           </>
         ),
@@ -94,7 +102,7 @@ const CATEGORIES: FaqCategory[] = [
       },
       {
         q: "Can I run multiple advertisements?",
-        a: "Yes. You can create and manage multiple advertisements for different campaigns or offers.",
+        a: "Yes. You can create and manage multiple advertisements for different campaigns or offers, and pair each with its own auto reply.",
       },
     ],
   },
@@ -103,7 +111,7 @@ const CATEGORIES: FaqCategory[] = [
     items: [
       {
         q: "Can I start or stop a campaign?",
-        a: "Yes. Start or stop your campaign at any time from the web dashboard or the Telegram controller.",
+        a: "Yes. Start or stop your campaign at any time from the web dashboard or the Telegram controller — nothing keeps posting once you stop it.",
       },
       {
         q: "Can I control the system from Telegram?",
@@ -116,11 +124,11 @@ const CATEGORIES: FaqCategory[] = [
     items: [
       {
         q: "What do sent, failed and flood-wait logs mean?",
-        a: "Every delivery attempt is logged as it happens. \"Sent\" means the post landed in the group, \"failed\" means it didn't go through, and \"flood-wait\" means Telegram temporarily rate-limited that account. All three are visible per group in your dashboard.",
+        a: "Every delivery attempt is logged as it happens. \"Sent\" means the post landed in the group, \"failed\" means it didn't go through, and \"flood-wait\" means Telegram temporarily rate-limited that account. A flood-wait clears on its own and the account resumes automatically — all three states are visible per group in your dashboard.",
       },
       {
         q: "How is delivery tracked?",
-        a: "Every delivery attempt is logged as it happens, with per-group details in your dashboard.",
+        a: "Every delivery attempt is logged as it happens, with per-group details in your dashboard, so you can see exactly which groups received your ad and which didn't.",
       },
     ],
   },
@@ -129,7 +137,7 @@ const CATEGORIES: FaqCategory[] = [
     items: [
       {
         q: "What is a free account replacement?",
-        a: "If a posting account stops working, it's checked and, if eligible, replaced from the free allowance included with your plan, so your campaign keeps running.",
+        a: "If a posting account stops working, it's checked and, if eligible, replaced from the free allowance included with your plan, so your campaign keeps running without you having to intervene.",
       },
     ],
   },
@@ -162,7 +170,8 @@ const CATEGORIES: FaqCategory[] = [
           <>
             Reach the team through the{" "}
             <Link href="/contact" className="text-white underline underline-offset-2 hover:no-underline">contact page</Link>,
-            by email, or via the official HQAdz Telegram support channel.
+            by email, or via the official HQAdz Telegram support channel. Existing customers should include their
+            order or subscription ID for faster handling.
           </>
         ),
       },
@@ -220,7 +229,7 @@ export default function FaqPage() {
         {CATEGORIES.map((cat) => (
           <div key={cat.title} className="space-y-4">
             <h2 className="text-lg font-medium text-white">{cat.title}</h2>
-            <div className="space-y-3">
+            <div className="stagger-children space-y-3">
               {cat.items.map((item) => (
                 <details
                   key={item.q}

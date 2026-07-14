@@ -1,15 +1,22 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { DollarSign, LifeBuoy, CreditCard, Wrench, RefreshCcw, Mail, Send } from "lucide-react";
+import { DollarSign, LifeBuoy, CreditCard, Wrench, RefreshCcw, Mail, Send, MailPlus, Search, MessageCircle } from "lucide-react";
 import MarketingHeader from "@/components/MarketingHeader";
 import MarketingFooter from "@/components/MarketingFooter";
 import Breadcrumbs from "@/components/Breadcrumbs";
 import ContactForm from "@/components/ContactForm";
 
+const TITLE = "Contact HQAdz | Sales and Telegram AdBot Support";
+const DESC = "Contact HQAdz for Telegram AdBot setup, plan information, billing questions, technical support and campaign assistance.";
+const URL = "https://hqadz.io/contact";
+
 export const metadata: Metadata = {
-  title: "Contact HQAdz | Sales and Telegram AdBot Support",
-  description: "Contact HQAdz for Telegram AdBot setup, plan information, billing questions, technical support and campaign assistance.",
-  alternates: { canonical: "https://hqadz.io/contact" },
+  title: { absolute: TITLE },
+  description: DESC,
+  alternates: { canonical: URL },
+  robots: { index: true, follow: true },
+  openGraph: { title: TITLE, description: DESC, url: URL, type: "website" },
+  twitter: { card: "summary_large_image", title: TITLE, description: DESC },
 };
 
 const CATEGORIES = [
@@ -18,6 +25,12 @@ const CATEGORIES = [
   { icon: CreditCard, title: "Billing and payment questions", body: "Questions about a crypto payment, invoice, or plan renewal." },
   { icon: Wrench, title: "Technical setup assistance", body: "Help getting your accounts, groups or advertisements configured." },
   { icon: RefreshCcw, title: "Account replacement requests", body: "Report a posting account that needs replacing under your plan's allowance." },
+];
+
+const WORKFLOW = [
+  { icon: MailPlus, step: "You send a message", body: "Fill out the form or email/message us directly with your topic and details." },
+  { icon: Search, step: "We review it", body: "Your message goes to the team, matched against your topic and, if provided, your order ID." },
+  { icon: MessageCircle, step: "We reply", body: "You get a reply back by email or Telegram, whichever you used to reach us." },
 ];
 
 export default function ContactPage() {
@@ -40,14 +53,38 @@ export default function ContactPage() {
       </header>
 
       <section className="max-w-5xl mx-auto px-6 pb-16">
-        <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-4">
+        <div className="stagger-children grid sm:grid-cols-2 lg:grid-cols-5 gap-4">
           {CATEGORIES.map(({ icon: Icon, title, body }) => (
-            <div key={title} className="bg-[#0e0e10] border border-[#1f1f22] rounded-xl p-5 space-y-2.5">
+            <div key={title} className="bg-[#0e0e10] border border-[#1f1f22] rounded-xl p-5 space-y-2.5 transition-colors hover:border-[#2e2e34]">
               <Icon className="w-4 h-4 text-[#2AABEE]" />
               <h3 className="text-[13.5px] font-medium text-white leading-snug">{title}</h3>
               <p className="text-[12.5px] leading-relaxed">{body}</p>
             </div>
           ))}
+        </div>
+      </section>
+
+      {/* What happens after you submit */}
+      <section className="border-t border-[#1f1f22] py-16 px-6">
+        <div className="max-w-5xl mx-auto">
+          <h2 className="text-[17px] font-medium text-white mb-8">What happens after you reach out</h2>
+          <ol className="stagger-children grid sm:grid-cols-3 gap-4">
+            {WORKFLOW.map(({ icon: Icon, step, body }, i) => (
+              <li key={step} className="bg-[#0e0e10] border border-[#1f1f22] rounded-xl p-5 space-y-2.5">
+                <div className="flex items-center gap-2.5">
+                  <span
+                    className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-semibold text-white shrink-0"
+                    style={{ background: "#2AABEE" }}
+                  >
+                    {i + 1}
+                  </span>
+                  <Icon className="w-4 h-4 text-[#2AABEE]" />
+                </div>
+                <h3 className="text-[14px] font-medium text-white">{step}</h3>
+                <p className="text-[13px] leading-relaxed">{body}</p>
+              </li>
+            ))}
+          </ol>
         </div>
       </section>
 

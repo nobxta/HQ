@@ -217,3 +217,7 @@ a, button, input, select, textarea {
 /* ─── Hide scrollbars (used by hq tab bar / horizontal scrollers) ─── */
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .stagger-children > * { animation: none; opacity: 1; }
+}

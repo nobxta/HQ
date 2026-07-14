@@ -5,10 +5,17 @@ import MarketingHeader from "@/components/MarketingHeader";
 import MarketingFooter from "@/components/MarketingFooter";
 import Breadcrumbs from "@/components/Breadcrumbs";
 
+const TITLE = "Why Choose HQAdz for Telegram Advertising Automation";
+const DESC = "See why advertisers use HQAdz to manage Telegram posting accounts, control campaigns, track activity and operate Telegram advertising from one platform.";
+const URL = "https://hqadz.io/why-hqadz";
+
 export const metadata: Metadata = {
-  title: "Why Choose HQAdz for Telegram Advertising Automation",
-  description: "See why advertisers use HQAdz to manage Telegram posting accounts, control campaigns, track activity and operate Telegram advertising from one platform.",
-  alternates: { canonical: "https://hqadz.io/why-hqadz" },
+  title: { absolute: TITLE },
+  description: DESC,
+  alternates: { canonical: URL },
+  robots: { index: true, follow: true },
+  openGraph: { title: TITLE, description: DESC, url: URL, type: "website" },
+  twitter: { card: "summary_large_image", title: TITLE, description: DESC },
 };
 
 const DIFFERENTIATORS = [
@@ -32,10 +39,10 @@ const COMPARISON = [
 ];
 
 const WHO_FOR = [
-  "Independent advertisers promoting a product, service, or channel",
-  "Telegram community promoters growing a group or channel",
-  "Agencies managing repeated campaigns across multiple clients",
-  "Teams operating several posting accounts at once",
+  { title: "Independent advertisers", body: "Promoting a product, service, or channel without wanting to babysit every posting account by hand." },
+  { title: "Telegram community promoters", body: "Growing a group or channel and needing a repeatable way to reach new audiences." },
+  { title: "Agencies", body: "Running the same kind of campaign across multiple clients and wanting one consistent workflow for all of them." },
+  { title: "Teams operating several accounts", body: "Coordinating multiple posting accounts and wanting a single view of status and delivery instead of checking each one separately." },
 ];
 
 const WHO_NOT_FOR = [
@@ -74,9 +81,12 @@ export default function WhyHQAdzPage() {
           <h2 className="text-2xl md:text-[28px] font-medium text-white tracking-[-0.02em] mb-10">
             Key differentiators
           </h2>
-          <div className="grid sm:grid-cols-2 gap-4">
+          <div className="stagger-children grid sm:grid-cols-2 gap-4">
             {DIFFERENTIATORS.map(({ icon: Icon, title, body }) => (
-              <div key={title} className="bg-[#0e0e10] border border-[#1f1f22] rounded-xl p-6 space-y-3">
+              <div
+                key={title}
+                className="bg-[#0e0e10] border border-[#1f1f22] rounded-xl p-6 space-y-3 transition-colors hover:border-[#2e2e34]"
+              >
                 <div className="w-9 h-9 rounded-lg flex items-center justify-center bg-[#16161a] border border-[#1f1f22]">
                   <Icon className="w-4 h-4 text-[#2AABEE]" />
                 </div>
@@ -135,11 +145,13 @@ export default function WhyHQAdzPage() {
         <div className="max-w-5xl mx-auto grid md:grid-cols-2 gap-8">
           <div className="bg-[#0e0e10] border border-[#1f1f22] rounded-xl p-6 space-y-4">
             <h2 className="text-[17px] font-medium text-white">Who it's for</h2>
-            <ul className="space-y-2.5">
-              {WHO_FOR.map((item) => (
-                <li key={item} className="text-[13.5px] flex items-start gap-2.5">
+            <ul className="space-y-4">
+              {WHO_FOR.map(({ title, body }) => (
+                <li key={title} className="flex items-start gap-2.5">
                   <Check className="w-3.5 h-3.5 shrink-0 mt-0.5" style={{ color: "#2AABEE" }} />
-                  {item}
+                  <span className="text-[13.5px] leading-relaxed">
+                    <span className="text-white font-medium">{title}</span> — {body}
+                  </span>
                 </li>
               ))}
             </ul>
