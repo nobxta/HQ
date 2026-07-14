@@ -1145,7 +1145,7 @@ export default function LandingPage() {
             </div>
             <div className="flex items-center gap-5 text-[12px] text-[#5d5d66]">
               <a href="#pricing" className="hover:text-white transition-colors duration-150">Pricing</a>
-              <a href="#faq" className="hover:text-white transition-colors duration-150">FAQ</a>
+              <Link href="/faq" className="hover:text-white transition-colors duration-150">FAQ</Link>
               <Link href="/terms" className="hover:text-white transition-colors duration-150">Terms</Link>
               <Link href="/privacy-policy" className="hover:text-white transition-colors duration-150">Privacy</Link>
               <span className="flex items-center gap-1.5">
@@ -1157,8 +1157,10 @@ export default function LandingPage() {
           <nav aria-label="Site pages" className="flex flex-wrap gap-x-5 gap-y-2 text-[12px] text-[#5d5d66]">
             <Link href="/telegram-adbot" className="hover:text-white transition-colors duration-150">Telegram AdBot</Link>
             <Link href="/features" className="hover:text-white transition-colors duration-150">Features</Link>
+            <Link href="/why-hqadz" className="hover:text-white transition-colors duration-150">Why HQAdz</Link>
             <Link href="/pricing" className="hover:text-white transition-colors duration-150">Pricing</Link>
             <Link href="/how-it-works" className="hover:text-white transition-colors duration-150">How it works</Link>
+            <Link href="/faq" className="hover:text-white transition-colors duration-150">FAQ</Link>
             <Link href="/telegram-session-management" className="hover:text-white transition-colors duration-150">Session management</Link>
             <Link href="/telegram-adbot-dashboard" className="hover:text-white transition-colors duration-150">Dashboard</Link>
             <Link href="/contact" className="hover:text-white transition-colors duration-150">Contact</Link>
