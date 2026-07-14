@@ -148,6 +148,18 @@ export async function setSessionEnabled(botName: string, file: string, enabled: 
   return data;
 }
 
+// Manual health override for an assigned session — never moves the file/bucket,
+// only flags the status (see moveSession/bulkMove above for the unassigned equivalent,
+// which does move the file since unassigned sessions live in pool buckets).
+export type AssignedStatusOverride = "healthy" | "limited" | "frozen" | "dead";
+export async function setAssignedSessionStatus(botName: string, file: string, status: AssignedStatusOverride) {
+  const { data } = await api.post(
+    `/api/bots/${encodeURIComponent(botName)}/sessions/${encodeURIComponent(file)}/set-status`,
+    { status },
+  );
+  return data as { file: string; status: AssignedStatusOverride };
+}
+
 // ── bots list (for assign / replace selectors) ──
 export interface BotOption { name: string; state: string; running: boolean; sessions_count: number; plan_name?: string; }
 export async function listBotOptions(): Promise<BotOption[]> {

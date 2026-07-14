@@ -1,13 +1,14 @@
 "use client";
 import { useState, useEffect } from "react";
-import { LinkIcon, Unlink, Repeat, AlertTriangle, Search } from "lucide-react";
+import { LinkIcon, Unlink, Repeat, AlertTriangle, Search, Activity } from "lucide-react";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import type { SessionOverviewItem } from "@/lib/types";
 import {
   assignSession, unassignSession, replaceAssignedSession, listBotOptions, type BotOption,
+  setAssignedSessionStatus, type AssignedStatusOverride,
 } from "@/lib/sessions";
-import { HealthBadge, Avatar, accountName } from "./shared";
+import { HealthBadge, Avatar, accountName, HEALTH_META } from "./shared";
 import { errMsg } from "./dialogs";
 import toast from "react-hot-toast";
 
@@ -225,6 +226,74 @@ export function ReplaceSessionDialog({
         <div className="flex gap-2">
           <Button variant="secondary" size="sm" onClick={onClose}>Cancel</Button>
           <Button size="sm" onClick={run} loading={busy} disabled={!pick}><Repeat className="h-4 w-4" /> Replace session</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ─────────────── Change health status (assigned only, manual override) ───────────────
+const STATUS_OPTIONS: AssignedStatusOverride[] = ["healthy", "limited", "frozen", "dead"];
+
+export function SetStatusDialog({
+  open, onClose, session, onDone,
+}: {
+  open: boolean;
+  onClose: () => void;
+  session: SessionOverviewItem | null;
+  onDone: () => void;
+}) {
+  const [pick, setPick] = useState<AssignedStatusOverride | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { if (open) setPick(null); }, [open]);
+
+  if (!session || !session.bot_name) return null;
+
+  const run = async () => {
+    if (!pick) return;
+    setBusy(true);
+    try {
+      await setAssignedSessionStatus(session.bot_name!, session.filename, pick);
+      toast.success(`Health set to ${HEALTH_META[pick].label}`);
+      onDone(); onClose();
+    } catch (e) { toast.error(errMsg(e, "Status update failed")); }
+    setBusy(false);
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} title="Change health status" size="sm">
+      <div className="space-y-4">
+        <div className="space-y-0.5 text-sm">
+          <p className="text-dark-300">Session <span className="font-mono text-dark-100">{session.filename}</span></p>
+          <p className="text-dark-500 text-xs">Assigned to {session.bot_name} — current: {HEALTH_META[session.health].label}</p>
+        </div>
+        <div className="rounded-lg border border-dark-700/60 bg-dark-850 px-3 py-2">
+          <p className="text-xs text-dark-400">
+            Manual override only — this session stays assigned and its file never moves.
+            Use Replace to actually swap it out for a working one.
+          </p>
+        </div>
+        <div>
+          <p className="text-[11px] uppercase tracking-wider text-dark-500 mb-1.5">Set health to</p>
+          <div className="flex flex-wrap gap-2">
+            {STATUS_OPTIONS.map((opt) => {
+              const m = HEALTH_META[opt];
+              const Icon = m.icon;
+              return (
+                <button
+                  key={opt}
+                  onClick={() => setPick(opt)}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition-colors ${pick === opt ? `${m.border} ${m.bg} ${m.text}` : "border-dark-700 text-dark-400 hover:border-dark-500"}`}
+                >
+                  <Icon className="h-3.5 w-3.5" /> {m.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" size="sm" onClick={onClose}>Cancel</Button>
+          <Button size="sm" onClick={run} loading={busy} disabled={!pick}><Activity className="h-4 w-4" /> Apply</Button>
         </div>
       </div>
     </Modal>

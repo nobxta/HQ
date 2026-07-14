@@ -24,7 +24,7 @@ import BulkActionBar, { type BulkHandlers } from "@/components/admin/sessions/Bu
 import SessionDetailsDrawer from "@/components/admin/sessions/SessionDetailsDrawer";
 import type { SessionActions } from "@/components/admin/sessions/SessionActionsMenu";
 import { OperationResultDialog, UploadSessionsDialog, MoveSessionsDialog, DeleteSessionsDialog, errMsg } from "@/components/admin/sessions/dialogs";
-import { AssignSessionDialog, UnassignSessionDialog, ReplaceSessionDialog } from "@/components/admin/sessions/assignmentDialogs";
+import { AssignSessionDialog, UnassignSessionDialog, ReplaceSessionDialog, SetStatusDialog } from "@/components/admin/sessions/assignmentDialogs";
 import {
   EMPTY_FILTERS, type SessionFilters, type SessionView,
   matchesView, matchesFilters, matchesSearch, viewCount,
@@ -120,6 +120,7 @@ export default function SessionsPage() {
   const [assignTargets, setAssignTargets] = useState<SessionOverviewItem[] | null>(null);
   const [unassignTarget, setUnassignTarget] = useState<SessionOverviewItem | null>(null);
   const [replaceTarget, setReplaceTarget] = useState<SessionOverviewItem | null>(null);
+  const [statusTarget, setStatusTarget] = useState<SessionOverviewItem | null>(null);
   const [confirmDisable, setConfirmDisable] = useState<SessionOverviewItem | null>(null);
   const [opResult, setOpResult] = useState<{ title: string; result: BulkOpResult } | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
@@ -241,6 +242,7 @@ export default function SessionsPage() {
     onSpambot: spambotOne,
     onAssign: (s) => setAssignTargets([s]),
     onMove: (s) => setMoveTargets([s]),
+    onSetStatus: (s) => setStatusTarget(s),
     onStar: toggleStar,
     onDelete: (s) => setDeleteTargets([s]),
     onUnassign: (s) => setUnassignTarget(s),
@@ -444,6 +446,7 @@ export default function SessionsPage() {
       <AssignSessionDialog open={!!assignTargets} onClose={() => setAssignTargets(null)} sessions={assignTargets || []} onDone={() => { mutate(); clearSelection(); }} />
       <UnassignSessionDialog open={!!unassignTarget} onClose={() => setUnassignTarget(null)} session={unassignTarget} onDone={() => mutate()} />
       <ReplaceSessionDialog open={!!replaceTarget} onClose={() => setReplaceTarget(null)} session={replaceTarget} freeSessions={freeSessions} onDone={() => mutate()} />
+      <SetStatusDialog open={!!statusTarget} onClose={() => setStatusTarget(null)} session={statusTarget} onDone={() => mutate()} />
 
       <OperationResultDialog
         open={!!opResult} onClose={() => setOpResult(null)}

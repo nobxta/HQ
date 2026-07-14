@@ -1485,6 +1485,51 @@ async def replace_session(name: str, session_file: str, body: ReplaceSessionRequ
     return {"status": "replaced", "old": session_file, "new_session": new_info}
 
 
+_ASSIGNED_STATUS_OPTIONS = {"healthy", "limited", "frozen", "dead"}
+
+
+class SetSessionStatusRequest(BaseModel):
+    status: str  # "healthy" | "limited" | "frozen" | "dead"
+
+
+@router.post("/{name}/sessions/{session_file}/set-status")
+async def set_assigned_session_status(name: str, session_file: str, body: SetSessionStatusRequest):
+    """Manually override an assigned session's health flag.
+
+    Assigned sessions never move between pool buckets or on disk — Replace is the
+    explicit action for swapping one out. This just lets an admin correct the health
+    signal by hand (e.g. the automated SpamBot/validation check missed something, or
+    a flag needs to be dismissed early) without touching the file or its assignment.
+    """
+    status = (body.status or "").strip().lower()
+    if status not in _ASSIGNED_STATUS_OPTIONS:
+        raise HTTPException(400, f"status must be one of {sorted(_ASSIGNED_STATUS_OPTIONS)}")
+
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    entry = next((s for s in cfg.get("sessions", []) if s.get("file") == session_file), None)
+    if not entry:
+        raise HTTPException(404, f"Session '{session_file}' not assigned to '{name}'")
+
+    if status == "dead":
+        entry["validation_status"] = "invalid"
+        entry["validation_reason"] = "Manually marked dead by admin"
+        entry["last_validated_at"] = time.time()
+    else:
+        # Any non-dead override clears a stale "invalid" validation so health reflects it.
+        if entry.get("validation_status") == "invalid":
+            entry["validation_status"] = "unknown"
+            entry["validation_reason"] = ""
+        entry["spam_status"] = None if status == "healthy" else status
+        entry["last_spambot_check_at"] = time.time()
+
+    await wrappers.save_user_data(name, cfg)
+    await wrappers.log_admin_action("web_admin", "set_session_status", target=f"{session_file} → {status} on {name}")
+    return {"file": session_file, "status": status}
+
+
 @router.get("/{name}/sessions/available")
 async def get_available_sessions(name: str):
     """Get list of sessions available in the free pool for adding/replacing."""

@@ -2,7 +2,7 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  X, ExternalLink, Bot, ShieldCheck, Shield, Power, Repeat, Unlink, LinkIcon, Loader2,
+  X, ExternalLink, Bot, ShieldCheck, Shield, Power, Repeat, Unlink, LinkIcon, Loader2, Activity,
 } from "lucide-react";
 import Link from "next/link";
 import type { SessionOverviewItem } from "@/lib/types";
@@ -162,6 +162,11 @@ export default function SessionDetailsDrawer({
                     {!isAssigned(s) && (s.pool === "free" || s.pool === "limited" || s.pool === "frozen") && (
                       <button onClick={() => actions.onSpambot(s)} className="inline-flex items-center gap-1.5 rounded-lg border border-dark-700 bg-dark-800 px-3 py-1.5 text-xs text-dark-200 hover:bg-dark-700">
                         <Shield className="h-3.5 w-3.5" /> SpamBot check
+                      </button>
+                    )}
+                    {isAssigned(s) && (
+                      <button onClick={() => actions.onSetStatus(s)} className="inline-flex items-center gap-1.5 rounded-lg border border-dark-700 bg-dark-800 px-3 py-1.5 text-xs text-dark-200 hover:bg-dark-700">
+                        <Activity className="h-3.5 w-3.5" /> Change health status
                       </button>
                     )}
                   </div>

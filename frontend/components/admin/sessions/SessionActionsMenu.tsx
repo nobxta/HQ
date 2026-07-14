@@ -2,7 +2,7 @@
 import { useState, useRef, useEffect } from "react";
 import {
   MoreHorizontal, Eye, ExternalLink, ShieldCheck, Shield, LinkIcon,
-  ArrowRightLeft, Star, Trash2, Power, Repeat, Unlink, Bot,
+  ArrowRightLeft, Star, Trash2, Power, Repeat, Unlink, Bot, Activity,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { SessionOverviewItem } from "@/lib/types";
@@ -16,6 +16,7 @@ export interface SessionActions {
   onSpambot: (s: SessionOverviewItem) => void;
   onAssign: (s: SessionOverviewItem) => void;
   onMove: (s: SessionOverviewItem) => void;
+  onSetStatus: (s: SessionOverviewItem) => void;
   onStar: (s: SessionOverviewItem) => void;
   onDelete: (s: SessionOverviewItem) => void;
   onUnassign: (s: SessionOverviewItem) => void;
@@ -38,6 +39,7 @@ export function buildMenuItems(s: SessionOverviewItem, a: SessionActions): Item[
     items.push({ label: "Validate safely", icon: ShieldCheck, fn: () => a.onValidate(s) });
     items.push({ label: s.disabled ? "Enable (use in ads)" : "Disable (pause in ads)", icon: Power, fn: () => a.onToggleEnabled(s) });
     items.push({ label: "Replace session", icon: Repeat, fn: () => a.onReplace(s) });
+    items.push({ label: "Change health status", icon: Activity, fn: () => a.onSetStatus(s) });
     items.push({ label: s.starred ? "Unstar" : "Star", icon: Star, fn: () => a.onStar(s) });
     items.push({ label: "Unassign", icon: Unlink, fn: () => a.onUnassign(s), danger: true, separator: true });
   } else {
