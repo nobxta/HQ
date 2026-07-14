@@ -1112,8 +1112,15 @@ async def validate_all_sessions(name: str):
 @router.post("/{name}/sessions/spambot-check")
 async def spambot_check_sessions(name: str):
     """Run SpamBot health check on all sessions assigned to this bot.
-    Moves LIMITED/FROZEN sessions out of free pool into correct buckets."""
-    import shutil
+
+    Assigned sessions are never moved between pool buckets or on disk — the bot's
+    config still points at them and yanking the file out from under a running worker
+    would silently break it. Instead LIMITED/FROZEN results are persisted as a
+    ``spam_status`` flag on the session's own entry so the Sessions console can show
+    "needs attention" (health, not location). A later clean check overwrites/clears
+    the flag automatically, so it self-heals once Telegram lifts the restriction.
+    Replacing the session (Replace action) is the explicit operator move that actually
+    swaps the file out."""
     cfg = await wrappers.load_user_data(name)
     if not cfg:
         raise HTTPException(404, f"Bot '{name}' not found")
@@ -1122,8 +1129,6 @@ async def spambot_check_sessions(name: str):
         check_sessions_health_parallel, SPAM_ACTIVE,
         SPAM_TEMP_LIMITED, SPAM_HARD_LIMITED, SPAM_FROZEN,
     )
-    from code.config import SESSIONS_ACTIVE, SESSIONS_FROZEN as FROZEN_DIR, SESSIONS_LIMITED as LIMITED_DIR
-    from code.utils import load_pool, save_pool
 
     session_files = [s.get("file") for s in cfg.get("sessions", []) if s.get("file")]
 
@@ -1132,9 +1137,9 @@ async def spambot_check_sessions(name: str):
 
     statuses = await check_sessions_health_parallel(session_files)
 
-    pool = await asyncio.to_thread(load_pool)
-    moved_limited = []
-    moved_frozen = []
+    flagged_limited = []
+    flagged_frozen = []
+    changed = False
 
     results = []
     for s in cfg.get("sessions", []):
@@ -1147,38 +1152,29 @@ async def spambot_check_sessions(name: str):
             "spambot_status": spam_status,
         })
 
-        # Move sessions to correct pool buckets based on status
+        # Flag health on the entry itself — never touch pool bucket or file location
+        # while the session stays assigned.
         if spam_status in (SPAM_TEMP_LIMITED, SPAM_HARD_LIMITED):
-            if fn in pool.get("free_sessions", []):
-                pool["free_sessions"] = [x for x in pool["free_sessions"] if x != fn]
-            if fn not in pool.get("limited_sessions", []):
-                pool.setdefault("limited_sessions", []).append(fn)
-            src = SESSIONS_ACTIVE / fn
-            if src.is_file():
-                dest = LIMITED_DIR / fn
-                try:
-                    await asyncio.to_thread(shutil.move, str(src), str(dest))
-                except OSError:
-                    pass
-            moved_limited.append(fn)
-
+            s["spam_status"] = "limited"
+            s["last_spambot_check_at"] = time.time()
+            flagged_limited.append(fn)
+            changed = True
         elif spam_status == SPAM_FROZEN:
-            if fn in pool.get("free_sessions", []):
-                pool["free_sessions"] = [x for x in pool["free_sessions"] if x != fn]
-            if fn not in pool.get("frozen_sessions", []):
-                pool.setdefault("frozen_sessions", []).append(fn)
-            src = SESSIONS_ACTIVE / fn
-            if src.is_file():
-                dest = FROZEN_DIR / fn
-                try:
-                    await asyncio.to_thread(shutil.move, str(src), str(dest))
-                except OSError:
-                    pass
-            moved_frozen.append(fn)
+            s["spam_status"] = "frozen"
+            s["last_spambot_check_at"] = time.time()
+            flagged_frozen.append(fn)
+            changed = True
+        elif spam_status == SPAM_ACTIVE:
+            # Self-heal: no longer limited/frozen, clear any stale attention flag.
+            if s.get("spam_status"):
+                s["spam_status"] = None
+                changed = True
+            s["last_spambot_check_at"] = time.time()
+            changed = True
+        # UNKNOWN (check inconclusive, e.g. busy) — leave the existing flag as-is.
 
-    # Save pool if any sessions were moved
-    if moved_limited or moved_frozen:
-        await asyncio.to_thread(save_pool, pool)
+    if changed:
+        await wrappers.save_user_data(name, cfg)
 
     return {
         "sessions": results,
@@ -1186,8 +1182,8 @@ async def spambot_check_sessions(name: str):
         "active": sum(1 for r in results if r["spambot_status"] == SPAM_ACTIVE),
         "limited": sum(1 for r in results if "LIMITED" in r["spambot_status"]),
         "frozen": sum(1 for r in results if r["spambot_status"] == SPAM_FROZEN),
-        "moved_limited": moved_limited,
-        "moved_frozen": moved_frozen,
+        "flagged_limited": flagged_limited,
+        "flagged_frozen": flagged_frozen,
     }
 
 

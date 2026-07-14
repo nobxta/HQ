@@ -1376,14 +1376,14 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
       for (const s of data.sessions) map[s.file] = s.spambot_status;
       setSpambotResults(map);
       reloadOverview();
-      const movedCount = (data.moved_limited?.length || 0) + (data.moved_frozen?.length || 0);
+      const flaggedCount = (data.flagged_limited?.length || 0) + (data.flagged_frozen?.length || 0);
       setBulkResult({
         type: "spambot", active: data.active, limited: data.limited,
         frozen: data.frozen || 0, total: data.total,
-        moved_limited: data.moved_limited || [], moved_frozen: data.moved_frozen || [],
+        flagged_limited: data.flagged_limited || [], flagged_frozen: data.flagged_frozen || [],
       });
-      if (movedCount > 0) {
-        toast.error(`${movedCount} session(s) moved to limited/frozen pool`);
+      if (flaggedCount > 0) {
+        toast.error(`${flaggedCount} session(s) flagged limited/frozen — still assigned, needs attention`);
       } else if (data.limited > 0 || (data.frozen || 0) > 0) {
         toast.error(`${data.limited + (data.frozen || 0)} session(s) are spam-limited/frozen`);
       } else {
@@ -1666,8 +1666,8 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
             <span className="text-hq-success text-[12px]">{bulkResult.active} clean</span>
             {bulkResult.limited > 0 && <span className="text-hq-warning text-[12px]">{bulkResult.limited} limited</span>}
             {bulkResult.frozen > 0 && <span className="text-hq-danger text-[12px]">{bulkResult.frozen} frozen</span>}
-            {((bulkResult.moved_limited?.length || 0) + (bulkResult.moved_frozen?.length || 0)) > 0 && (
-              <span className="text-hq-muted text-[12px]">({(bulkResult.moved_limited?.length || 0) + (bulkResult.moved_frozen?.length || 0)} moved to pool)</span>
+            {((bulkResult.flagged_limited?.length || 0) + (bulkResult.flagged_frozen?.length || 0)) > 0 && (
+              <span className="text-hq-muted text-[12px]">({(bulkResult.flagged_limited?.length || 0) + (bulkResult.flagged_frozen?.length || 0)} flagged — needs attention, still assigned)</span>
             )}
             <span className="text-hq-muted text-[12px]">{bulkResult.total} total</span>
           </>)}

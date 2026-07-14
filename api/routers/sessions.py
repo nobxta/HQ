@@ -150,9 +150,15 @@ _RANGE_SECONDS: dict[str, int | None] = {
 }
 
 
-def _health_from(pool: str, validation_status: str | None) -> str:
-    """Map (pool bucket, persisted validation) to a single health class.
-    Assignment is NOT health; the free pool alone is NOT health."""
+def _health_from(pool: str, validation_status: str | None, spam_status: str | None = None) -> str:
+    """Map (pool bucket, persisted validation, persisted SpamBot flag) to a single health
+    class. Assignment is NOT health; the free pool alone is NOT health.
+
+    Assigned sessions never live in a pool bucket, so their health comes entirely from
+    persisted signals on the assignment entry: a failed validation (banned/logged out)
+    always wins as "dead"; otherwise a SpamBot flag from the bot-scoped check surfaces
+    as "limited"/"frozen" without ever moving the session's file or bucket.
+    """
     if pool == "dead":
         return "dead"
     if pool == "frozen":
@@ -162,10 +168,15 @@ def _health_from(pool: str, validation_status: str | None) -> str:
     if pool == "unauth":
         return "unauthorized"
     vs = (validation_status or "").lower()
-    if vs in ("valid", "active"):
-        return "healthy"
     if vs == "invalid":
         return "dead"
+    ss = (spam_status or "").lower()
+    if ss == "frozen":
+        return "frozen"
+    if ss == "limited":
+        return "limited"
+    if vs in ("valid", "active"):
+        return "healthy"
     return "unknown"
 
 
@@ -223,7 +234,8 @@ def _build_overview(range_key: str) -> dict:
             }.get(pool_bucket, "unknown"))
 
         pool_label = "assigned" if assign else pool_bucket
-        health = _health_from(pool_bucket if not assign else "assigned", validation_status)
+        spam_status = entry.get("spam_status") if assign else None
+        health = _health_from(pool_bucket if not assign else "assigned", validation_status, spam_status)
         # Resolve real file presence (assigned-but-missing is an attention state).
         path = config.resolve_session_path(fn)
         file_present = path.is_file()
@@ -290,6 +302,8 @@ def _build_overview(range_key: str) -> dict:
             "validation_status": validation_status or None,
             "validation_reason": entry.get("validation_reason") or None,
             "last_validated_at": entry.get("last_validated_at") or None,
+            "spam_status": spam_status or None,
+            "last_spambot_check_at": (entry.get("last_spambot_check_at") or None) if assign else None,
 
             "derived_status": derived,
             "pause_until": (pause_at or None) if pause_at > now else None,

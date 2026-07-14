@@ -138,6 +138,12 @@ export default function SessionDetailsDrawer({
                   <Field label="Validation status" value={s.validation_status || "Unchecked"} />
                   <Field label="Validation reason" value={s.validation_reason || "—"} />
                   <Field label="Last validated" value={s.last_validated_at ? timeAgo(now - s.last_validated_at) : "Never"} />
+                  {isAssigned(s) && (
+                    <>
+                      <Field label="SpamBot flag" value={s.spam_status ? s.spam_status[0].toUpperCase() + s.spam_status.slice(1) : "None"} />
+                      <Field label="Last SpamBot check" value={s.last_spambot_check_at ? timeAgo(now - s.last_spambot_check_at) : "Never"} />
+                    </>
+                  )}
                   <Field label="Current pool" value={<LocationBadge pool={s.pool} />} />
                   <Field label="Last error" value={s.last_error || "—"} />
                   <Field label="Last error time" value={s.last_error_at ? timeAgo(now - s.last_error_at) : "—"} />

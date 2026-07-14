@@ -277,6 +277,8 @@ export interface SessionOverviewItem {
   validation_status: string | null;
   validation_reason: string | null;
   last_validated_at: number | null;
+  spam_status: string | null;
+  last_spambot_check_at: number | null;
 
   derived_status: SessionDerivedStatus;
   pause_until: number | null;
