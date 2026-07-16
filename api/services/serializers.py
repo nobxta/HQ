@@ -55,6 +55,9 @@ def serialize_bot_detail(token: str, cfg: dict) -> dict:
         "post_link": cfg.get("post_link", ""),  # legacy single-link fallback
         "plan": cfg.get("plan"),
         "history": cfg.get("history"),
+        "renewal_price": cfg.get("renewal_price", ""),
+        "legacy_renewal_price": cfg.get("legacy_renewal_price", ""),
+        "renewal_prices": cfg.get("renewal_prices") or {"7d": None, "30d": None},
         "web_token": cfg.get("web_token", ""),
         "last_web_login": cfg.get("last_web_login"),
         "web_login_history": cfg.get("web_login_history", []),

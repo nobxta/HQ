@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { formatDate, formatUSD } from "@/lib/utils";
+import Link from "next/link";
 
 // Crypto display names
 const CRYPTO_NAMES: Record<string, string> = {
@@ -99,7 +100,7 @@ export default function UserSettingsPage() {
     return null;
   };
   const daysRemaining = getDaysRemaining();
-  const isExpiringSoon = daysRemaining !== null && daysRemaining <= 3;
+  const isExpiringSoon = daysRemaining !== null && daysRemaining <= 7;
   const isExpired = daysRemaining !== null && daysRemaining <= 0;
 
   // Renewal price for selected duration
@@ -306,26 +307,22 @@ export default function UserSettingsPage() {
             </div>
           )}
 
-          {/* Renewal flow */}
-          {hasRenewalPrice && renewStep === "idle" && (
+          {/* Renewal entry point */}
+          {renewStep === "idle" && (
             <div className="border-t border-dark-800 pt-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-dark-300">Renewal Price</p>
-                  <p className="text-xs text-dark-500">{formatUSD(renewalPrice)} / month</p>
+              <div className="rounded-xl border border-accent/20 bg-gradient-to-br from-accent/12 via-dark-800/70 to-success/10 p-4">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-bold text-dark-100">Extend your plan</p>
+                    <p className="text-xs text-dark-400 mt-1">Choose 7 or 30 days, pay by crypto, and keep unused time.</p>
+                  </div>
+                  <Link href="/user/billing/renew">
+                    <Button variant="primary" size="sm" className="w-full sm:w-auto">
+                      <CreditCard className="h-4 w-4" /> Renew Now
+                    </Button>
+                  </Link>
                 </div>
-                <Button variant="primary" size="sm" onClick={startRenewal}>
-                  <CreditCard className="h-4 w-4" /> Extend Plan
-                </Button>
               </div>
-            </div>
-          )}
-
-          {!hasRenewalPrice && renewStep === "idle" && (
-            <div className="border-t border-dark-800 pt-4">
-              <p className="text-xs text-dark-500">
-                To renew or extend your plan, use the payment bot in Telegram or contact support.
-              </p>
             </div>
           )}
 

@@ -5,6 +5,7 @@ import Badge from "@/components/ui/Badge";
 import { PageSkeleton } from "@/components/ui/Skeleton";
 import { CreditCard, Calendar, Tag } from "lucide-react";
 import { formatDate, formatDateTime, formatUSD } from "@/lib/utils";
+import Link from "next/link";
 
 export default function UserBillingPage() {
   const { data: bot, isLoading } = usePortalBot();
@@ -59,13 +60,9 @@ export default function UserBillingPage() {
                 <p className="text-base sm:text-lg font-bold text-dark-100 truncate">{formatDate(bot.valid_till) || "—"}</p>
               </div>
             </div>
-            <a
-              href="/user/settings"
-              className="inline-flex items-center gap-1.5 text-xs text-accent hover:text-accent/80 transition-colors"
-            >
-              <CreditCard className="h-3.5 w-3.5" />
-              Extend plan in Settings
-            </a>
+            <Link href="/user/billing/renew" className="inline-flex items-center gap-1.5 text-xs text-accent hover:text-accent/80 transition-colors">
+              <CreditCard className="h-3.5 w-3.5" /> Renew or extend plan
+            </Link>
           </div>
         </Card>
       </div>

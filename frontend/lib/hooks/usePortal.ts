@@ -51,6 +51,12 @@ export function usePortalOrders() {
   return useSWR(key, fetcher, { refreshInterval: 30000, shouldRetryOnError: false });
 }
 
+export function useRenewalOptions() {
+  const s = validSession(useSession());
+  const key = s ? `/api/portal/bot/${encodeURIComponent(s.bot_name)}/renewal-options?telegram_id=${s.telegram_id}` : null;
+  return useSWR(key, fetcher, { refreshInterval: 15000, shouldRetryOnError: false });
+}
+
 // Exposed so pages can distinguish "session invalid, stop retrying" from "still loading" and show
 // a proper "please log in again" message instead of a frozen/stale UI.
 export function usePortalSessionValid(): boolean {

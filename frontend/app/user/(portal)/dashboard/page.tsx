@@ -3,6 +3,7 @@ import { usePortalBot, usePortalStats, usePortalLogs, usePortalAnalytics } from 
 import { getPortalSession } from "@/lib/portal-api";
 import portalApi from "@/lib/portal-api";
 import Modal from "@/components/ui/Modal";
+import Button from "@/components/ui/Button";
 import { PageSkeleton } from "@/components/ui/Skeleton";
 import {
   CheckCircle, XCircle, Play, Square, Loader2,
@@ -181,6 +182,7 @@ export default function UserDashboard() {
   const wsRef = useRef<WebSocket | null>(null);
   const [replacements, setReplacements] = useState<ReplacementData | null>(null);
   const [showPopup, setShowPopup] = useState(false);
+  const [showRenewalPopup, setShowRenewalPopup] = useState(false);
   const popupShown = useRef(false);
   const [mounted, setMounted] = useState(false);
   const [preStartCheck, setPreStartCheck] = useState<PreStartCheck | null>(null);
@@ -207,6 +209,17 @@ export default function UserDashboard() {
 
   useEffect(() => { fetchReplacements(); const iv = setInterval(fetchReplacements, 30000); return () => clearInterval(iv); }, [fetchReplacements]);
   useEffect(() => () => { wsRef.current?.close(); }, []);
+  useEffect(() => {
+    if (!bot?.valid_till || !bot?.last_web_login?.time || !bot?.name) return;
+    const valid = parseFlexibleDate(bot.valid_till);
+    if (!valid || isNaN(valid.getTime())) return;
+    const hours = Math.ceil((valid.getTime() - Date.now()) / 3600000);
+    if (hours > 48 || hours < 0) return;
+    const key = `renewal_login_popup:${bot.name}:${bot.last_web_login.time}`;
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, "1");
+    setShowRenewalPopup(true);
+  }, [bot?.valid_till, bot?.last_web_login?.time, bot?.name]);
 
   const miniLogs = useMemo(() => {
     const lines: string[] = logData?.lines || [];
@@ -352,7 +365,7 @@ export default function UserDashboard() {
 
   const validTill = bot.valid_till ? parseFlexibleDate(bot.valid_till) : null;
   const daysLeft = validTill && !isNaN(validTill.getTime()) ? Math.ceil((validTill.getTime() - Date.now()) / 86400000) : null;
-  const expiringSoon = daysLeft !== null && daysLeft <= 3 && daysLeft >= 0;
+  const expiringSoon = daysLeft !== null && daysLeft <= 7 && daysLeft >= 0;
   const expired = daysLeft !== null && daysLeft < 0;
 
   const lastStep = controlSteps[controlSteps.length - 1];
@@ -402,9 +415,9 @@ export default function UserDashboard() {
         </button>
       )}
       {(expired || expiringSoon) && (
-        <div className={`flex items-center gap-2.5 rounded-2xl px-4 py-3 text-xs font-semibold mb-4 border animate-fade-in ${
+        <Link href="/user/billing/renew" className={`flex items-center gap-2.5 rounded-2xl px-4 py-3 text-xs font-semibold mb-4 border animate-fade-in hover:bg-white/[0.03] ${
           expired ? "bg-danger/[0.04] text-danger border-danger/15" : "bg-warning/[0.04] text-warning border-warning/15"
-        }`}><AlertTriangle className="h-4 w-4 shrink-0" />{expired ? "Plan expired. Renew to continue." : `Expires in ${daysLeft}d. Renew soon.`}</div>
+        }`}><AlertTriangle className="h-4 w-4 shrink-0" /><span className="flex-1">{expired ? "Plan expired. Renew to continue." : `Expires in ${daysLeft}d. Renew soon.`}</span><span className="text-[11px] underline">Renew Now</span></Link>
       )}
     </>
   );
@@ -440,6 +453,26 @@ export default function UserDashboard() {
           <div className="flex justify-between pt-1">
             <button onClick={fetchReplacements} className="text-xs text-dark-400 hover:text-dark-200 flex items-center gap-1"><RefreshCw className="h-3 w-3" /> Refresh</button>
             <button onClick={() => setShowPopup(false)} className="px-4 py-1.5 rounded-lg bg-dark-800 hover:bg-dark-700 text-sm font-medium text-dark-200">Got it</button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={showRenewalPopup} onClose={() => setShowRenewalPopup(false)} size="sm">
+        <div className="space-y-4">
+          <div className="flex items-start gap-3">
+            <div className="p-2.5 rounded-xl bg-warning/10 border border-warning/20 shrink-0">
+              <AlertTriangle className="h-6 w-6 text-warning" />
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-dark-100">Plan Ending Soon</h2>
+              <p className="text-sm text-dark-400 mt-1">
+                Your AdBot plan is ending in {validTill ? Math.max(0, Math.ceil((validTill.getTime() - Date.now()) / 3600000)) : "less than 48"} hours. Renew now to avoid deletion.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-2 justify-end">
+            <Button variant="secondary" onClick={() => setShowRenewalPopup(false)}>Later</Button>
+            <Button onClick={() => router.push("/user/billing/renew")}>Renew Now</Button>
           </div>
         </div>
       </Modal>
@@ -807,9 +840,9 @@ export default function UserDashboard() {
         </button>
       )}
       {(expired || expiringSoon) && (
-        <div className={`flex items-center gap-2.5 rounded-2xl px-4 py-3 text-xs font-semibold mb-4 border animate-fade-in ${
+        <Link href="/user/billing/renew" className={`flex items-center gap-2.5 rounded-2xl px-4 py-3 text-xs font-semibold mb-4 border animate-fade-in hover:bg-white/[0.03] ${
           expired ? "bg-danger/[0.04] text-danger border-danger/15" : "bg-warning/[0.04] text-warning border-warning/15"
-        }`}><AlertTriangle className="h-4 w-4 shrink-0" />{expired ? "Plan expired. Renew to continue." : `Expires in ${daysLeft}d. Renew soon.`}</div>
+        }`}><AlertTriangle className="h-4 w-4 shrink-0" /><span className="flex-1">{expired ? "Plan expired. Renew to continue." : `Expires in ${daysLeft}d. Renew soon.`}</span><span className="text-[11px] underline">Renew Now</span></Link>
       )}
 
       {/* ═══════════ STAT CARDS ROW ═══════════ */}

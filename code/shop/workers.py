@@ -173,7 +173,7 @@ POLL_INTERVAL_FIRST_30_MIN = 120   # 2 min
 POLL_INTERVAL_AFTER_30_MIN = 600   # 10 min
 PAYMENT_WINDOW_HOURS = 12
 RENEWAL_CHECK_INTERVAL_SEC = 3600
-RENEWAL_HOURS_BEFORE = 24
+RENEWAL_HOURS_BEFORE = 48
 
 # User-facing messages: professional, clear, one emoji at start when appropriate. Telegram Markdown.
 
@@ -498,6 +498,7 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
     # ── Bot purchase / renewal ──
     chat_id = o.get("payment_chat_id") or 0
     msg_id = o.get("payment_message_id") or 0
+    notify_bot_token = (o.get("notification_bot_token") or config.SHOP_BOT_TOKEN or "").strip()
     user_id = o.get("user_id") or 0
     plan_name = o.get("plan_name") or "AdBot"
     duration_days = o.get("duration_days") or 0
@@ -507,7 +508,7 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
         r_text, r_entities = build_emoji_message(RENEWAL_CONFIRMED_MESSAGE, "payment_confirmed")
         if chat_id and msg_id:
             await notify.notify_edit_message(
-                chat_id, msg_id, r_text, entities=r_entities, bot_token=config.SHOP_BOT_TOKEN
+                chat_id, msg_id, r_text, entities=r_entities, bot_token=notify_bot_token
             )
     else:
         conf_text, conf_ent, conf_rm = build_payment_confirmation_screen(o, details)
@@ -532,7 +533,7 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
         # requirement, since admin-created / non-"completed" bots have no completed
         # parent order and would otherwise fail to extend after a real payment.
         renew_token = (o.get("bot_token") or "").strip() or (parent.get("bot_token", "") if parent else "")
-        if renew_token and extend_valid_till_for_bot(renew_token, o.get("duration_days", 0), o.get("order_id", "")):
+        if renew_token and extend_valid_till_for_bot(renew_token, o.get("duration_days", 0), o.get("order_id", ""), order=o, details=details):
             # Renewals have no bot-creation step, but the state machine still requires
             # payment_waiting → paid → completed. Jumping straight to completed was rejected,
             # leaving the order stuck in payment_waiting (UI polls forever) even though the bot
@@ -552,7 +553,7 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
                     user_id,
                     r_text2,
                     entities=r_entities2,
-                    bot_token=config.SHOP_BOT_TOKEN,
+                    bot_token=notify_bot_token,
                 )
             await _send_order_confirmed_admin_notice(
                 "Renewal confirmed", order_id,
@@ -906,9 +907,7 @@ async def payment_polling_worker() -> None:
 
 
 async def renewal_scheduler_worker() -> None:
-    """Every hour check for bots expiring in 24h; send renewal reminder to buyer via Shop Bot."""
-    if not config.SHOP_BOT_TOKEN:
-        return
+    """Every hour check for bots expiring in 48h; send renewal reminder through the user's controller bot."""
     from ..utils import load_adbot
     while True:
         try:
@@ -928,44 +927,69 @@ async def renewal_scheduler_worker() -> None:
                     continue
                 if end <= now:
                     continue
-                # Expires within 24h; find order for this bot to get user_id
+                hours_left = max(1, int((end - now).total_seconds() // 3600))
+                reminder = cfg.get("renewal_reminder") or {}
+                last_attempt = _parse_iso(str(reminder.get("last_attempt_at") or "").strip())
+                if last_attempt and (now - last_attempt) < timedelta(hours=24):
+                    continue
+                if reminder.get("sent_for_valid_till") == vt.strip():
+                    continue
+                # Expires within 48h; prefer owner_id, fallback to the original paid order.
                 orders = load_orders()
                 bot_username_norm = (cfg.get("bot_username") or "").strip().lstrip("@").lower()
                 order = next(
                     (x for x in orders if x.get("bot_token") == bot_token or (x.get("created_bot_username") or "").strip().lstrip("@").lower() == bot_username_norm),
                     None,
                 )
-                if not order:
-                    continue
-                user_id = order.get("user_id")
+                user_id = cfg.get("owner_id") or (order or {}).get("user_id")
                 if not user_id:
                     continue
                 vt = vt.strip()
-                if cfg.get("last_renewal_reminder_sent") == vt:
-                    continue
                 try:
                     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
                     from .. import bot_ptb
                     from ..utils import get_name_by_token, save_user_data
-                    bot = bot_ptb._get_ptb_bot(config.SHOP_BOT_TOKEN)
-                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Renew Now", callback_data=f"shop_renew:{order.get('order_id', '')}")]])
-                    await bot.send_message(user_id, "Your AdBot will expire in 24 hours.\n[ Renew Now ]", reply_markup=kb)
+                    bot = bot_ptb._get_ptb_bot(bot_token)
+                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Renew Now", callback_data=f"renew_open:{bot_username_norm or cfg.get('name', '')}")]])
+                    await bot.send_message(
+                        user_id,
+                        f"Your AdBot plan is ending in {hours_left} hours.\nRenew now to keep it active.",
+                        reply_markup=kb,
+                    )
                     name = get_name_by_token(bot_token)
                     if name:
-                        cfg["last_renewal_reminder_sent"] = vt
+                        cfg["renewal_reminder"] = {
+                            "sent_for_valid_till": vt,
+                            "last_attempt_at": datetime.utcnow().isoformat() + "Z",
+                            "last_success_at": datetime.utcnow().isoformat() + "Z",
+                            "hours_left": hours_left,
+                        }
                         save_user_data(name, cfg)
+                    logger.info("Sent renewal reminder to user %s for bot %s", user_id, cfg.get("name"))
                 except Exception as e:
                     logger.warning("Renewal reminder send failed: %s", e)
-                logger.info("Sent renewal reminder to user %s for bot %s", user_id, cfg.get("name"))
+                    try:
+                        from ..utils import get_name_by_token, save_user_data
+                        name = get_name_by_token(bot_token)
+                        if name:
+                            cfg["renewal_reminder"] = {
+                                **reminder,
+                                "last_attempt_at": datetime.utcnow().isoformat() + "Z",
+                                "last_error": str(e)[:200],
+                            }
+                            save_user_data(name, cfg)
+                    except Exception:
+                        pass
         except Exception as e:
             logger.warning("Renewal scheduler error: %s", e)
         await asyncio.sleep(RENEWAL_CHECK_INTERVAL_SEC)
 
 
-def extend_valid_till_for_bot(bot_token: str, duration_days: int, order_id: str = "") -> bool:
-    """Extend valid_till by duration_days for the bot. Sets last_renewal_at, last_renewal_days, and appends to history.renewals + renewal_history. Returns True on success."""
+def extend_valid_till_for_bot(bot_token: str, duration_days: int, order_id: str = "", order: dict | None = None, details: dict | None = None) -> bool:
+    """Extend valid_till by duration_days from max(current validity, now). Idempotent by order_id."""
     from ..utils import get_name_by_token, save_user_data, load_user_data
-    from ..user_config import append_renewal_to_history
+    from ..user_config import append_renewal_record
+    from .renewals import parse_valid_till
     name = get_name_by_token(bot_token)
     if not name:
         return False
@@ -981,26 +1005,38 @@ def extend_valid_till_for_bot(bot_token: str, duration_days: int, order_id: str 
         if any(str((e or {}).get("order_id") or "") == str(order_id) for e in _renewals):
             logger.info("Renewal order %s already applied to bot — skipping duplicate extend", order_id)
             return True
-    vt = (cfg.get("valid_till") or "").strip()
-    if not vt:
-        return False
     try:
         from datetime import datetime as dt
-        # Support both DD/MM/YYYY and YYYY-MM-DD formats
-        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
-            try:
-                end = dt.strptime(vt, fmt)
-                break
-            except ValueError:
-                continue
-        else:
+        vt = (cfg.get("valid_till") or "").strip()
+        current_end = parse_valid_till(vt)
+        if current_end is None:
             return False
-        end = end + timedelta(days=duration_days)
+        now_dt = dt.utcnow()
+        previous_vt = current_end.strftime("%d/%m/%Y")
+        base_end = max(current_end, now_dt)
+        end = base_end + timedelta(days=duration_days)
         cfg["valid_till"] = end.strftime("%d/%m/%Y")
         now_iso = dt.utcnow().isoformat() + "Z"
         cfg["last_renewal_at"] = now_iso
         cfg["last_renewal_days"] = duration_days
-        append_renewal_to_history(cfg, at=now_iso, days=duration_days, order_id=order_id, source="renewal")
+        order = order or {}
+        details = details or {}
+        append_renewal_record(cfg, {
+            "at": now_iso,
+            "confirmed_at": now_iso,
+            "days": duration_days,
+            "duration": f"{duration_days}d",
+            "days_added": duration_days,
+            "order_id": str(order_id),
+            "source": "renewal",
+            "amount": order.get("amount_usd", ""),
+            "currency": order.get("fiat_currency") or order.get("currency") or "USD",
+            "pay_currency": order.get("pay_currency") or details.get("pay_currency") or "",
+            "payment_id": order.get("payment_id") or "",
+            "previous_valid_till": previous_vt,
+            "new_valid_till": cfg["valid_till"],
+            "pricing_source": order.get("pricing_source") or "",
+        })
         # Reset free replacement quota on renewal
         try:
             from ..replacement import _reset_free_replacements_on_renewal
@@ -1015,6 +1051,14 @@ def extend_valid_till_for_bot(bot_token: str, duration_days: int, order_id: str 
         except Exception:
             pass
         save_user_data(name, cfg)
+        if order_id:
+            update_order(order_id, {
+                "applied": True,
+                "applied_at": now_iso,
+                "confirmed_at": now_iso,
+                "old_valid_till": previous_vt,
+                "new_valid_till": cfg["valid_till"],
+            })
         return True
     except Exception:
         return False

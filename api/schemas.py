@@ -49,6 +49,7 @@ class BotCreateRequest(BaseModel):
     group_file: str = "Starter.txt"
     valid_till: str
     renewal_price: float = 0.0
+    renewal_prices: Optional[dict[str, Optional[float]]] = None
     plan_name: str = "Custom"
     skip_health_check: bool = False
     skip_chatlist_join: bool = False
@@ -62,6 +63,7 @@ class BotUpdateRequest(BaseModel):
     message_mode: Optional[str] = None
     message_text: Optional[str] = None
     post_links: Optional[list[str]] = None
+    renewal_prices: Optional[dict[str, Optional[float]]] = None
 
 
 class BotControlResponse(BaseModel):

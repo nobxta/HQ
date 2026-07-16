@@ -964,6 +964,7 @@ async def _core_create_adbot_async(
             suffix += 1
         plan_name = str(form.get("plan_name") or "Custom").strip()
         renewal_price = str(form.get("renewal_price") or "0").strip()
+        renewal_prices = form.get("renewal_prices") if isinstance(form.get("renewal_prices"), dict) else {"7d": None, "30d": None}
         plan_mode = str(form.get("mode") or "Starter").strip().capitalize()
         session_count_val = int(form.get("sessions_count") or len(assigned))
         authorized = []
@@ -1006,6 +1007,11 @@ async def _core_create_adbot_async(
             "last_cycle_time": {},
             "plan_name": plan_name,
             "renewal_price": renewal_price,
+            "legacy_renewal_price": renewal_price if renewal_price not in ("", "0", "0.0") else "",
+            "renewal_prices": {
+                "7d": renewal_prices.get("7d"),
+                "30d": renewal_prices.get("30d"),
+            },
             "plan_mode": plan_mode,
             "session_count": session_count_val,
             "plan": plan,

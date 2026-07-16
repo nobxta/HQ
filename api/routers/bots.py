@@ -151,6 +151,10 @@ async def create_bot(body: BotCreateRequest):
         "group_file": body.group_file,
         "valid_till": body.valid_till,
         "renewal_price": body.renewal_price,
+        "renewal_prices": {
+            "7d": (body.renewal_prices or {}).get("7d") if body.renewal_prices else None,
+            "30d": (body.renewal_prices or {}).get("30d") if body.renewal_prices else None,
+        },
         "plan_name": body.plan_name,
         "skip_health_check": body.skip_health_check,
         "skip_chatlist_join": body.skip_chatlist_join,
@@ -211,6 +215,22 @@ async def update_bot(name: str, body: BotUpdateRequest):
         updated = True
     if body.post_links is not None:
         cfg["post_links"] = [str(x).strip() for x in body.post_links if x and str(x).strip()][:10]
+        updated = True
+    if body.renewal_prices is not None:
+        def _clean(v):
+            if v in (None, ""):
+                return None
+            try:
+                n = float(v)
+            except (TypeError, ValueError):
+                raise HTTPException(400, "Renewal override must be a positive number or null")
+            if n <= 0:
+                return None
+            return round(n, 2)
+        cfg["renewal_prices"] = {
+            "7d": _clean(body.renewal_prices.get("7d")),
+            "30d": _clean(body.renewal_prices.get("30d")),
+        }
         updated = True
 
     if updated:

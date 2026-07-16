@@ -51,6 +51,7 @@ from .storage import (
     temppay_remove_by_user_id,
 )
 from .payment import create_invoice, check_payment_status
+from .renewals import resolve_renewal_price
 
 logger = logging.getLogger(__name__)
 
@@ -799,8 +800,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         bot_token = order.get("bot_token")
         name = get_name_by_token(bot_token) if bot_token else None
         cfg = load_user_data(name) if name else None
-        renewal_price = float(cfg.get("renewal_price") or order.get("amount_usd") or 0)
-        amount = renewal_price * (duration_days / 30.0) if duration_days < 30 else renewal_price
+        try:
+            price = resolve_renewal_price(cfg or {}, duration_days)
+            amount = float(price["amount"])
+        except Exception:
+            amount = 0.0
         _shop_state[user_id] = {"step": "renewal_crypto", "parent_order_id": parent_order_id, "duration_days": duration_days, "amount_usd": amount, "data": {}}
         keyboard = InlineKeyboardMarkup([
             [_coin_button("BTC", f"shop_renew_crypto:{parent_order_id}:{duration_days}:BTC"), _coin_button("ETH", f"shop_renew_crypto:{parent_order_id}:{duration_days}:ETH")],
@@ -842,8 +846,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         from ..utils import get_name_by_token, load_user_data
         name = get_name_by_token(parent.get("bot_token") or "")
         cfg = load_user_data(name) if name else {}
-        renewal_price = float(cfg.get("renewal_price") or parent.get("amount_usd") or 0)
-        amount = renewal_price * (duration_days / 30.0) if duration_days < 30 else renewal_price
+        try:
+            price = resolve_renewal_price(cfg or {}, duration_days)
+            amount = float(price["amount"])
+        except Exception:
+            text, entities = build_emoji_message("This renewal duration is unavailable for your plan. Please contact support.", "failed")
+            await q.edit_message_text(text, entities=entities)
+            return
         rev_order = create_renewal_order(
             parent_order_id=parent_order_id,
             user_id=user_id,
@@ -852,12 +861,21 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             payment_id="",
             currency=internal_code,
             invoice_url=None,
+            bot_token=(parent.get("bot_token") or "").strip(),
+            bot_name=(cfg or {}).get("name", ""),
+            plan_id=(cfg or {}).get("plan_name") or ((cfg or {}).get("plan") or {}).get("name") or "",
+            plan_name=(cfg or {}).get("plan_name") or ((cfg or {}).get("plan") or {}).get("name") or "",
+            plan_mode=(cfg or {}).get("mode") or (cfg or {}).get("plan_mode") or "",
+            fiat_currency=price["currency"],
+            pricing_source=price["pricing_source"],
+            old_valid_till=(cfg or {}).get("valid_till") or "",
+            new_valid_till_preview=price["new_valid_till_preview"],
         )
         if getattr(config, "PAYMENT_DEV_MODE", False):
             from .workers import extend_valid_till_for_bot
             now = datetime.utcnow().isoformat() + "Z"
             parent_token = (parent.get("bot_token") or "").strip()
-            if parent_token and extend_valid_till_for_bot(parent_token, duration_days, rev_order.get("order_id", "")):
+            if parent_token and extend_valid_till_for_bot(parent_token, duration_days, rev_order.get("order_id", ""), order=rev_order, details={"pay_currency": internal_code}):
                 # State machine requires payment_waiting → paid → completed (no direct jump).
                 update_order_status(rev_order["order_id"], "paid", paid_at=now)
                 update_order_status(rev_order["order_id"], "completed", paid_at=now)
@@ -918,8 +936,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         from ..utils import get_name_by_token, load_user_data
         name = get_name_by_token(parent.get("bot_token") or "")
         cfg = load_user_data(name) if name else {}
-        renewal_price = float(cfg.get("renewal_price") or parent.get("amount_usd") or 0)
-        amount = renewal_price * (duration_days / 30.0) if duration_days < 30 else renewal_price
+        try:
+            price = resolve_renewal_price(cfg or {}, duration_days)
+            amount = float(price["amount"])
+        except Exception:
+            text, entities = build_emoji_message("This renewal duration is unavailable for your plan. Please contact support.", "failed")
+            await q.edit_message_text(text, entities=entities)
+            return
         rev_order = create_renewal_order(
             parent_order_id=parent_order_id,
             user_id=user_id,
@@ -928,12 +951,21 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             payment_id="",
             currency=internal_code,
             invoice_url=None,
+            bot_token=(parent.get("bot_token") or "").strip(),
+            bot_name=(cfg or {}).get("name", ""),
+            plan_id=(cfg or {}).get("plan_name") or ((cfg or {}).get("plan") or {}).get("name") or "",
+            plan_name=(cfg or {}).get("plan_name") or ((cfg or {}).get("plan") or {}).get("name") or "",
+            plan_mode=(cfg or {}).get("mode") or (cfg or {}).get("plan_mode") or "",
+            fiat_currency=price["currency"],
+            pricing_source=price["pricing_source"],
+            old_valid_till=(cfg or {}).get("valid_till") or "",
+            new_valid_till_preview=price["new_valid_till_preview"],
         )
         if getattr(config, "PAYMENT_DEV_MODE", False):
             from .workers import extend_valid_till_for_bot
             now = datetime.utcnow().isoformat() + "Z"
             parent_token = (parent.get("bot_token") or "").strip()
-            if parent_token and extend_valid_till_for_bot(parent_token, duration_days, rev_order.get("order_id", "")):
+            if parent_token and extend_valid_till_for_bot(parent_token, duration_days, rev_order.get("order_id", ""), order=rev_order, details={"pay_currency": internal_code}):
                 # State machine requires payment_waiting → paid → completed (no direct jump).
                 update_order_status(rev_order["order_id"], "paid", paid_at=now)
                 update_order_status(rev_order["order_id"], "completed", paid_at=now)

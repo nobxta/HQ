@@ -382,7 +382,16 @@ def _expiry_from_created(created_at_iso: str, hours: int = 12) -> str:
         return ""
 
 
-def create_renewal_order(parent_order_id: str, user_id: int, duration_days: int, amount_usd: float, payment_id: str, currency: str, invoice_url: str | None = None) -> dict[str, Any]:
+def create_renewal_order(
+    parent_order_id: str,
+    user_id: int,
+    duration_days: int,
+    amount_usd: float,
+    payment_id: str,
+    currency: str,
+    invoice_url: str | None = None,
+    **metadata: Any,
+) -> dict[str, Any]:
     """Create a renewal order (status payment_waiting). Stores created_at, expiry_time (created_at + 12h), next_poll_at set by worker."""
     order_id = str(uuid.uuid4())[:12]
     now = datetime.utcnow().isoformat() + "Z"
@@ -400,7 +409,9 @@ def create_renewal_order(parent_order_id: str, user_id: int, duration_days: int,
         "expiry_time": _expiry_from_created(now, 12),
         "paid_at": "",
         "invoice_url": invoice_url or "",
+        "applied": False,
     }
+    order.update({k: v for k, v in metadata.items() if v is not None})
     with _orders_lock:
         orders = _load_orders_raw()
         orders.append(order)

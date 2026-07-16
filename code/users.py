@@ -14,7 +14,7 @@ import time
 import zipfile
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
@@ -388,6 +388,9 @@ CB_BACK_CONFIG = b"back_cfg"
 CB_CFG_RENEWAL = b"cfg_renewal"
 CB_CFG_RENEWAL_CUSTOM = b"cfg_rnw_custom"
 CB_CFG_VALID_TILL = b"cfg_valid_till"
+PREFIX_RENEW_OPEN = b"renew_open"
+PREFIX_RENEW_DUR = b"renew_dur:"
+PREFIX_RENEW_CRY = b"renew_cry:"
 CB_CFG_VALID_TILL_CUSTOM = b"cfg_vt_custom"
 CB_CFG_MESSAGE = b"cfg_message"
 CB_CFG_MSG_MODE_TEXT = b"cfg_msg_t"   # set message_mode text (Config)
@@ -5105,8 +5108,9 @@ async def create_user_bot(bot_token: str) -> None:
         if not _is_authorized(event.sender_id, cfg):
             await event.answer("Not authorized.", alert=True)
             return
-        if _is_expired(cfg):
-            if event.data == CB_EXTEND:
+        raw = event.data
+        if _is_expired(cfg) and not raw.startswith(b"renew_"):
+            if raw == CB_EXTEND:
                 await event.answer()
                 contact = getattr(config, "ADMIN_CONTACT", "admin")
                 handle = f"@{contact}" if contact and not str(contact).startswith("@") else (contact or "@admin")
@@ -5121,7 +5125,111 @@ async def create_user_bot(bot_token: str) -> None:
                 except MessageNotModifiedError:
                     pass
             return
-        raw = event.data
+        if raw.startswith(PREFIX_RENEW_OPEN) or raw == CB_EXTEND:
+            await event.answer()
+            try:
+                from .shop.renewals import effective_renewal_options
+                opts = effective_renewal_options(cfg or {})
+                seven = opts["options"].get("7d", {})
+                thirty = opts["options"].get("30d", {})
+                rows = []
+                if seven.get("available"):
+                    rows.append([Button.inline(f"7 Days - ${seven.get('price')}", PREFIX_RENEW_DUR + b"7")])
+                if thirty.get("available"):
+                    rows.append([Button.inline(f"30 Days - ${thirty.get('price')}", PREFIX_RENEW_DUR + b"30")])
+                if not rows:
+                    await event.edit("Renewal is unavailable for this plan. Please contact support.", buttons=_menu_buttons_expired() if _is_expired(cfg) else _menu_buttons())
+                    return
+                await event.edit(
+                    "Renew your AdBot.\n\nChoose validity. Any remaining time is preserved.",
+                    buttons=rows,
+                )
+            except Exception:
+                await event.edit("Renewal is temporarily unavailable. Please try again later.")
+            return
+        if raw.startswith(PREFIX_RENEW_DUR):
+            await event.answer()
+            duration_s = raw.split(b":", 1)[1].decode("utf-8", "ignore")
+            duration_days = 30 if duration_s == "30" else 7
+            try:
+                from .shop.renewals import resolve_renewal_price
+                price = resolve_renewal_price(cfg or {}, duration_days)
+            except Exception:
+                await event.edit("This renewal duration is unavailable for your plan.")
+                return
+            rows = [
+                [Button.inline("BTC", PREFIX_RENEW_CRY + f"{duration_days}:BTC".encode()), Button.inline("ETH", PREFIX_RENEW_CRY + f"{duration_days}:ETH".encode())],
+                [Button.inline("USDT TRC20", PREFIX_RENEW_CRY + f"{duration_days}:USDT_TRC20".encode()), Button.inline("USDT BEP20", PREFIX_RENEW_CRY + f"{duration_days}:USDT_BEP20".encode())],
+                [Button.inline("USDC ERC20", PREFIX_RENEW_CRY + f"{duration_days}:USDC_ERC20".encode()), Button.inline("LTC", PREFIX_RENEW_CRY + f"{duration_days}:LTC".encode())],
+                [Button.inline("Back", PREFIX_RENEW_OPEN)],
+            ]
+            await event.edit(f"Renewal total: ${price['amount']}\nChoose a cryptocurrency:", buttons=rows)
+            return
+        if raw.startswith(PREFIX_RENEW_CRY):
+            await event.answer()
+            try:
+                payload = raw.split(b":", 1)[1].decode("utf-8", "ignore")
+                duration_s, currency = payload.split(":", 1)
+                duration_days = 30 if duration_s == "30" else 7
+                currency = currency.strip().upper()
+                from .shop.renewals import resolve_renewal_price
+                from .shop.storage import create_renewal_order, update_order, update_order_status
+                from .shop.payment import create_invoice
+                from .shop.workers import extend_valid_till_for_bot
+                price = resolve_renewal_price(cfg or {}, duration_days)
+                rev_order = create_renewal_order(
+                    parent_order_id="",
+                    user_id=event.sender_id,
+                    duration_days=duration_days,
+                    amount_usd=float(price["amount"]),
+                    payment_id="",
+                    currency=currency,
+                    bot_token=bot_token,
+                    bot_name=(cfg or {}).get("name", ""),
+                    plan_id=(cfg or {}).get("plan_name") or ((cfg or {}).get("plan") or {}).get("name") or "",
+                    plan_name=(cfg or {}).get("plan_name") or ((cfg or {}).get("plan") or {}).get("name") or "",
+                    plan_mode=(cfg or {}).get("mode") or (cfg or {}).get("plan_mode") or "",
+                    fiat_currency=price["currency"],
+                    pricing_source=price["pricing_source"],
+                    old_valid_till=(cfg or {}).get("valid_till") or "",
+                    new_valid_till_preview=price["new_valid_till_preview"],
+                    payment_chat_id=event.chat_id,
+                    payment_message_id=event.message.id,
+                    notification_bot_token=bot_token,
+                )
+                if getattr(config, "PAYMENT_DEV_MODE", False):
+                    now = datetime.utcnow().isoformat() + "Z"
+                    if extend_valid_till_for_bot(bot_token, duration_days, rev_order.get("order_id", ""), order=rev_order, details={"pay_currency": currency}):
+                        update_order_status(rev_order["order_id"], "paid", paid_at=now)
+                        update_order_status(rev_order["order_id"], "completed", paid_at=now)
+                        await event.edit("Renewal confirmed.\n\nYour AdBot validity has been extended.", buttons=_menu_buttons())
+                    return
+                invoice = create_invoice(float(price["amount"]), currency, rev_order["order_id"], f"AdBot renewal {duration_days} days")
+                if invoice.get("_invoice_failed"):
+                    update_order(rev_order["order_id"], {"status": "invoice_failed"})
+                    await event.edit("Couldn't generate this invoice. Pick another coin or try again.", buttons=[[Button.inline("Back", PREFIX_RENEW_DUR + str(duration_days).encode())]])
+                    return
+                update_order(rev_order["order_id"], {
+                    "payment_id": invoice.get("payment_id", ""),
+                    "pay_address": invoice.get("pay_address") or "",
+                    "pay_amount": invoice.get("pay_amount"),
+                    "pay_currency": (invoice.get("pay_currency") or currency).upper(),
+                    "invoice_expiry": invoice.get("invoice_expiry") or "",
+                    "invoice_expires_at": invoice.get("invoice_expires_at") or "",
+                })
+                await event.edit(
+                    "Renewal invoice\n\n"
+                    f"Duration: {duration_days} days\n"
+                    f"Fiat price: ${price['amount']}\n"
+                    f"Send exactly: `{invoice.get('pay_amount')}` {invoice.get('pay_currency') or currency}\n"
+                    f"Address:\n`{invoice.get('pay_address')}`\n\n"
+                    "Payment status updates automatically after confirmation.",
+                    parse_mode="md",
+                )
+            except Exception as exc:
+                logger.warning("Controller renewal callback failed: %s", exc)
+                await event.edit("Renewal is temporarily unavailable. Please try again later.")
+            return
         if raw in (CB_AR_MENU, CB_AR_TOGGLE, CB_AR_EDIT, CB_AR_RECENT, CB_AR_BACK):
             await event.answer()
             if raw == CB_AR_BACK:

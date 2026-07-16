@@ -190,6 +190,7 @@ interface WizardData {
   group_file: string;
   valid_till: string;
   renewal_price: number;
+  renewal_prices: { "7d": number | null; "30d": number | null };
   skip_health_check: boolean;
   skip_chatlist_join: boolean;
 }
@@ -224,7 +225,7 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
   const [data, setData] = useState<WizardData>({
     name: "", token_mode: "pool", bot_token: "", bot_username: "", sessions_count: 1,
     cycle: 300, gap: 5, mode: "starter", group_file: "",
-    valid_till: "", renewal_price: 0,
+    valid_till: "", renewal_price: 0, renewal_prices: { "7d": null, "30d": null },
     skip_health_check: false, skip_chatlist_join: false,
   });
   const [error, setError] = useState("");
@@ -275,7 +276,7 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
       cleanup();
       setStep("loading");
       setCtx(null);
-      setData({ name: "", token_mode: "pool", bot_token: "", bot_username: "", sessions_count: 1, cycle: 300, gap: 5, mode: "starter", group_file: "", valid_till: "", renewal_price: 0, skip_health_check: false, skip_chatlist_join: false });
+      setData({ name: "", token_mode: "pool", bot_token: "", bot_username: "", sessions_count: 1, cycle: 300, gap: 5, mode: "starter", group_file: "", valid_till: "", renewal_price: 0, renewal_prices: { "7d": null, "30d": null }, skip_health_check: false, skip_chatlist_join: false });
       setError("");
       setProgressLines([]);
       setResultMsg("");
@@ -341,6 +342,7 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
         group_file: data.group_file,
         valid_till: isoToDdmmyyyy(data.valid_till),
         renewal_price: data.renewal_price,
+        renewal_prices: data.renewal_prices,
         plan_name: "Custom",
         skip_health_check: data.skip_health_check,
         skip_chatlist_join: data.skip_chatlist_join,
@@ -714,7 +716,7 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
     if (step === "validity") {
       return (
         <>
-          <StepHeader title="Validity & Price" subtitle="Set expiration date and renewal price" />
+          <StepHeader title="Validity & Renewal" subtitle="Set expiration date and optional renewal overrides" />
           <div className="space-y-4">
             <Input
               label="Valid Until" id="cw-valid" type="date"
@@ -722,13 +724,17 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
               error={!data.valid_till && error ? error : undefined}
               autoFocus
             />
-            <div>
-              <label className="block text-sm font-medium text-dark-300 mb-1.5">Renewal Price (USD)</label>
-              <div className="flex items-center gap-2">
-                <span className="text-dark-400 text-sm">$</span>
-                <input type="number" min={0} step={0.01} value={data.renewal_price}
-                  onChange={(e) => update({ renewal_price: Math.max(0, Number(e.target.value)) })}
-                  className="w-32 rounded-lg border border-dark-600 bg-dark-800 px-3 py-2 text-sm text-dark-100 focus:outline-none focus:ring-2 focus:ring-accent/40"
+            <div className="rounded-lg border border-dark-700 bg-dark-800/50 p-3">
+              <p className="text-sm font-medium text-dark-200">Renewal price overrides</p>
+              <p className="text-xs text-dark-500 mt-1">Leave blank to use the plan default price.</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+                <Input label="7-day override (USD)" type="number" min={0} step={0.01}
+                  value={data.renewal_prices["7d"] ?? ""}
+                  onChange={(e) => update({ renewal_prices: { ...data.renewal_prices, "7d": e.target.value === "" ? null : Math.max(0, Number(e.target.value)) } })}
+                />
+                <Input label="30-day override (USD)" type="number" min={0} step={0.01}
+                  value={data.renewal_prices["30d"] ?? ""}
+                  onChange={(e) => update({ renewal_prices: { ...data.renewal_prices, "30d": e.target.value === "" ? null : Math.max(0, Number(e.target.value)) } })}
                 />
               </div>
             </div>
@@ -753,7 +759,7 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
         ["Mode", data.mode.charAt(0).toUpperCase() + data.mode.slice(1)],
         ["Group File", data.group_file || "—"],
         ["Valid Until", data.valid_till],
-        ["Renewal", data.renewal_price > 0 ? `$${data.renewal_price}` : "—"],
+        ["Renewal", `7d ${data.renewal_prices["7d"] ? `$${data.renewal_prices["7d"]}` : "plan default"} / 30d ${data.renewal_prices["30d"] ? `$${data.renewal_prices["30d"]}` : "plan default"}`],
         ["Health check", data.skip_health_check ? "Skipped" : "Enabled"],
         ["Chatlist auto-join", data.skip_chatlist_join ? "Skipped" : "Enabled"],
       ];

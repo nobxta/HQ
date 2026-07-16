@@ -126,6 +126,37 @@ class PortalRenewRequest(BaseModel):
     currency: str  # e.g. "BTC", "USDT_TRC20"
 
 
+def _parse_order_dt(value: object):
+    from datetime import datetime
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw.replace("Z", "").split(".")[0], "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return None
+
+
+def _safe_renewal_order(order: dict) -> dict:
+    return {
+        "status": order.get("status", "payment_waiting"),
+        "order_id": order.get("order_id", ""),
+        "amount_usd": order.get("amount_usd", 0),
+        "fiat_currency": order.get("fiat_currency", "USD"),
+        "pricing_source": order.get("pricing_source", ""),
+        "pay_amount": order.get("pay_amount", ""),
+        "pay_currency": order.get("pay_currency", ""),
+        "pay_address": order.get("pay_address", ""),
+        "invoice_expires_at": order.get("invoice_expires_at", "") or order.get("expiry_time", ""),
+        "duration_days": order.get("duration_days", 0),
+        "old_valid_till": order.get("old_valid_till", ""),
+        "new_valid_till": order.get("new_valid_till", "") or order.get("new_valid_till_preview", ""),
+        "new_valid_till_preview": order.get("new_valid_till_preview", ""),
+        "payment_id": order.get("payment_id", ""),
+        "reused": True,
+    }
+
+
 class PortalUpdateAccountProfile(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
@@ -383,6 +414,7 @@ async def portal_get_bot(bot_name: str, telegram_id: int = Query(...)):
     detail["post_links"] = cfg.get("post_links", [])
     detail["web_token"] = cfg.get("web_token", "")
     detail["renewal_price"] = cfg.get("renewal_price", "0")
+    detail["renewal_prices"] = cfg.get("renewal_prices") or {"7d": None, "30d": None}
     # DM auto-reply config + a server-composed preview so the UI/bot render identical text.
     # The footer is admin-managed (users can't edit it); read the live value, not the default.
     from code.users import compose_autoreply, DM_AUTOREPLY_DEFAULT
@@ -422,7 +454,7 @@ async def portal_get_logs(bot_name: str, telegram_id: int = Query(...), lines: i
     # lines=0 (or a count >= the file size) returns the WHOLE log — used by the portal's
     # "Load all" so the user can see every Successful/Failed entry, not just a recent tail.
     # The portal defaults to a small tail to stay light; the full read is opt-in.
-    await _get_user_bot(telegram_id, bot_name)
+    token, _cfg = await _get_user_bot(telegram_id, bot_name)
     from code.config import DATA_LOGS_DIR
     from code.utils import name_to_filename
     log_path = DATA_LOGS_DIR / f"{bot_name}.log"
@@ -441,7 +473,7 @@ async def portal_get_logs(bot_name: str, telegram_id: int = Query(...), lines: i
 
 @router.get("/bot/{bot_name}/orders")
 async def portal_get_orders(bot_name: str, telegram_id: int = Query(...)):
-    await _get_user_bot(telegram_id, bot_name)
+    token, _cfg = await _get_user_bot(telegram_id, bot_name)
     orders = await wrappers.search_orders(user_id=telegram_id)
     return {"orders": [serialize_order(o) for o in orders]}
 
@@ -736,6 +768,51 @@ async def portal_get_currencies():
     return {"main": main, "stablecoins": stablecoins, "more": more}
 
 
+@router.get("/bot/{bot_name}/renewal-options")
+async def portal_renewal_options(bot_name: str, telegram_id: int = Query(...)):
+    """Return server-calculated renewal options for the authenticated user's bot."""
+    token, cfg = await _get_user_bot(telegram_id, bot_name)
+    from code.shop.renewals import effective_renewal_options, parse_valid_till
+    from code.shop.storage import load_orders
+    import datetime as _dt
+    opts = effective_renewal_options(cfg)
+    current = parse_valid_till(cfg.get("valid_till"))
+    hours_left = None
+    if current:
+        hours_left = int((current - _dt.datetime.utcnow()).total_seconds() // 3600)
+    active_invoice = None
+    now_dt = _dt.datetime.utcnow()
+    for order in reversed(load_orders()):
+        if order.get("order_type") != "renewal":
+            continue
+        if order.get("bot_token") != token:
+            continue
+        if order.get("user_id") != telegram_id and telegram_id != 0:
+            continue
+        if order.get("status") not in ("payment_waiting", "confirming"):
+            continue
+        if not order.get("pay_address"):
+            continue
+        exp = _parse_order_dt(order.get("invoice_expires_at") or order.get("expiry_time"))
+        if exp and now_dt > exp:
+            continue
+        active_invoice = _safe_renewal_order(order)
+        break
+    return {
+        "bot": {
+            "name": cfg.get("name", bot_name),
+            "plan_name": cfg.get("plan_name") or (cfg.get("plan") or {}).get("name") or "Custom",
+            "mode": cfg.get("mode") or cfg.get("plan_mode") or "",
+            "sessions_count": len(cfg.get("sessions") or []),
+            "state": cfg.get("state", "stopped"),
+            "valid_till": cfg.get("valid_till") or "",
+            "hours_left": hours_left,
+        },
+        "active_invoice": active_invoice,
+        **opts,
+    }
+
+
 @router.post("/bot/{bot_name}/renew")
 async def portal_create_renewal(bot_name: str, telegram_id: int = Query(...), body: PortalRenewRequest = ...):
     """Create a renewal order with NowPayments invoice. Returns payment details."""
@@ -748,15 +825,32 @@ async def portal_create_renewal(bot_name: str, telegram_id: int = Query(...), bo
     if not body.currency:
         raise HTTPException(400, "Currency is required")
 
-    # Get renewal price from bot config
-    renewal_price = float(cfg.get("renewal_price", 0))
-    if renewal_price <= 0:
-        raise HTTPException(400, "No renewal price configured for this bot")
-
-    amount = renewal_price * (body.duration_days / 30.0) if body.duration_days < 30 else renewal_price
+    from code.shop.renewals import resolve_renewal_price
+    try:
+        price = resolve_renewal_price(cfg, body.duration_days)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    amount = price["amount"]
 
     # Find parent completed order for this bot
     from code.shop.storage import load_orders, create_renewal_order, update_order
+    from datetime import datetime as _dt
+    for existing in reversed(load_orders()):
+        if existing.get("order_type") != "renewal":
+            continue
+        if existing.get("bot_token") != token:
+            continue
+        if existing.get("user_id") != telegram_id and telegram_id != 0:
+            continue
+        if existing.get("status") not in ("payment_waiting", "confirming"):
+            continue
+        if not existing.get("pay_address"):
+            continue
+        exp = _parse_order_dt(existing.get("invoice_expires_at") or existing.get("expiry_time"))
+        if exp and _dt.utcnow() > exp:
+            continue
+        return _safe_renewal_order(existing)
+
     parent_order_id = ""
     for o in load_orders():
         if o.get("bot_token") == token and o.get("status") == "completed":
@@ -768,10 +862,19 @@ async def portal_create_renewal(bot_name: str, telegram_id: int = Query(...), bo
         parent_order_id=parent_order_id,
         user_id=telegram_id,
         duration_days=body.duration_days,
-        amount_usd=amount,
+        amount_usd=float(amount),
         payment_id="",
         currency=body.currency,
         invoice_url=None,
+        bot_token=token,
+        bot_name=name,
+        plan_id=(cfg.get("plan_name") or (cfg.get("plan") or {}).get("name") or ""),
+        plan_name=(cfg.get("plan_name") or (cfg.get("plan") or {}).get("name") or ""),
+        plan_mode=(cfg.get("mode") or cfg.get("plan_mode") or ""),
+        fiat_currency=price["currency"],
+        pricing_source=price["pricing_source"],
+        old_valid_till=cfg.get("valid_till") or "",
+        new_valid_till_preview=price["new_valid_till_preview"],
     )
 
     # Dev mode: auto-complete
@@ -781,7 +884,7 @@ async def portal_create_renewal(bot_name: str, telegram_id: int = Query(...), bo
         from code.shop.storage import update_order_status
         from datetime import datetime
         now = datetime.utcnow().isoformat() + "Z"
-        if token and extend_valid_till_for_bot(token, body.duration_days, rev_order.get("order_id", "")):
+        if token and extend_valid_till_for_bot(token, body.duration_days, rev_order.get("order_id", ""), order=rev_order, details={"pay_currency": body.currency}):
             # Respect the order state machine: payment_waiting → paid → completed.
             update_order_status(rev_order["order_id"], "paid", paid_at=now)
             update_order_status(rev_order["order_id"], "completed", paid_at=now)
@@ -797,7 +900,7 @@ async def portal_create_renewal(bot_name: str, telegram_id: int = Query(...), bo
     # Create NowPayments invoice
     from code.shop.payment import create_invoice
     invoice = create_invoice(
-        amount_usd=amount,
+        amount_usd=float(amount),
         currency=body.currency,
         order_id=rev_order["order_id"],
         description=f"AdBot renewal {body.duration_days} days",
@@ -826,7 +929,10 @@ async def portal_create_renewal(bot_name: str, telegram_id: int = Query(...), bo
     return {
         "status": "awaiting_payment",
         "order_id": rev_order["order_id"],
-        "amount_usd": amount,
+        "amount_usd": float(amount),
+        "fiat_currency": price["currency"],
+        "pricing_source": price["pricing_source"],
+        "new_valid_till_preview": price["new_valid_till_preview"],
         "pay_amount": invoice.get("pay_amount"),
         "pay_currency": (invoice.get("pay_currency") or body.currency).upper(),
         "pay_address": invoice.get("pay_address") or "",
@@ -838,13 +944,15 @@ async def portal_create_renewal(bot_name: str, telegram_id: int = Query(...), bo
 @router.get("/bot/{bot_name}/renewal-status/{order_id}")
 async def portal_renewal_status(bot_name: str, order_id: str, telegram_id: int = Query(...)):
     """Poll renewal order payment status."""
-    await _get_user_bot(telegram_id, bot_name)
+    token, _cfg = await _get_user_bot(telegram_id, bot_name)
     from code.shop.storage import get_order
     order = get_order(order_id)
     if not order:
         raise HTTPException(404, "Order not found")
     if order.get("user_id") != telegram_id and telegram_id != 0:
         raise HTTPException(403, "Not your order")
+    if order.get("order_type") == "renewal" and (order.get("bot_token") or "") and order.get("bot_token") != token:
+        raise HTTPException(403, "Not your renewal order")
 
     status = order.get("status", "unknown")
     return {
@@ -852,8 +960,39 @@ async def portal_renewal_status(bot_name: str, order_id: str, telegram_id: int =
         "status": status,
         "paid_at": order.get("paid_at", ""),
         "amount_usd": order.get("amount_usd", 0),
+        "fiat_currency": order.get("fiat_currency", "USD"),
+        "pay_amount": order.get("pay_amount", ""),
+        "pay_currency": order.get("pay_currency", ""),
+        "pay_address": order.get("pay_address", ""),
+        "amount_received": order.get("amount_received", 0),
+        "invoice_expires_at": order.get("invoice_expires_at", ""),
         "duration_days": order.get("duration_days", 0),
+        "old_valid_till": order.get("old_valid_till", ""),
+        "new_valid_till": order.get("new_valid_till", "") or order.get("new_valid_till_preview", ""),
+        "payment_id": order.get("payment_id", ""),
     }
+
+
+@router.post("/bot/{bot_name}/renewal/{order_id}/cancel")
+async def portal_cancel_renewal(bot_name: str, order_id: str, telegram_id: int = Query(...)):
+    """Cancel an unpaid renewal invoice so the user can generate a fresh one."""
+    token, _cfg = await _get_user_bot(telegram_id, bot_name)
+    from code.shop.storage import get_order, update_order_status
+    order = get_order(order_id)
+    if not order:
+        raise HTTPException(404, "Order not found")
+    if order.get("order_type") != "renewal":
+        raise HTTPException(400, "Not a renewal order")
+    if order.get("user_id") != telegram_id and telegram_id != 0:
+        raise HTTPException(403, "Not your order")
+    if (order.get("bot_token") or "") and order.get("bot_token") != token:
+        raise HTTPException(403, "Not your renewal order")
+    if order.get("status") != "payment_waiting":
+        raise HTTPException(400, "Only unpaid active invoices can be cancelled")
+    ok = update_order_status(order_id, "cancelled", cancelled_by="user", cancelled_at=__import__("datetime").datetime.utcnow().isoformat() + "Z")
+    if not ok:
+        raise HTTPException(400, "Could not cancel invoice")
+    return {"ok": True, "order_id": order_id, "status": "cancelled"}
 
 
 @router.get("/bot/{bot_name}/replacements")

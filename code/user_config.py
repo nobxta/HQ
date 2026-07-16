@@ -21,7 +21,8 @@ SCHEMA (target structure; legacy top-level keys are kept for compatibility):
   "plan_name": "...",
   "plan_mode": "Starter",
   "session_count": 2,
-  "renewal_price": "...",
+  "renewal_prices": {"7d": null, "30d": null},
+  "legacy_renewal_price": "...",
   "last_renewal_at": "...",
   "last_renewal_days": 0,
   "renewal_history": [...],
@@ -130,6 +131,17 @@ def migrate_user_config(data: dict[str, Any]) -> dict[str, Any]:
     plan.setdefault("gap", max(0, int(out.get("gap", 5))))
     plan.setdefault("session_count", max(1, int(out.get("session_count", 1))))
 
+    # --- renewal prices: singular renewal_price is legacy and ambiguous. Preserve it for
+    # rollback/debugging, but use per-duration overrides with null meaning plan default.
+    if "renewal_prices" not in out or not isinstance(out.get("renewal_prices"), dict):
+        out["renewal_prices"] = {"7d": None, "30d": None}
+    else:
+        rp = out["renewal_prices"]
+        rp.setdefault("7d", None)
+        rp.setdefault("30d", None)
+    if out.get("renewal_price") not in (None, "") and "legacy_renewal_price" not in out:
+        out["legacy_renewal_price"] = out.get("renewal_price")
+
     # --- history: only initialize missing; never replace existing non-empty ---
     if "history" not in out or not isinstance(out.get("history"), dict):
         out["history"] = {"purchases": [], "renewals": [], "session_replacements": []}
@@ -204,6 +216,13 @@ def ensure_legacy_compatibility(cfg: dict[str, Any]) -> None:
         cfg["session_count"] = plan["session_count"]
     if plan.get("name") is not None:
         cfg["plan_name"] = plan.get("name") or cfg.get("plan_name") or ""
+    if "renewal_prices" not in cfg or not isinstance(cfg.get("renewal_prices"), dict):
+        cfg["renewal_prices"] = {"7d": None, "30d": None}
+    else:
+        cfg["renewal_prices"].setdefault("7d", None)
+        cfg["renewal_prices"].setdefault("30d", None)
+    if cfg.get("renewal_price") not in (None, "") and "legacy_renewal_price" not in cfg:
+        cfg["legacy_renewal_price"] = cfg.get("renewal_price")
     hist = cfg.get("history")
     if isinstance(hist, dict):
         leg_renewals = cfg.get("renewal_history") or []
@@ -313,6 +332,22 @@ def append_renewal_to_history(cfg: dict[str, Any], at: str, days: int, order_id:
     cfg["renewal_history"].append(entry)
     if len(cfg["renewal_history"]) > 500:
         cfg["renewal_history"] = cfg["renewal_history"][-500:]
+
+
+def append_renewal_record(cfg: dict[str, Any], record: dict[str, Any]) -> None:
+    """Append a rich renewal record idempotently by order_id."""
+    hist = cfg.get("history")
+    if not isinstance(hist, dict):
+        cfg["history"] = {"purchases": [], "renewals": [], "session_replacements": []}
+        hist = cfg["history"]
+    hist.setdefault("renewals", [])
+    order_id = str(record.get("order_id") or "").strip()
+    if order_id and any(str((r or {}).get("order_id") or "").strip() == order_id for r in hist["renewals"] if isinstance(r, dict)):
+        return
+    hist["renewals"].append(dict(record))
+    if len(hist["renewals"]) > 500:
+        hist["renewals"] = hist["renewals"][-500:]
+    cfg["renewal_history"] = list(hist.get("renewals") or [])
 
 
 def append_session_replacement_to_history(
