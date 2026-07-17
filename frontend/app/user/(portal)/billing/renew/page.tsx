@@ -13,6 +13,7 @@ import {
   Clock,
   Coins,
   Copy,
+  Info,
   ReceiptText,
   RefreshCw,
 } from "lucide-react";
@@ -27,14 +28,14 @@ import { cn, formatDate, formatUSD } from "@/lib/utils";
 // Asset and network are ALWAYS stored separately so display code never has to
 // concatenate codes (which produced strings like "USDTTRC20").
 const PAYMENT_METHODS = [
-  { code: "USDT_TRC20", assetName: "Tether", assetCode: "USDT", networkName: "TRON", networkCode: "TRC20" },
-  { code: "USDT_BEP20", assetName: "Tether", assetCode: "USDT", networkName: "BNB Smart Chain", networkCode: "BEP20" },
-  { code: "USDT_ERC20", assetName: "Tether", assetCode: "USDT", networkName: "Ethereum", networkCode: "ERC20" },
-  { code: "BTC", assetName: "Bitcoin", assetCode: "BTC", networkName: "Bitcoin", networkCode: "Bitcoin" },
-  { code: "ETH", assetName: "Ethereum", assetCode: "ETH", networkName: "Ethereum", networkCode: "ERC20" },
-  { code: "LTC", assetName: "Litecoin", assetCode: "LTC", networkName: "Litecoin", networkCode: "Litecoin" },
-  { code: "TRX", assetName: "TRON", assetCode: "TRX", networkName: "TRON", networkCode: "TRC20" },
-  { code: "BNB", assetName: "BNB", assetCode: "BNB", networkName: "BNB Smart Chain", networkCode: "BEP20" },
+  { code: "BTC", assetName: "Bitcoin", assetCode: "BTC", networkName: "Bitcoin", networkCode: "Bitcoin", blurb: "Original cryptocurrency" },
+  { code: "SOL", assetName: "Solana", assetCode: "SOL", networkName: "Solana", networkCode: "Solana", blurb: "Fast network" },
+  { code: "ETH", assetName: "Ethereum", assetCode: "ETH", networkName: "Ethereum", networkCode: "ERC20", blurb: "Popular network" },
+  { code: "USDT_TRC20", assetName: "Tether", assetCode: "USDT", networkName: "TRON", networkCode: "TRC20", blurb: "Stablecoin" },
+  { code: "USDC_ERC20", assetName: "USD Coin", assetCode: "USDC", networkName: "Ethereum", networkCode: "ERC20", blurb: "USD-backed stablecoin" },
+  { code: "TRX", assetName: "TRON", assetCode: "TRX", networkName: "TRON", networkCode: "TRC20", blurb: "Tron network token" },
+  { code: "LTC", assetName: "Litecoin", assetCode: "LTC", networkName: "Litecoin", networkCode: "Litecoin", blurb: "Fast payments" },
+  { code: "XMR", assetName: "Monero", assetCode: "XMR", networkName: "Monero", networkCode: "Monero", blurb: "Privacy-focused" },
 ] as const;
 
 type Step = "duration" | "method" | "invoice" | "success";
@@ -44,6 +45,7 @@ type PaymentMethod = (typeof PAYMENT_METHODS)[number] | {
   assetCode: string;
   networkName: string;
   networkCode: string;
+  blurb?: string;
 };
 
 type Payment = {
@@ -78,6 +80,7 @@ export default function RenewalPage() {
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [copiedAmount, setCopiedAmount] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   // Order id we just cancelled/dismissed, so the "restore active invoice" effect below does not
   // immediately re-open it from the still-cached renewal-options response (the cancel race).
@@ -125,6 +128,19 @@ export default function RenewalPage() {
       setTimeout(() => setCopied(false), 1800);
     } catch {
       toast.error("Could not copy address");
+    }
+  };
+
+  const copyAmount = async () => {
+    const amt = invoice?.pay_amount;
+    if (amt === undefined || amt === null || amt === "") return;
+    try {
+      await navigator.clipboard.writeText(String(amt));
+      setCopiedAmount(true);
+      toast.success("Amount copied");
+      setTimeout(() => setCopiedAmount(false), 1800);
+    } catch {
+      toast.error("Could not copy amount");
     }
   };
 
@@ -304,6 +320,8 @@ export default function RenewalPage() {
                 now={now}
                 copied={copied}
                 onCopy={copyAddress}
+                copiedAmount={copiedAmount}
+                onCopyAmount={copyAmount}
                 onCheckStatus={() => requestStatus(false)}
                 checking={checking}
                 onChangeMethod={() => cancelInvoice("method")}
@@ -517,10 +535,12 @@ function PaymentMethodSelector({ selectedMethodCode, setSelectedMethodCode, summ
 }) {
   return (
     <div className="space-y-5">
-      <SectionTitle title="Choose payment method" text="Select the cryptocurrency and network you want to use." />
-      <RenewalOrderSummary summary={summary} />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <SectionTitle title="Choose payment method" text="Select the cryptocurrency you want to pay with." />
+        <RenewalOrderSummary summary={summary} />
+      </div>
 
-      <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Payment method">
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4" role="radiogroup" aria-label="Payment method">
         {PAYMENT_METHODS.map((method) => (
           <PaymentMethodCard
             key={method.code}
@@ -531,16 +551,15 @@ function PaymentMethodSelector({ selectedMethodCode, setSelectedMethodCode, summ
         ))}
       </div>
 
-      {selectedMethod && (
-        <PaymentWarning>
-          Send only {selectedMethod.assetCode} using the {formatNetworkLabel(selectedMethod)} network. Other assets or networks may result in permanent loss of funds.
-        </PaymentWarning>
-      )}
+      <div className="flex items-start gap-2.5 rounded-[14px] border border-[#262A3A] bg-[#151824] p-3.5 text-[13px] text-[#9298AD]">
+        <Info className="mt-0.5 h-4 w-4 shrink-0 text-[#7657FF]" aria-hidden="true" />
+        <p>Available networks and the payment address will be shown on the next step.</p>
+      </div>
 
       <StepActions
         secondaryLabel="Back"
         onSecondary={onBack}
-        primaryLabel={creating ? "Creating invoice…" : "Create payment invoice"}
+        primaryLabel={creating ? "Generating invoice…" : "Generate invoice"}
         onPrimary={onCreate}
         primaryDisabled={disabled || creating}
         primaryLoading={creating}
@@ -558,10 +577,12 @@ type RenewalSummary = {
 
 function RenewalOrderSummary({ summary }: { summary: RenewalSummary }) {
   return (
-    <div className="rounded-[14px] border border-[#262A3A] bg-[#151824] px-4 py-3">
-      <p className="text-sm font-bold text-[#F7F8FC]">{summary.planName} Plan · {summary.durationLabel}</p>
-      <p className="mt-1 text-sm text-[#D9DCEA]">{summary.amountUsd} USD</p>
-      <p className="text-[13px] text-[#9298AD]">Renews through {summary.newExpiry}</p>
+    <div className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 self-start rounded-full border border-[#262A3A] bg-[#151824] px-3.5 py-1.5 text-[13px]">
+      <span className="font-bold text-[#F7F8FC]">{summary.planName} Plan</span>
+      <span className="text-[#52586B]">•</span>
+      <span className="text-[#D9DCEA]">{summary.durationLabel}</span>
+      <span className="text-[#52586B]">•</span>
+      <span className="font-bold text-[#F7F8FC]">{summary.amountUsd}</span>
     </div>
   );
 }
@@ -572,19 +593,32 @@ function PaymentMethodCard({ method, selected, onSelect }: { method: PaymentMeth
       type="button"
       role="radio"
       aria-checked={selected}
-      aria-label={`${method.assetName} on ${method.networkName}`}
+      aria-label={`${method.assetName} (${method.assetCode})`}
       onClick={onSelect}
       className={cn(
-        "flex min-h-[60px] items-center gap-3 rounded-[12px] border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60",
-        selected ? "border-[#7657FF] bg-[#7657FF]/10" : "border-[#262A3A] bg-[#11131D] hover:border-[#7657FF]/60"
+        // Mobile: a touch-friendly row (icon · name/ticker/blurb · radio).
+        // Desktop (sm+): a centred vertical card with the selection check pinned top-right.
+        "group relative flex min-h-[64px] items-center gap-3 rounded-2xl border p-3.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60 active:scale-[0.99]",
+        "sm:min-h-[150px] sm:flex-col sm:items-center sm:justify-center sm:gap-2 sm:p-4 sm:text-center",
+        selected ? "border-[#7657FF] bg-[#7657FF]/[0.08]" : "border-[#262A3A] bg-[#11131D] hover:border-[#7657FF]/50"
       )}
     >
-      <CryptoLogo code={method.assetCode} />
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-bold text-[#F7F8FC]">{method.assetCode}</p>
-        <p className="truncate text-[13px] text-[#9298AD]">{method.networkCode} network</p>
+      <CryptoLogo code={method.assetCode} size={44} />
+      <div className="min-w-0 flex-1 sm:flex-none">
+        <div className="flex items-baseline gap-1.5 sm:justify-center">
+          <span className="text-[15px] font-bold text-[#F7F8FC]">{method.assetName}</span>
+          <span className="text-[12px] font-semibold text-[#9298AD]">{method.assetCode}</span>
+        </div>
+        {"blurb" in method && method.blurb && (
+          <p className="truncate text-[12px] text-[#9298AD] sm:mt-0.5">{method.blurb}</p>
+        )}
       </div>
-      <span className={cn("flex h-5 w-5 shrink-0 items-center justify-center rounded-full border", selected ? "border-[#7657FF] bg-[#7657FF] text-white" : "border-[#52586B]")}>
+      <span
+        className={cn(
+          "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border sm:absolute sm:right-3 sm:top-3",
+          selected ? "border-[#7657FF] bg-[#7657FF] text-white" : "border-[#52586B]"
+        )}
+      >
         {selected && <Check className="h-3 w-3" />}
       </span>
     </button>
@@ -592,7 +626,7 @@ function PaymentMethodCard({ method, selected, onSelect }: { method: PaymentMeth
 }
 
 // ── Step 3: Invoice ──────────────────────────────────────────────────────────
-function InvoicePaymentPanel({ invoice, status, method, summary, qrUrl, now, copied, onCopy, onCheckStatus, checking, onChangeMethod, onCancel, onNewInvoice, cancelling }: {
+function InvoicePaymentPanel({ invoice, status, method, summary, qrUrl, now, copied, onCopy, copiedAmount, onCopyAmount, onCheckStatus, checking, onChangeMethod, onCancel, onNewInvoice, cancelling }: {
   invoice: Payment;
   status: string;
   method: PaymentMethod;
@@ -601,6 +635,8 @@ function InvoicePaymentPanel({ invoice, status, method, summary, qrUrl, now, cop
   now: number;
   copied: boolean;
   onCopy: () => void;
+  copiedAmount: boolean;
+  onCopyAmount: () => void;
   onCheckStatus: () => void;
   checking: boolean;
   onChangeMethod: () => void;
@@ -621,7 +657,7 @@ function InvoicePaymentPanel({ invoice, status, method, summary, qrUrl, now, cop
     <InvoiceStatus statusInfo={statusInfo} countdown={countdown} expiryExact={expiryExact} onRefresh={onCheckStatus} refreshing={checking} expired={expired} />
   );
   const amountBlock = (
-    <PaymentAmounts amountUsd={formatUSD(Number(invoice.amount_usd))} cryptoAmount={cryptoAmount} assetCode={method.assetCode} networkLabel={networkLabel} />
+    <PaymentAmounts amountUsd={formatUSD(Number(invoice.amount_usd))} cryptoAmount={cryptoAmount} assetCode={method.assetCode} networkLabel={networkLabel} copiedAmount={copiedAmount} onCopyAmount={onCopyAmount} />
   );
   const metaBlock = (
     <MetaList networkLabel={networkLabel} invoiceId={shortId(invoice.order_id)} renewsThrough={renewsThrough} />
@@ -724,26 +760,35 @@ function InvoiceStatus({ statusInfo, countdown, expiryExact, onRefresh, refreshi
   );
 }
 
-function PaymentAmounts({ amountUsd, cryptoAmount, assetCode, networkLabel }: {
+function PaymentAmounts({ amountUsd, cryptoAmount, assetCode, networkLabel, copiedAmount, onCopyAmount }: {
   amountUsd: string;
   cryptoAmount: string;
   assetCode: string;
   networkLabel: string;
+  copiedAmount: boolean;
+  onCopyAmount: () => void;
 }) {
   return (
     <div className="rounded-[14px] border border-[#262A3A] bg-[#151824] p-4">
-      <p className="text-xs font-semibold uppercase tracking-wide text-[#9298AD]">Amount due</p>
-      <p className="mt-1 break-words text-[32px] font-black leading-none text-[#F7F8FC] sm:text-[36px]">
-        {amountUsd} <span className="text-lg font-bold text-[#9298AD]">USD</span>
-      </p>
-      <div className="mt-4 border-t border-[#262A3A] pt-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-[#9298AD]">Send exactly</p>
-        <p className="mt-1 break-all font-mono text-xl font-bold text-[#F7F8FC] sm:text-2xl">
-          {cryptoAmount} <span className="text-[#D9DCEA]">{assetCode}</span>
-        </p>
-        <p className="mt-0.5 text-[13px] text-[#9298AD]">via the {networkLabel} network</p>
-        <p className="mt-2 text-[13px] text-[#9298AD]">The crypto amount is locked until the invoice expires.</p>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold uppercase tracking-wide text-[#9298AD]">Send exactly</p>
+          <p className="mt-1 break-all font-mono text-[26px] font-black leading-none text-[#F7F8FC] sm:text-[30px]">
+            {cryptoAmount} <span className="text-lg font-bold text-[#9298AD]">{assetCode}</span>
+          </p>
+          <p className="mt-1.5 text-[13px] text-[#9298AD]">≈ {amountUsd} USD · via the {networkLabel} network</p>
+        </div>
+        <button
+          type="button"
+          onClick={onCopyAmount}
+          aria-label={copiedAmount ? "Amount copied" : "Copy amount"}
+          className="inline-flex min-h-9 shrink-0 items-center gap-2 rounded-[10px] border border-[#262A3A] px-3 text-[13px] font-bold text-[#D9DCEA] transition-colors hover:border-[#7657FF]/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60"
+        >
+          {copiedAmount ? <Check className="h-4 w-4 text-[#25C9A0]" /> : <Copy className="h-4 w-4" />}
+          {copiedAmount ? "Copied" : "Copy"}
+        </button>
       </div>
+      <p className="mt-3 border-t border-[#262A3A] pt-3 text-[13px] text-[#9298AD]">The crypto amount is locked until the invoice expires.</p>
     </div>
   );
 }
@@ -938,24 +983,29 @@ function PaymentWarning({ children }: { children: React.ReactNode }) {
   );
 }
 
-function CryptoLogo({ code }: { code: string }) {
+function CryptoLogo({ code, size = 40 }: { code: string; size?: number }) {
   const base = code.split("_")[0];
-  // Bundled locally (frontend/public/crypto) — no external CDN dependency, works offline.
+  // Bundled locally (frontend/public/crypto) — self-coloured coin marks, no external CDN, works offline.
   const logo: Record<string, string> = {
     BTC: "/crypto/bitcoin.svg",
+    SOL: "/crypto/solana.svg",
     ETH: "/crypto/ethereum.svg",
-    LTC: "/crypto/litecoin.svg",
-    TRX: "/crypto/tron.svg",
-    BNB: "/crypto/bnb.svg",
     USDT: "/crypto/tether.svg",
+    USDC: "/crypto/usdc.svg",
+    TRX: "/crypto/tron.svg",
+    LTC: "/crypto/litecoin.svg",
+    XMR: "/crypto/monero.svg",
+    BNB: "/crypto/bnb.svg",
   };
-  return (
-    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white p-1">
-      {logo[base] ? (
-        <img src={logo[base]} alt={`${base} logo`} className="h-full w-full object-contain" />
-      ) : (
-        <span className="text-xs font-black text-[#0E1018]">{base.slice(0, 2)}</span>
-      )}
+  const src = logo[base];
+  return src ? (
+    <img src={src} alt={`${base} logo`} className="shrink-0 rounded-full" style={{ width: size, height: size }} />
+  ) : (
+    <span
+      className="flex shrink-0 items-center justify-center rounded-full bg-[#1B1E2B] text-[11px] font-black text-[#D9DCEA]"
+      style={{ width: size, height: size }}
+    >
+      {base.slice(0, 2)}
     </span>
   );
 }
