@@ -38,6 +38,11 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
   const pageTitle = PAGE_TITLES[pathname] ||
     Object.entries(PAGE_TITLES).find(([href]) => pathname.startsWith(href + "/"))?.[1] || "";
 
+  // Focused checkout (renewal invoice flow) owns its own padding and safe-area
+  // handling, and hides the mobile bottom nav so the sticky payment action bar
+  // can sit flush against the bottom edge without overlapping navigation.
+  const focusedCheckout = pathname.startsWith("/user/billing/renew");
+
   return (
     <div className="flex min-h-screen">
       <PortalSidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
@@ -67,9 +72,9 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
             <NotificationBell />
           </div>
         </header>
-        <main className="p-4 sm:p-6 pb-28 lg:pb-6">{children}</main>
+        <main className={focusedCheckout ? "p-0" : "p-4 sm:p-6 pb-28 lg:pb-6"}>{children}</main>
       </div>
-      <MobileBottomNav />
+      {!focusedCheckout && <MobileBottomNav />}
     </div>
   );
 }

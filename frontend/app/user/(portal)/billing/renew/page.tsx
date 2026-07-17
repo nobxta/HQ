@@ -11,8 +11,6 @@ import {
   CheckCircle,
   Coins,
   Copy,
-  Loader2,
-  QrCode,
   ReceiptText,
   RefreshCw,
 } from "lucide-react";
@@ -23,6 +21,9 @@ import portalApi, { getPortalSession } from "@/lib/portal-api";
 import { usePortalBot, useRenewalOptions } from "@/lib/hooks/usePortal";
 import { cn, formatDate, formatUSD } from "@/lib/utils";
 
+// ── Supported crypto assets/networks ────────────────────────────────────────
+// Asset and network are ALWAYS stored separately so display code never has to
+// concatenate codes (which produced strings like "USDTTRC20").
 const PAYMENT_METHODS = [
   { code: "USDT_TRC20", assetName: "Tether", assetCode: "USDT", networkName: "TRON", networkCode: "TRC20" },
   { code: "USDT_BEP20", assetName: "Tether", assetCode: "USDT", networkName: "BNB Smart Chain", networkCode: "BEP20" },
@@ -32,11 +33,16 @@ const PAYMENT_METHODS = [
   { code: "LTC", assetName: "Litecoin", assetCode: "LTC", networkName: "Litecoin", networkCode: "Litecoin" },
   { code: "TRX", assetName: "TRON", assetCode: "TRX", networkName: "TRON", networkCode: "TRC20" },
   { code: "BNB", assetName: "BNB", assetCode: "BNB", networkName: "BNB Smart Chain", networkCode: "BEP20" },
-];
+] as const;
 
 type Step = "duration" | "method" | "invoice" | "success";
-
-type PaymentMethod = typeof PAYMENT_METHODS[number];
+type PaymentMethod = (typeof PAYMENT_METHODS)[number] | {
+  code: string;
+  assetName: string;
+  assetCode: string;
+  networkName: string;
+  networkCode: string;
+};
 
 type Payment = {
   order_id: string;
@@ -52,11 +58,14 @@ type Payment = {
   new_valid_till_preview?: string;
 };
 
+const TERMINAL_STATUSES = new Set(["completed", "paid", "expired", "cancelled", "failed", "invoice_failed"]);
+
 export default function RenewalPage() {
   const router = useRouter();
   const session = getPortalSession();
   const { data: bot, mutate: mutateBot } = usePortalBot();
   const { data, isLoading, mutate } = useRenewalOptions();
+
   const [selectedDuration, setSelectedDuration] = useState<"7d" | "30d">("30d");
   const [selectedMethodCode, setSelectedMethodCode] = useState("USDT_TRC20");
   const [step, setStep] = useState<Step>("duration");
@@ -69,31 +78,49 @@ export default function RenewalPage() {
   const [copied, setCopied] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
-  const selectedOption = data?.options?.[selectedDuration];
-  const selectedMethod = PAYMENT_METHODS.find((item) => item.code === selectedMethodCode) || PAYMENT_METHODS[0];
-  const isCompleted = invoiceStatus === "completed" || invoiceStatus === "paid";
-  const hasOpenInvoice = !!invoice && !isCompleted;
+  const options = data?.options || {};
+  const selectedOption = options?.[selectedDuration];
+  const selectedMethod = findMethod(selectedMethodCode);
+  const status = invoiceStatus.toLowerCase();
+  const isTerminal = TERMINAL_STATUSES.has(status);
+  const hasOpenInvoice = !!invoice && !isTerminal;
+
   const planName = data?.bot?.plan_name || bot?.plan_name || "Custom";
-  const currentExpiry = formatDate(data?.bot?.valid_till || bot?.valid_till);
-  const remaining = data?.bot?.hours_left != null ? formatRemaining(Number(data.bot.hours_left)) : "";
+  const currentValidTill = data?.bot?.valid_till || bot?.valid_till || "";
+  const currentExpiry = formatDate(currentValidTill);
+  const hoursLeft = data?.bot?.hours_left;
+  const remaining = hoursLeft != null ? formatRemaining(Number(hoursLeft)) : "";
+  const planExpired = hoursLeft != null && Number(hoursLeft) <= 0;
   const pageTitle = `Renew ${planName} Plan`;
 
-  const summary = useMemo(() => ({
+  // Single source of truth for the order summary shown in steps 2 & 3.
+  const summary = useMemo<RenewalSummary>(() => ({
     planName,
-    durationLabel: selectedOption?.days ? `${selectedOption.days} days` : selectedDuration === "7d" ? "7 days" : "30 days",
-    amountUsd: selectedOption?.price ? formatUSD(Number(selectedOption.price)) : "-",
-    newExpiry: selectedOption?.new_valid_till || invoice?.new_valid_till_preview || invoice?.new_valid_till || "-",
-  }), [invoice?.new_valid_till, invoice?.new_valid_till_preview, planName, selectedDuration, selectedOption?.days, selectedOption?.new_valid_till, selectedOption?.price]);
+    durationLabel: selectedOption?.days
+      ? `${selectedOption.days} days`
+      : selectedDuration === "7d" ? "7 days" : "30 days",
+    amountUsd: selectedOption?.price ? formatUSD(Number(selectedOption.price)) : "—",
+    newExpiry: formatDate(
+      selectedOption?.new_valid_till || invoice?.new_valid_till_preview || invoice?.new_valid_till
+    ),
+  }), [planName, selectedDuration, selectedOption?.days, selectedOption?.price, selectedOption?.new_valid_till, invoice?.new_valid_till, invoice?.new_valid_till_preview]);
 
   const qrValue = invoice?.pay_address || "";
-  const qrUrl = qrValue ? `https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=16&data=${encodeURIComponent(qrValue)}` : "";
+  const qrUrl = qrValue
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=12&data=${encodeURIComponent(qrValue)}`
+    : "";
 
+  // ── Handlers ───────────────────────────────────────────────────────────────
   const copyAddress = async () => {
     if (!invoice?.pay_address) return;
-    await navigator.clipboard.writeText(invoice.pay_address);
-    setCopied(true);
-    toast.success("Address copied");
-    setTimeout(() => setCopied(false), 1800);
+    try {
+      await navigator.clipboard.writeText(invoice.pay_address);
+      setCopied(true);
+      toast.success("Address copied");
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      toast.error("Could not copy address");
+    }
   };
 
   const requestStatus = async (silent = false) => {
@@ -106,7 +133,7 @@ export default function RenewalPage() {
       );
       const nextStatus = res.data.status || "payment_waiting";
       setInvoiceStatus(nextStatus);
-      setInvoice((previous) => previous ? { ...previous, ...res.data } : previous);
+      setInvoice((previous) => (previous ? { ...previous, ...res.data } : previous));
       if (nextStatus === "completed" || nextStatus === "paid") {
         setStep("success");
         mutate();
@@ -115,14 +142,14 @@ export default function RenewalPage() {
         toast.success("Status checked");
       }
     } catch (e: any) {
-      setError(e?.response?.data?.detail || "Could not check payment status.");
+      if (!silent) setError(e?.response?.data?.detail || "Could not check payment status.");
     } finally {
       setChecking(false);
     }
   };
 
   const createInvoice = async () => {
-    if (!session || !selectedOption?.available || hasOpenInvoice) return;
+    if (!session || !selectedOption?.available || hasOpenInvoice || creating) return;
     setCreating(true);
     setError("");
     try {
@@ -167,6 +194,18 @@ export default function RenewalPage() {
     }
   };
 
+  // Start a fresh invoice after the current one expired (no cancel needed —
+  // the backend already treats it as dead). Return to the method step.
+  const startNewInvoice = () => {
+    setInvoice(null);
+    setInvoiceStatus("idle");
+    setError("");
+    setStep("method");
+  };
+
+  // ── Effects ────────────────────────────────────────────────────────────────
+  // Restore an active unpaid invoice after a refresh so users never lose it and
+  // duplicate invoices are never created silently.
   useEffect(() => {
     if (!data?.active_invoice || invoice) return;
     setInvoice(data.active_invoice);
@@ -174,28 +213,34 @@ export default function RenewalPage() {
     setStep(data.active_invoice.status === "completed" ? "success" : "invoice");
   }, [data?.active_invoice, invoice]);
 
+  // 1-second clock for the live countdown — only while an invoice is open.
   useEffect(() => {
-    if (!invoice || isCompleted) return;
+    if (!invoice || isTerminal) return;
     const clock = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(clock);
-  }, [invoice, isCompleted]);
+  }, [invoice, isTerminal]);
 
+  // Poll payment status; stop once payment/cancellation/expiration is reached.
   useEffect(() => {
-    if (!invoice || !session || isCompleted) return;
+    if (!invoice || !session || isTerminal) return;
     const poll = setInterval(() => requestStatus(true), 8000);
     return () => clearInterval(poll);
-  }, [invoice?.order_id, isCompleted, session?.bot_name, session?.telegram_id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [invoice?.order_id, isTerminal, session?.bot_name, session?.telegram_id]);
 
-  if (isLoading || !bot) return <PageSkeleton />;
+  if (isLoading || !bot) return <div className="p-4 sm:p-6"><PageSkeleton /></div>;
 
   return (
-    <div className="min-h-[calc(100vh-7rem)] bg-[#07080D] px-4 py-4 pb-[calc(6rem+env(safe-area-inset-bottom))] sm:px-6 sm:py-6 sm:pb-6 lg:px-8">
-      <div className={cn("mx-auto w-full", step === "invoice" ? "max-w-[980px]" : "max-w-[780px]")}>
-        <Link href="/user/billing" className="mb-3 inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-[#9298AD] hover:text-[#F7F8FC]">
+    <div className="min-h-[100dvh] bg-[#07080D] px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4 sm:px-6 sm:pt-6 lg:px-8">
+      <div className={cn("mx-auto w-full", step === "invoice" ? "max-w-[980px]" : "max-w-[800px]")}>
+        <Link
+          href="/user/billing"
+          className="mb-3 inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-[#9298AD] transition-colors hover:text-[#F7F8FC] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[#07080D]"
+        >
           <ArrowLeft className="h-4 w-4" /> Billing
         </Link>
 
-        <section className="overflow-hidden rounded-2xl border border-[#262A3A] bg-[#0E1018] shadow-xl shadow-black/25 max-[640px]:rounded-xl">
+        <section className="overflow-hidden border border-[#262A3A] bg-[#0E1018] shadow-lg shadow-black/25 max-[640px]:rounded-none max-[640px]:border-x-0 sm:rounded-[18px]">
           <RenewalHeader
             pageTitle={pageTitle}
             planName={planName}
@@ -204,23 +249,23 @@ export default function RenewalPage() {
             hasOpenInvoice={hasOpenInvoice}
           />
 
-          <div className="border-b border-[#262A3A] px-4 py-3 sm:px-5">
+          <div className="border-b border-[#262A3A] px-4 py-3 sm:px-6">
             <RenewalProgress step={step} />
           </div>
 
-          <main className={cn("mx-auto w-full px-4 py-4 sm:px-5 sm:py-5", step === "invoice" ? "max-w-[940px]" : "max-w-[620px]")}>
+          <main className="w-full px-4 py-5 sm:px-6 sm:py-6">
             {error && <RenewalError message={error} />}
 
             {step === "duration" && (
               <DurationSelector
-                options={data?.options || {}}
-                bot={bot}
+                options={options}
                 currentExpiry={currentExpiry}
+                planExpired={planExpired}
                 planName={planName}
                 selectedDuration={selectedDuration}
                 setSelectedDuration={setSelectedDuration}
                 hasOpenInvoice={hasOpenInvoice}
-                onContinue={() => hasOpenInvoice ? setStep("invoice") : setStep("method")}
+                onContinue={() => (hasOpenInvoice ? setStep("invoice") : setStep("method"))}
               />
             )}
 
@@ -251,6 +296,7 @@ export default function RenewalPage() {
                 checking={checking}
                 onChangeMethod={() => cancelInvoice("method")}
                 onCancel={() => cancelInvoice("duration")}
+                onNewInvoice={startNewInvoice}
                 cancelling={cancelling}
               />
             )}
@@ -265,6 +311,7 @@ export default function RenewalPage() {
   );
 }
 
+// ── Header ───────────────────────────────────────────────────────────────────
 function RenewalHeader({ pageTitle, planName, currentExpiry, remaining, hasOpenInvoice }: {
   pageTitle: string;
   planName: string;
@@ -273,34 +320,35 @@ function RenewalHeader({ pageTitle, planName, currentExpiry, remaining, hasOpenI
   hasOpenInvoice: boolean;
 }) {
   return (
-    <header className="border-b border-[#262A3A] px-4 py-4 sm:px-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h1 className="text-[22px] font-bold tracking-tight text-[#F7F8FC] sm:text-[26px]">{pageTitle}</h1>
-          <p className="mt-1 text-[13px] text-[#9298AD] sm:text-sm">Extend your subscription without interrupting your active service.</p>
+    <header className="border-b border-[#262A3A] px-4 py-4 sm:px-6 sm:py-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-[22px] font-bold leading-tight tracking-tight text-[#F7F8FC] sm:text-[26px]">{pageTitle}</h1>
+          <p className="mt-1 text-[13px] text-[#9298AD] sm:text-sm">
+            Extend your subscription without interrupting your active service.
+          </p>
         </div>
         {hasOpenInvoice && (
-          <span className="w-fit rounded-full border border-[#F2B94B]/30 bg-[#F2B94B]/10 px-3 py-1 text-xs font-bold text-[#F2B94B]">
+          <span className="shrink-0 rounded-full border border-[#F2B94B]/30 bg-[#F2B94B]/10 px-3 py-1 text-xs font-bold text-[#F2B94B]">
             Active invoice
           </span>
         )}
       </div>
-      <CurrentPlanSummary planName={planName} currentExpiry={currentExpiry} remaining={remaining} />
+
+      <div className="mt-4 rounded-[14px] border border-[#262A3A] bg-[#151824] px-4 py-3">
+        <p className="font-bold text-[#F7F8FC]">{planName} Plan</p>
+        {/* Compact on mobile, two lines on desktop — one consistent date format. */}
+        <p className="mt-1 text-[13px] text-[#9298AD] sm:hidden">
+          Expires {currentExpiry}{remaining ? ` · ${remaining} remaining` : ""}
+        </p>
+        <p className="mt-1 hidden text-sm text-[#9298AD] sm:block">Active until {currentExpiry}</p>
+        {remaining && <p className="hidden text-sm text-[#D9DCEA] sm:block">{remaining} remaining</p>}
+      </div>
     </header>
   );
 }
 
-function CurrentPlanSummary({ planName, currentExpiry, remaining }: { planName: string; currentExpiry: string; remaining: string }) {
-  return (
-    <div className="mt-4 rounded-xl border border-[#262A3A] bg-[#151824] px-4 py-3">
-      <p className="font-bold text-[#F7F8FC]">{planName} Plan</p>
-      <p className="mt-1 text-sm text-[#9298AD] sm:hidden">Expires {currentExpiry}{remaining ? ` - ${remaining} remaining` : ""}</p>
-      <p className="mt-1 hidden text-sm text-[#9298AD] sm:block">Active until {currentExpiry}</p>
-      {remaining && <p className="hidden text-sm text-[#D9DCEA] sm:block">{remaining} remaining</p>}
-    </div>
-  );
-}
-
+// ── Progress ─────────────────────────────────────────────────────────────────
 function RenewalProgress({ step }: { step: Step }) {
   const steps = [
     { id: "duration", label: "Duration", icon: CalendarDays },
@@ -308,58 +356,63 @@ function RenewalProgress({ step }: { step: Step }) {
     { id: "invoice", label: "Payment invoice", icon: ReceiptText },
   ] as const;
   const current = step === "success" ? 3 : steps.findIndex((item) => item.id === step);
-  const active = steps[Math.min(current, 2)];
+  const activeIndex = Math.min(Math.max(current, 0), 2);
+  const active = steps[activeIndex];
   const ActiveIcon = active.icon;
 
   return (
     <>
-      <div className="hidden items-center sm:flex">
+      {/* Desktop: full horizontal stepper */}
+      <ol className="hidden items-center sm:flex" aria-label="Renewal progress">
         {steps.map((item, index) => {
           const done = index < current || step === "success";
-          const activeStep = index === current;
+          const isActive = index === current;
           return (
-            <div key={item.id} className="flex min-w-0 flex-1 items-center">
-              <span className={cn(
-                "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold",
-                activeStep && "bg-[#7657FF] text-white",
-                done && "bg-[#25C9A0]/15 text-[#25C9A0]",
-                !activeStep && !done && "bg-[#151824] text-[#9298AD]"
-              )}>
+            <li key={item.id} className="flex min-w-0 flex-1 items-center last:flex-none">
+              <span
+                aria-current={isActive ? "step" : undefined}
+                className={cn(
+                  "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold",
+                  isActive && "bg-[#7657FF] text-white",
+                  done && "bg-[#25C9A0]/15 text-[#25C9A0]",
+                  !isActive && !done && "bg-[#151824] text-[#9298AD]"
+                )}
+              >
                 {done ? <Check className="h-4 w-4" /> : index + 1}
               </span>
-              <span className={cn("ml-2 truncate text-sm font-semibold", activeStep ? "text-[#F7F8FC]" : done ? "text-[#D9DCEA]" : "text-[#9298AD]")}>
+              <span className={cn("ml-2 truncate text-sm font-semibold", isActive ? "text-[#F7F8FC]" : done ? "text-[#D9DCEA]" : "text-[#9298AD]")}>
                 {item.label}
               </span>
               {index < steps.length - 1 && <span className={cn("mx-4 h-px flex-1", done ? "bg-[#7657FF]" : "bg-[#262A3A]")} />}
-            </div>
+            </li>
           );
         })}
-      </div>
+      </ol>
 
+      {/* Mobile: compact label + thin progress bar */}
       <div className="sm:hidden">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[#7657FF] text-white">
-              <ActiveIcon className="h-4 w-4" />
-            </span>
-            <div>
-              <p className="text-xs font-semibold text-[#9298AD]">Step {Math.min(current + 1, 3)} of 3</p>
-              <p className="text-sm font-bold text-[#F7F8FC]">{active.label}</p>
-            </div>
+        <div className="flex items-center gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#7657FF] text-white">
+            <ActiveIcon className="h-4 w-4" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-[#9298AD]">Step {activeIndex + 1} of 3</p>
+            <p className="truncate text-sm font-bold text-[#F7F8FC]">{active.label}</p>
           </div>
         </div>
         <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#151824]">
-          <div className="h-full rounded-full bg-[#7657FF]" style={{ width: `${((Math.min(current, 2) + 1) / 3) * 100}%` }} />
+          <div className="h-full rounded-full bg-[#7657FF] transition-[width] duration-200" style={{ width: `${((activeIndex + 1) / 3) * 100}%` }} />
         </div>
       </div>
     </>
   );
 }
 
-function DurationSelector({ options, bot, currentExpiry, planName, selectedDuration, setSelectedDuration, hasOpenInvoice, onContinue }: {
+// ── Step 1: Duration ─────────────────────────────────────────────────────────
+function DurationSelector({ options, currentExpiry, planExpired, planName, selectedDuration, setSelectedDuration, hasOpenInvoice, onContinue }: {
   options: any;
-  bot: any;
   currentExpiry: string;
+  planExpired: boolean;
   planName: string;
   selectedDuration: "7d" | "30d";
   setSelectedDuration: (duration: "7d" | "30d") => void;
@@ -367,58 +420,70 @@ function DurationSelector({ options, bot, currentExpiry, planName, selectedDurat
   onContinue: () => void;
 }) {
   const selected = options?.[selectedDuration];
-  const weekly = Number(options?.["7d"]?.price || 0) / 7;
-  const monthly = Number(options?.["30d"]?.price || 0) / 30;
-  const monthlyBest = weekly > 0 && monthly > 0 && monthly < weekly;
+  const weeklyRate = Number(options?.["7d"]?.price || 0) / 7;
+  const monthlyRate = Number(options?.["30d"]?.price || 0) / 30;
+  const monthlyBest = weeklyRate > 0 && monthlyRate > 0 && monthlyRate < weeklyRate;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <SectionTitle title="Choose renewal duration" text={`Select how long you want to extend your ${planName} plan.`} />
 
-      <div className="grid justify-center gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 sm:grid-cols-2">
         {(["7d", "30d"] as const).map((key) => {
           const option = options?.[key];
           const active = selectedDuration === key;
           const showBest = key === "30d" && monthlyBest;
+          const disabled = !option?.available || hasOpenInvoice;
           return (
             <button
               key={key}
               type="button"
-              disabled={!option?.available || hasOpenInvoice}
+              role="radio"
+              aria-checked={active}
+              disabled={disabled}
               onClick={() => setSelectedDuration(key)}
               className={cn(
-                "min-h-[136px] rounded-xl border bg-[#11131D] p-4 text-left transition-colors focus-visible:ring-2 focus-visible:ring-[#7657FF]/50 sm:max-w-[250px]",
-                active ? "border-[#7657FF] bg-[#7657FF]/10" : "border-[#262A3A] hover:border-[#7657FF]/60",
-                (!option?.available || hasOpenInvoice) && "opacity-60"
+                "min-h-[132px] rounded-[14px] border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60",
+                active ? "border-[#7657FF] bg-[#7657FF]/10" : "border-[#262A3A] bg-[#11131D] hover:border-[#7657FF]/60",
+                disabled && "cursor-not-allowed opacity-60"
               )}
             >
               <div className="flex items-start justify-between gap-3">
-                <span className={cn("flex h-5 w-5 items-center justify-center rounded-full border", active ? "border-[#7657FF] bg-[#7657FF] text-white" : "border-[#52586B]")}>
+                <span className={cn("flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-colors", active ? "border-[#7657FF] bg-[#7657FF] text-white" : "border-[#52586B]")}>
                   {active && <Check className="h-3 w-3" />}
                 </span>
-                {showBest && <span className="rounded-full bg-[#7657FF]/14 px-2 py-1 text-xs font-bold text-[#D9DCEA]">Best value</span>}
+                {showBest && (
+                  <span className="rounded-full bg-[#7657FF]/15 px-2 py-1 text-[11px] font-bold uppercase tracking-wide text-[#B9A7FF]">
+                    Best value
+                  </span>
+                )}
               </div>
-              <p className="mt-4 text-lg font-bold text-[#F7F8FC]">{option?.days || (key === "7d" ? 7 : 30)} days</p>
-              <p className="mt-1 text-2xl font-black text-[#F7F8FC]">{option?.available ? formatUSD(Number(option.price)) : "Unavailable"}</p>
-              <p className="mt-2 text-sm text-[#9298AD]">Active through <span className="text-[#D9DCEA]">{formatDate(option?.new_valid_till) || "-"}</span></p>
+              <p className="mt-3 text-lg font-bold text-[#F7F8FC]">{option?.days || (key === "7d" ? 7 : 30)} days</p>
+              <p className="mt-0.5 text-[28px] font-black leading-none text-[#F7F8FC]">
+                {option?.available ? formatUSD(Number(option.price)) : "Unavailable"}
+              </p>
+              <p className="mt-2 text-[13px] text-[#9298AD]">
+                Active through <span className="text-[#D9DCEA]">{formatDate(option?.new_valid_till)}</span>
+              </p>
             </button>
           );
         })}
       </div>
 
-      <p className="rounded-xl border border-[#262A3A] bg-[#151824] p-3 text-sm text-[#D9DCEA]">
-        Your renewal will begin after your current subscription ends on <span className="font-bold text-[#F7F8FC]">{currentExpiry || formatDate(bot.valid_till)}</span>.
+      <p className="rounded-[14px] border border-[#262A3A] bg-[#151824] p-3 text-sm leading-relaxed text-[#D9DCEA]">
+        {planExpired ? (
+          <>Your renewed subscription will start after payment confirmation.</>
+        ) : (
+          <>Your renewal will begin after your current subscription ends on <span className="font-bold text-[#F7F8FC]">{currentExpiry}</span>.</>
+        )}
       </p>
 
-      <StepActions
-        primaryLabel="Continue"
-        onPrimary={onContinue}
-        primaryDisabled={!selected?.available}
-      />
+      <StepActions primaryLabel="Continue" onPrimary={onContinue} primaryDisabled={!selected?.available} />
     </div>
   );
 }
 
+// ── Step 2: Payment method ───────────────────────────────────────────────────
 function PaymentMethodSelector({ selectedMethodCode, setSelectedMethodCode, summary, selectedMethod, onBack, onCreate, creating, disabled }: {
   selectedMethodCode: string;
   setSelectedMethodCode: (method: string) => void;
@@ -430,11 +495,11 @@ function PaymentMethodSelector({ selectedMethodCode, setSelectedMethodCode, summ
   disabled: boolean;
 }) {
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <SectionTitle title="Choose payment method" text="Select the cryptocurrency and network you want to use." />
       <RenewalOrderSummary summary={summary} />
 
-      <div className="grid gap-2 sm:grid-cols-2">
+      <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Payment method">
         {PAYMENT_METHODS.map((method) => (
           <PaymentMethodCard
             key={method.code}
@@ -447,14 +512,14 @@ function PaymentMethodSelector({ selectedMethodCode, setSelectedMethodCode, summ
 
       {selectedMethod && (
         <PaymentWarning>
-          Send only {selectedMethod.assetCode} using the {selectedMethod.networkCode} network. Other assets or networks may result in permanent loss of funds.
+          Send only {selectedMethod.assetCode} using the {formatNetworkLabel(selectedMethod)} network. Other assets or networks may result in permanent loss of funds.
         </PaymentWarning>
       )}
 
       <StepActions
         secondaryLabel="Back"
         onSecondary={onBack}
-        primaryLabel={creating ? "Creating invoice..." : "Create payment invoice"}
+        primaryLabel={creating ? "Creating invoice…" : "Create payment invoice"}
         onPrimary={onCreate}
         primaryDisabled={disabled || creating}
         primaryLoading={creating}
@@ -472,10 +537,10 @@ type RenewalSummary = {
 
 function RenewalOrderSummary({ summary }: { summary: RenewalSummary }) {
   return (
-    <div className="rounded-xl border border-[#262A3A] bg-[#151824] p-3">
-      <p className="text-sm font-bold text-[#F7F8FC]">{summary.planName} Plan - {summary.durationLabel}</p>
+    <div className="rounded-[14px] border border-[#262A3A] bg-[#151824] px-4 py-3">
+      <p className="text-sm font-bold text-[#F7F8FC]">{summary.planName} Plan · {summary.durationLabel}</p>
       <p className="mt-1 text-sm text-[#D9DCEA]">{summary.amountUsd} USD</p>
-      <p className="text-sm text-[#9298AD]">Renews through {formatDate(summary.newExpiry)}</p>
+      <p className="text-[13px] text-[#9298AD]">Renews through {summary.newExpiry}</p>
     </div>
   );
 }
@@ -484,16 +549,19 @@ function PaymentMethodCard({ method, selected, onSelect }: { method: PaymentMeth
   return (
     <button
       type="button"
+      role="radio"
+      aria-checked={selected}
+      aria-label={`${method.assetName} on ${method.networkName}`}
       onClick={onSelect}
       className={cn(
-        "flex min-h-[60px] items-center gap-3 rounded-xl border bg-[#11131D] p-3 text-left transition-colors focus-visible:ring-2 focus-visible:ring-[#7657FF]/50",
-        selected ? "border-[#7657FF] bg-[#7657FF]/10" : "border-[#262A3A] hover:border-[#7657FF]/60"
+        "flex min-h-[60px] items-center gap-3 rounded-[12px] border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60",
+        selected ? "border-[#7657FF] bg-[#7657FF]/10" : "border-[#262A3A] bg-[#11131D] hover:border-[#7657FF]/60"
       )}
     >
-      <CryptoLogo code={method.assetCode} className="h-8 w-8" />
+      <CryptoLogo code={method.assetCode} />
       <div className="min-w-0 flex-1">
         <p className="text-sm font-bold text-[#F7F8FC]">{method.assetCode}</p>
-        <p className="text-[13px] text-[#9298AD]">{method.networkCode} network</p>
+        <p className="truncate text-[13px] text-[#9298AD]">{method.networkCode} network</p>
       </div>
       <span className={cn("flex h-5 w-5 shrink-0 items-center justify-center rounded-full border", selected ? "border-[#7657FF] bg-[#7657FF] text-white" : "border-[#52586B]")}>
         {selected && <Check className="h-3 w-3" />}
@@ -502,7 +570,8 @@ function PaymentMethodCard({ method, selected, onSelect }: { method: PaymentMeth
   );
 }
 
-function InvoicePaymentPanel({ invoice, status, method, summary, qrUrl, now, copied, onCopy, onCheckStatus, checking, onChangeMethod, onCancel, cancelling }: {
+// ── Step 3: Invoice ──────────────────────────────────────────────────────────
+function InvoicePaymentPanel({ invoice, status, method, summary, qrUrl, now, copied, onCopy, onCheckStatus, checking, onChangeMethod, onCancel, onNewInvoice, cancelling }: {
   invoice: Payment;
   status: string;
   method: PaymentMethod;
@@ -515,167 +584,254 @@ function InvoicePaymentPanel({ invoice, status, method, summary, qrUrl, now, cop
   checking: boolean;
   onChangeMethod: () => void;
   onCancel: () => void;
+  onNewInvoice: () => void;
   cancelling: boolean;
 }) {
-  const statusInfo = getStatusInfo(status, invoice);
+  const statusInfo = getStatusInfo(status, invoice, method);
+  const expired = statusInfo.tone === "error";
   const countdown = formatRemainingTime(invoice.invoice_expires_at, now);
-  const expiryExact = formatDateTime(invoice.invoice_expires_at);
+  const expiryExact = formatExpiryExact(invoice.invoice_expires_at);
   const cryptoAmount = formatCryptoAmount(invoice.pay_amount);
-  const shortAddress = middleTruncate(invoice.pay_address);
+  const networkLabel = formatNetworkLabel(method);
+  const renewsThrough = formatDate(invoice.new_valid_till || invoice.new_valid_till_preview || summary.newExpiry);
+
+  // Reusable blocks — arranged differently per breakpoint below.
+  const statusBlock = (
+    <InvoiceStatus statusInfo={statusInfo} countdown={countdown} expiryExact={expiryExact} onRefresh={onCheckStatus} refreshing={checking} expired={expired} />
+  );
+  const amountBlock = (
+    <PaymentAmounts amountUsd={formatUSD(Number(invoice.amount_usd))} cryptoAmount={cryptoAmount} assetCode={method.assetCode} networkLabel={networkLabel} />
+  );
+  const metaBlock = (
+    <MetaList networkLabel={networkLabel} invoiceId={shortId(invoice.order_id)} renewsThrough={renewsThrough} />
+  );
+  const qrBlock = <PaymentQRCode qrUrl={qrUrl} assetCode={method.assetCode} networkLabel={networkLabel} />;
+  const addressBlock = <WalletAddress address={invoice.pay_address} network={networkLabel} copied={copied} onCopy={onCopy} />;
+  const warningBlock = (
+    <PaymentWarning>
+      Send only {method.assetCode} using the {networkLabel} network. Sending another asset or using another network may permanently lose your funds.
+    </PaymentWarning>
+  );
+  const actionsBlock = (
+    <PaymentActions
+      expired={expired}
+      onCheckStatus={onCheckStatus}
+      checking={checking}
+      onChangeMethod={onChangeMethod}
+      onCancel={onCancel}
+      onNewInvoice={onNewInvoice}
+      cancelling={cancelling}
+    />
+  );
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <SectionTitle title="Complete payment" text="Send the exact amount using the selected currency and network." />
 
-      <div className="grid gap-4 md:grid-cols-[46%_54%]">
-        <div className="order-2 space-y-4 md:order-1">
-          <div className="rounded-xl border border-[#262A3A] bg-[#151824] p-4">
-            <div className="mx-auto flex w-fit items-center justify-center rounded-xl bg-white p-3">
-              {qrUrl && <img src={qrUrl} alt="Payment QR code" className="h-[200px] w-[200px] sm:h-[230px] sm:w-[230px]" />}
-            </div>
-            <p className="mt-3 text-center text-sm font-semibold text-[#D9DCEA]">Scan to pay with {method.assetCode} on {method.networkCode}</p>
-          </div>
-
-          <WalletAddress
-            address={invoice.pay_address}
-            shortAddress={shortAddress}
-            network={method.networkCode}
-            copied={copied}
-            onCopy={onCopy}
-          />
+      {/* Desktop: two columns (QR + address | status, amounts, actions) */}
+      <div className="hidden gap-5 md:grid md:grid-cols-[46%_minmax(0,1fr)]">
+        <div className="space-y-4">
+          {qrBlock}
+          {addressBlock}
         </div>
-
-        <div className="order-1 space-y-4 md:order-2">
-          <InvoiceStatus statusInfo={statusInfo} countdown={countdown} expiryExact={expiryExact} onRefresh={onCheckStatus} refreshing={checking} />
-
-          <div className="rounded-xl border border-[#262A3A] bg-[#151824]">
-            <PaymentAmount label="Amount due" value={`${formatUSD(Number(invoice.amount_usd))} USD`} />
-            <PaymentAmount label="Send exactly" value={`${cryptoAmount} ${assetFromPayCurrency(invoice.pay_currency, method.assetCode)}`} sub={`via the ${method.networkCode} network`} />
-            <PaymentAmount label="Network" value={method.networkCode} />
-            <PaymentAmount label="Invoice ID" value={shortId(invoice.order_id)} mono />
-            <PaymentAmount label="Renews through" value={formatDate(invoice.new_valid_till || invoice.new_valid_till_preview || summary.newExpiry)} />
-          </div>
-
-          <PaymentWarning>
-            Send only {method.assetCode} using the {method.networkCode} network. Sending another asset or using another network may permanently lose your funds.
-          </PaymentWarning>
-
-          <PaymentActions
-            onCheckStatus={onCheckStatus}
-            checking={checking}
-            onChangeMethod={onChangeMethod}
-            onCancel={onCancel}
-            cancelling={cancelling}
-          />
+        <div className="space-y-4">
+          {statusBlock}
+          {amountBlock}
+          {metaBlock}
+          {warningBlock}
+          {actionsBlock}
         </div>
+      </div>
+
+      {/* Mobile: single-column checkout order */}
+      <div className="space-y-4 md:hidden">
+        {statusBlock}
+        {amountBlock}
+        {qrBlock}
+        {addressBlock}
+        {warningBlock}
+        {actionsBlock}
+        {metaBlock}
       </div>
     </div>
   );
 }
 
-function InvoiceStatus({ statusInfo, countdown, expiryExact, onRefresh, refreshing }: {
-  statusInfo: { title: string; description: string; tone: "warning" | "success" | "error" | "accent" };
+function InvoiceStatus({ statusInfo, countdown, expiryExact, onRefresh, refreshing, expired }: {
+  statusInfo: StatusInfo;
   countdown: string;
   expiryExact: string;
   onRefresh: () => void;
   refreshing: boolean;
+  expired: boolean;
 }) {
+  const toneText = statusInfo.tone === "success" ? "text-[#25C9A0]"
+    : statusInfo.tone === "error" ? "text-[#F06472]"
+    : statusInfo.tone === "accent" ? "text-[#856BFF]"
+    : "text-[#F2B94B]";
+  const dot = statusInfo.tone === "success" ? "bg-[#25C9A0]"
+    : statusInfo.tone === "error" ? "bg-[#F06472]"
+    : statusInfo.tone === "accent" ? "bg-[#856BFF]"
+    : "bg-[#F2B94B]";
   return (
-    <div className="rounded-xl border border-[#262A3A] bg-[#151824] p-4">
+    <div className="rounded-[14px] border border-[#262A3A] bg-[#151824] p-4">
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className={cn("text-sm font-bold", statusInfo.tone === "success" ? "text-[#25C9A0]" : statusInfo.tone === "error" ? "text-[#F06472]" : statusInfo.tone === "accent" ? "text-[#856BFF]" : "text-[#F2B94B]")}>
+        <div className="min-w-0">
+          <p className={cn("flex items-center gap-2 text-sm font-bold", toneText)}>
+            <span className={cn("h-2 w-2 shrink-0 rounded-full", dot, !expired && "animate-pulse")} aria-hidden="true" />
             {statusInfo.title}
           </p>
-          <p className="mt-1 text-sm text-[#9298AD]">{statusInfo.description}</p>
+          <p className="mt-1 text-[13px] text-[#9298AD]">{statusInfo.description}</p>
         </div>
         <button
           type="button"
           aria-label="Refresh payment status"
           onClick={onRefresh}
           disabled={refreshing}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[#262A3A] text-[#9298AD] hover:text-[#F7F8FC] disabled:opacity-50"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-[#262A3A] text-[#9298AD] transition-colors hover:text-[#F7F8FC] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60 disabled:opacity-50"
         >
           <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
         </button>
       </div>
-      <div className="mt-3 rounded-lg bg-[#11131D] p-3">
-        <p className="text-sm font-bold text-[#F7F8FC]">Invoice expires in {countdown}</p>
-        {expiryExact && <p className="mt-1 text-sm text-[#9298AD]">{expiryExact}</p>}
-      </div>
+      {!expired && (
+        <div className="mt-3 rounded-[10px] bg-[#11131D] p-3">
+          <p className="text-sm font-bold text-[#F7F8FC]">Invoice expires in {countdown}</p>
+          {expiryExact && <p className="mt-0.5 text-[13px] text-[#9298AD]">{expiryExact}</p>}
+        </div>
+      )}
     </div>
   );
 }
 
-function PaymentAmount({ label, value, sub, mono }: { label: string; value: string; sub?: string; mono?: boolean }) {
+function PaymentAmounts({ amountUsd, cryptoAmount, assetCode, networkLabel }: {
+  amountUsd: string;
+  cryptoAmount: string;
+  assetCode: string;
+  networkLabel: string;
+}) {
   return (
-    <div className="flex items-start justify-between gap-4 border-b border-[#262A3A] px-4 py-3 last:border-0">
-      <p className="text-sm font-semibold text-[#9298AD]">{label}</p>
-      <div className="min-w-0 text-right">
-        <p className={cn("overflow-wrap-anywhere text-sm font-bold text-[#F7F8FC]", mono && "font-mono")}>{value}</p>
-        {sub && <p className="mt-1 text-sm text-[#9298AD]">{sub}</p>}
+    <div className="rounded-[14px] border border-[#262A3A] bg-[#151824] p-4">
+      <p className="text-xs font-semibold uppercase tracking-wide text-[#9298AD]">Amount due</p>
+      <p className="mt-1 break-words text-[32px] font-black leading-none text-[#F7F8FC] sm:text-[36px]">
+        {amountUsd} <span className="text-lg font-bold text-[#9298AD]">USD</span>
+      </p>
+      <div className="mt-4 border-t border-[#262A3A] pt-3">
+        <p className="text-xs font-semibold uppercase tracking-wide text-[#9298AD]">Send exactly</p>
+        <p className="mt-1 break-all font-mono text-xl font-bold text-[#F7F8FC] sm:text-2xl">
+          {cryptoAmount} <span className="text-[#D9DCEA]">{assetCode}</span>
+        </p>
+        <p className="mt-0.5 text-[13px] text-[#9298AD]">via the {networkLabel} network</p>
+        <p className="mt-2 text-[13px] text-[#9298AD]">The crypto amount is locked until the invoice expires.</p>
       </div>
     </div>
   );
 }
 
-function WalletAddress({ address, shortAddress, network, copied, onCopy }: {
+function MetaList({ networkLabel, invoiceId, renewsThrough }: { networkLabel: string; invoiceId: string; renewsThrough: string }) {
+  return (
+    <div className="rounded-[14px] border border-[#262A3A] bg-[#151824]">
+      <MetaRow label="Network" value={networkLabel} />
+      <MetaRow label="Invoice ID" value={invoiceId} mono />
+      <MetaRow label="Renews through" value={renewsThrough} />
+    </div>
+  );
+}
+
+function MetaRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex items-center justify-between gap-4 border-b border-[#262A3A] px-4 py-3 last:border-0">
+      <p className="shrink-0 text-[13px] font-semibold text-[#9298AD]">{label}</p>
+      <p className={cn("min-w-0 break-words text-right text-sm font-bold text-[#F7F8FC]", mono && "font-mono")}>{value}</p>
+    </div>
+  );
+}
+
+function PaymentQRCode({ qrUrl, assetCode, networkLabel }: { qrUrl: string; assetCode: string; networkLabel: string }) {
+  return (
+    <div className="rounded-[14px] border border-[#262A3A] bg-[#151824] p-4">
+      <div className="mx-auto flex aspect-square w-full max-w-[240px] items-center justify-center rounded-[12px] bg-white p-3">
+        {qrUrl ? (
+          <img src={qrUrl} alt={`QR code to pay with ${assetCode} on ${networkLabel}`} className="h-full w-full object-contain" />
+        ) : (
+          <span className="text-sm font-semibold text-[#0E1018]">QR unavailable</span>
+        )}
+      </div>
+      <p className="mt-3 text-center text-[13px] font-semibold text-[#D9DCEA]">
+        Scan to pay with {assetCode} on {networkLabel}
+      </p>
+    </div>
+  );
+}
+
+function WalletAddress({ address, network, copied, onCopy }: {
   address: string;
-  shortAddress: string;
   network: string;
   copied: boolean;
   onCopy: () => void;
 }) {
   return (
-    <div className="rounded-xl border border-[#262A3A] bg-[#151824] p-4">
+    <div className="rounded-[14px] border border-[#262A3A] bg-[#151824] p-4">
       <div className="mb-2 flex items-center justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <p className="text-sm font-bold text-[#F7F8FC]">Wallet address</p>
-          <p className="text-sm text-[#9298AD]">{network} network</p>
+          <p className="truncate text-[13px] text-[#9298AD]">{network} network</p>
         </div>
         <button
           type="button"
           onClick={onCopy}
-          className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-[#262A3A] px-3 text-sm font-bold text-[#D9DCEA] hover:border-[#7657FF]/60"
+          className="inline-flex min-h-9 shrink-0 items-center gap-2 rounded-[10px] border border-[#262A3A] px-3 text-[13px] font-bold text-[#D9DCEA] transition-colors hover:border-[#7657FF]/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60"
+          aria-label={copied ? "Address copied" : "Copy wallet address"}
         >
-          <Copy className="h-4 w-4" /> {copied ? "Copied" : "Copy"}
+          {copied ? <Check className="h-4 w-4 text-[#25C9A0]" /> : <Copy className="h-4 w-4" />}
+          {copied ? "Copied" : "Copy"}
         </button>
       </div>
       <button
         type="button"
         onClick={onCopy}
-        className="block w-full rounded-lg bg-[#11131D] p-3 text-left font-mono text-sm text-[#F7F8FC] focus-visible:ring-2 focus-visible:ring-[#7657FF]/50"
         title={address}
+        aria-label="Copy wallet address"
+        className="block w-full select-all break-all rounded-[10px] bg-[#11131D] p-3 text-left font-mono text-[13px] leading-relaxed text-[#F7F8FC] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60"
       >
-        <span className="hidden overflow-wrap-anywhere sm:block">{address}</span>
-        <span className="sm:hidden">{shortAddress}</span>
+        {address}
       </button>
     </div>
   );
 }
 
-function PaymentActions({ onCheckStatus, checking, onChangeMethod, onCancel, cancelling }: {
+function PaymentActions({ expired, onCheckStatus, checking, onChangeMethod, onCancel, onNewInvoice, cancelling }: {
+  expired: boolean;
   onCheckStatus: () => void;
   checking: boolean;
   onChangeMethod: () => void;
   onCancel: () => void;
+  onNewInvoice: () => void;
   cancelling: boolean;
 }) {
+  if (expired) {
+    return (
+      <div className="space-y-3">
+        <Button className="h-12 w-full rounded-[12px] bg-[#7657FF] font-bold hover:bg-[#856BFF]" onClick={onNewInvoice}>
+          Create a new invoice
+        </Button>
+      </div>
+    );
+  }
   return (
-    <div className="sticky bottom-0 -mx-4 -mb-4 border-t border-[#262A3A] bg-[#0E1018]/95 p-4 backdrop-blur sm:static sm:mx-0 sm:mb-0 sm:border-0 sm:bg-transparent sm:p-0">
-      <Button className="h-12 w-full rounded-xl bg-[#7657FF] font-bold hover:bg-[#856BFF]" onClick={onCheckStatus} loading={checking}>
+    <div className="space-y-3">
+      <Button className="h-12 w-full rounded-[12px] bg-[#7657FF] font-bold hover:bg-[#856BFF]" onClick={onCheckStatus} loading={checking}>
         I&apos;ve sent the payment
       </Button>
-      <p className="mt-2 text-center text-sm text-[#9298AD]">Payment status is also checked automatically.</p>
-      <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <Button variant="secondary" className="h-10 rounded-xl px-4" onClick={onChangeMethod} loading={cancelling}>
+      <p className="text-center text-[13px] text-[#9298AD]">Payment status is also checked automatically.</p>
+      <div className="flex flex-col gap-2 pt-1 sm:flex-row sm:items-center sm:justify-between">
+        <Button variant="secondary" className="h-10 rounded-[10px] px-4" onClick={onChangeMethod} loading={cancelling}>
           Change payment method
         </Button>
         <button
           type="button"
           onClick={onCancel}
           disabled={cancelling}
-          className="min-h-10 rounded-xl px-4 text-sm font-bold text-[#F06472] hover:bg-[#F06472]/10 disabled:opacity-50"
+          className="min-h-10 rounded-[10px] px-4 text-[13px] font-bold text-[#F06472] transition-colors hover:bg-[#F06472]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F06472]/50 disabled:opacity-50"
         >
           Cancel invoice
         </button>
@@ -684,24 +840,31 @@ function PaymentActions({ onCheckStatus, checking, onChangeMethod, onCancel, can
   );
 }
 
+// ── Success ──────────────────────────────────────────────────────────────────
 function RenewalSuccess({ invoice, planName, onDashboard }: { invoice: Payment | null; planName: string; onDashboard: () => void }) {
+  const through = formatDate(invoice?.new_valid_till || invoice?.new_valid_till_preview);
   return (
     <div className="mx-auto max-w-md py-6 text-center">
       <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-[#25C9A0]/25 bg-[#25C9A0]/15 text-[#25C9A0]">
         <CheckCircle className="h-6 w-6" />
       </div>
       <h2 className="mt-4 text-2xl font-bold text-[#F7F8FC]">Payment confirmed</h2>
-      <p className="mt-2 text-sm text-[#9298AD]">Your {planName} plan has been extended through {formatDate(invoice?.new_valid_till || invoice?.new_valid_till_preview)}.</p>
-      <Button className="mt-5 h-12 w-full rounded-xl bg-[#7657FF] font-bold hover:bg-[#856BFF]" onClick={onDashboard}>Go to Dashboard</Button>
+      <p className="mt-2 text-sm text-[#9298AD]">
+        Your {planName} plan has been extended through {through}.
+      </p>
+      <Button className="mt-5 h-12 w-full rounded-[12px] bg-[#7657FF] font-bold hover:bg-[#856BFF]" onClick={onDashboard}>
+        Go to Dashboard
+      </Button>
     </div>
   );
 }
 
+// ── Shared primitives ────────────────────────────────────────────────────────
 function SectionTitle({ title, text }: { title: string; text: string }) {
   return (
     <div>
       <h2 className="text-lg font-bold text-[#F7F8FC] sm:text-xl">{title}</h2>
-      <p className="mt-1 text-sm text-[#9298AD]">{text}</p>
+      <p className="mt-1 text-[13px] text-[#9298AD] sm:text-sm">{text}</p>
     </div>
   );
 }
@@ -715,13 +878,20 @@ function StepActions({ primaryLabel, onPrimary, primaryDisabled, primaryLoading,
   onSecondary?: () => void;
 }) {
   return (
-    <div className="sticky bottom-0 -mx-4 -mb-4 flex flex-col-reverse gap-2 border-t border-[#262A3A] bg-[#0E1018]/95 p-4 backdrop-blur sm:static sm:mx-0 sm:mb-0 sm:flex-row sm:justify-between sm:border-0 sm:bg-transparent sm:p-0">
+    <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:items-center sm:justify-between">
       {secondaryLabel && onSecondary ? (
-        <Button variant="secondary" className="h-11 rounded-xl px-5" onClick={onSecondary}>
+        <Button variant="secondary" className="h-11 rounded-[12px] px-5" onClick={onSecondary}>
           {secondaryLabel}
         </Button>
-      ) : <span />}
-      <Button className="h-12 rounded-xl bg-[#7657FF] px-5 font-bold hover:bg-[#856BFF] sm:h-11" onClick={onPrimary} disabled={primaryDisabled} loading={primaryLoading}>
+      ) : (
+        <span className="hidden sm:block" />
+      )}
+      <Button
+        className="h-12 w-full rounded-[12px] bg-[#7657FF] px-5 font-bold hover:bg-[#856BFF] sm:h-11 sm:w-auto"
+        onClick={onPrimary}
+        disabled={primaryDisabled}
+        loading={primaryLoading}
+      >
         {primaryLabel}
       </Button>
     </div>
@@ -730,7 +900,7 @@ function StepActions({ primaryLabel, onPrimary, primaryDisabled, primaryLoading,
 
 function RenewalError({ message }: { message: string }) {
   return (
-    <div className="mb-4 rounded-xl border border-[#F06472]/30 bg-[#F06472]/10 p-3 text-sm font-semibold text-[#F06472]">
+    <div role="alert" className="mb-4 rounded-[12px] border border-[#F06472]/30 bg-[#F06472]/10 p-3 text-sm font-semibold text-[#F06472]">
       {message}
     </div>
   );
@@ -738,14 +908,14 @@ function RenewalError({ message }: { message: string }) {
 
 function PaymentWarning({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex items-start gap-2 rounded-xl border border-[#F2B94B]/25 bg-[#F2B94B]/10 p-3">
-      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[#F2B94B]" />
-      <p className="text-sm leading-5 text-[#F2B94B]">{children}</p>
+    <div className="flex items-start gap-2 rounded-[12px] border border-[#F2B94B]/25 bg-[#F2B94B]/10 p-3">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[#F2B94B]" aria-hidden="true" />
+      <p className="text-[13px] leading-5 text-[#F2B94B]">{children}</p>
     </div>
   );
 }
 
-function CryptoLogo({ code, className }: { code: string; className?: string }) {
+function CryptoLogo({ code }: { code: string }) {
   const base = code.split("_")[0];
   const logo: Record<string, string> = {
     BTC: "https://cryptologos.cc/logos/bitcoin-btc-logo.svg?v=040",
@@ -756,7 +926,7 @@ function CryptoLogo({ code, className }: { code: string; className?: string }) {
     USDT: "https://cryptologos.cc/logos/tether-usdt-logo.svg?v=040",
   };
   return (
-    <span className={cn("flex shrink-0 items-center justify-center rounded-full bg-white p-1", className)}>
+    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white p-1">
       {logo[base] ? (
         <img src={logo[base]} alt={`${base} logo`} className="h-full w-full object-contain" />
       ) : (
@@ -766,52 +936,70 @@ function CryptoLogo({ code, className }: { code: string; className?: string }) {
   );
 }
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
+type StatusTone = "warning" | "success" | "error" | "accent";
+type StatusInfo = { title: string; description: string; tone: StatusTone };
+
+function findMethod(code: string): PaymentMethod {
+  return PAYMENT_METHODS.find((m) => m.code === code) || PAYMENT_METHODS[0];
+}
+
+function formatNetworkLabel(method: PaymentMethod): string {
+  return method.networkCode || method.networkName || "";
+}
+
 function methodForInvoice(invoice: Payment, fallback: PaymentMethod): PaymentMethod {
   const pay = String(invoice.pay_currency || "").toUpperCase();
   const exact = PAYMENT_METHODS.find((method) => method.code === pay);
   if (exact) return exact;
   const asset = assetFromPayCurrency(pay, fallback.assetCode);
   const network = networkFromPayCurrency(pay || fallback.code);
-  return PAYMENT_METHODS.find((method) => method.assetCode === asset && method.networkCode === network) || {
-    code: pay || fallback.code,
-    assetName: asset,
-    assetCode: asset,
-    networkName: network,
-    networkCode: network,
-  };
+  return (
+    PAYMENT_METHODS.find((method) => method.assetCode === asset && method.networkCode === network) || {
+      code: pay || fallback.code,
+      assetName: asset,
+      assetCode: asset,
+      networkName: network,
+      networkCode: network,
+    }
+  );
 }
 
-function getStatusInfo(status: string, invoice: Payment) {
+function getStatusInfo(status: string, invoice: Payment, method: PaymentMethod): StatusInfo {
   const s = status.toLowerCase();
   const payAmount = Number(invoice.pay_amount || 0);
   const received = Number(invoice.amount_received || 0);
   if (s === "completed" || s === "paid") {
-    return { tone: "success" as const, title: "Payment confirmed", description: "Your renewal was confirmed by the backend." };
+    return { tone: "success", title: "Payment confirmed", description: "Your renewal was confirmed by the backend." };
   }
   if (s === "confirming" || s === "processing") {
-    return { tone: "accent" as const, title: "Payment detected", description: "Waiting for network confirmation." };
+    return { tone: "accent", title: "Payment detected", description: "Waiting for network confirmation." };
   }
   if (s === "expired") {
-    return { tone: "error" as const, title: "Invoice expired", description: "Create a new invoice to continue." };
+    return { tone: "error", title: "Invoice expired", description: "Create a new invoice to continue." };
   }
-  if (s === "cancelled" || s === "failed") {
-    return { tone: "error" as const, title: "Payment failed", description: "This invoice can no longer be paid." };
+  if (s === "cancelled" || s === "failed" || s === "invoice_failed") {
+    return { tone: "error", title: "Payment failed", description: "This invoice can no longer be paid." };
   }
   if (received > 0 && payAmount > 0 && received < payAmount) {
-    return { tone: "warning" as const, title: "Partial payment received", description: `Received ${received} of ${payAmount}.` };
+    return {
+      tone: "warning",
+      title: "Partial payment received",
+      description: `Received ${formatCryptoAmount(received)} of ${formatCryptoAmount(payAmount)} ${method.assetCode}.`,
+    };
   }
-  return { tone: "warning" as const, title: "Waiting for payment", description: "We are checking the blockchain automatically." };
+  return { tone: "warning", title: "Waiting for payment", description: "We are checking the blockchain automatically." };
 }
 
-function formatRemaining(hours: number) {
+function formatRemaining(hours: number): string {
   if (hours <= 0) return "0h";
   if (hours < 48) return `${Math.ceil(hours)}h`;
   return `${Math.ceil(hours / 24)}d`;
 }
 
-function formatRemainingTime(value: string | undefined, now: number) {
+function formatRemainingTime(value: string | undefined, now: number): string {
   const expiry = parseInvoiceDate(value);
-  if (!expiry) return "--:--";
+  if (!expiry) return "—";
   const diff = Math.max(0, expiry.getTime() - now);
   const totalSeconds = Math.floor(diff / 1000);
   const minutes = Math.floor(totalSeconds / 60);
@@ -824,23 +1012,33 @@ function formatRemainingTime(value: string | undefined, now: number) {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-function formatDateTime(value: string | undefined) {
+function formatExpiryExact(value: string | undefined): string {
   const date = parseInvoiceDate(value);
   if (!date) return "";
-  return date.toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+  const day = date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  const time = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  return `${day} at ${time}`;
 }
 
-function parseInvoiceDate(value: string | undefined) {
+// Backend stores invoice_expires_at as a naive UTC ISO string (no timezone
+// suffix). `new Date("2026-07-18T09:00:00")` would parse that as LOCAL time and
+// skew the countdown, so append `Z` to force UTC when no offset is present.
+function parseInvoiceDate(value: string | undefined): Date | null {
   if (!value) return null;
-  const date = new Date(value);
+  let raw = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(raw)) {
+    raw = `${raw}Z`;
+  }
+  const date = new Date(raw);
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function formatCryptoAmount(value: string | number) {
-  return String(value ?? "");
+// Preserve backend-provided precision exactly — never re-round crypto amounts.
+function formatCryptoAmount(value: string | number): string {
+  return String(value ?? "").trim();
 }
 
-function assetFromPayCurrency(currency: string, fallback: string) {
+function assetFromPayCurrency(currency: string, fallback: string): string {
   const upper = String(currency || "").toUpperCase();
   if (upper.startsWith("USDT")) return "USDT";
   if (upper.startsWith("USDC")) return "USDC";
@@ -848,7 +1046,7 @@ function assetFromPayCurrency(currency: string, fallback: string) {
   return upper || fallback;
 }
 
-function networkFromPayCurrency(currency: string) {
+function networkFromPayCurrency(currency: string): string {
   const upper = String(currency || "").toUpperCase();
   if (upper.includes("TRC20") || upper === "TRX") return "TRC20";
   if (upper.includes("BEP20") || upper === "BNB") return "BEP20";
@@ -858,11 +1056,6 @@ function networkFromPayCurrency(currency: string) {
   return upper;
 }
 
-function middleTruncate(value: string, start = 8, end = 7) {
-  if (!value || value.length <= start + end + 3) return value;
-  return `${value.slice(0, start)}...${value.slice(-end)}`;
-}
-
-function shortId(id: string) {
-  return id?.length > 12 ? `${id.slice(0, 8)}-${id.slice(-4)}` : id || "-";
+function shortId(id: string): string {
+  return id && id.length > 12 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id || "—";
 }
