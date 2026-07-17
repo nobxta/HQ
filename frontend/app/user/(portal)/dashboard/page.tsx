@@ -365,6 +365,12 @@ export default function UserDashboard() {
 
   const validTill = bot.valid_till ? parseFlexibleDate(bot.valid_till) : null;
   const daysLeft = validTill && !isNaN(validTill.getTime()) ? Math.ceil((validTill.getTime() - Date.now()) / 86400000) : null;
+  const hoursLeft = validTill && !isNaN(validTill.getTime()) ? Math.max(0, Math.ceil((validTill.getTime() - Date.now()) / 3600000)) : null;
+  const renewalTimeLeft = hoursLeft === null
+    ? "less than 48 hours"
+    : hoursLeft >= 48
+      ? `${Math.ceil(hoursLeft / 24)} days`
+      : `${hoursLeft} hours`;
   const expiringSoon = daysLeft !== null && daysLeft <= 7 && daysLeft >= 0;
   const expired = daysLeft !== null && daysLeft < 0;
 
@@ -457,22 +463,37 @@ export default function UserDashboard() {
         </div>
       </Modal>
 
-      <Modal open={showRenewalPopup} onClose={() => setShowRenewalPopup(false)} size="sm">
-        <div className="space-y-4">
-          <div className="flex items-start gap-3">
-            <div className="p-2.5 rounded-xl bg-warning/10 border border-warning/20 shrink-0">
-              <AlertTriangle className="h-6 w-6 text-warning" />
+      <Modal open={showRenewalPopup} onClose={() => setShowRenewalPopup(false)} size="sm" className="!border-white/[0.08] !bg-[#0b0b12]">
+        <div className="relative overflow-hidden rounded-xl">
+          <div className="absolute -right-16 -top-20 h-40 w-40 rounded-full bg-warning/15 blur-[70px]" />
+          <div className="absolute -bottom-20 -left-16 h-36 w-36 rounded-full bg-accent/15 blur-[70px]" />
+          <div className="relative space-y-5">
+            <div className="flex items-start gap-3">
+              <div className="p-3 rounded-2xl bg-warning/10 border border-warning/20 shrink-0 shadow-lg shadow-warning/10">
+                <AlertTriangle className="h-6 w-6 text-warning" />
+              </div>
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-[0.22em] text-warning/80">Renewal reminder</p>
+                <h2 className="mt-1 text-xl font-bold text-white">Advert plan ending soon</h2>
+                <p className="text-sm leading-6 text-dark-400 mt-2">
+                  Your Advert plan expires in <span className="font-bold text-white">{renewalTimeLeft}</span>. Renew now to avoid bot deletion.
+                </p>
+              </div>
             </div>
-            <div>
-              <h2 className="text-base font-bold text-dark-100">Plan Ending Soon</h2>
-              <p className="text-sm text-dark-400 mt-1">
-                Your AdBot plan is ending in {validTill ? Math.max(0, Math.ceil((validTill.getTime() - Date.now()) / 3600000)) : "less than 48"} hours. Renew now to avoid deletion.
-              </p>
+            <div className="rounded-2xl border border-white/[0.07] bg-white/[0.035] p-3">
+              <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] pb-2.5">
+                <span className="text-xs font-semibold text-dark-400">Current expiry</span>
+                <span className="text-sm font-bold text-white">{formatDate(bot.valid_till)}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3 pt-2.5">
+                <span className="text-xs font-semibold text-dark-400">Renewal page</span>
+                <span className="text-sm font-bold text-accent-100">Choose 7 or 30 days</span>
+              </div>
             </div>
-          </div>
-          <div className="flex flex-col sm:flex-row gap-2 justify-end">
-            <Button variant="secondary" onClick={() => setShowRenewalPopup(false)}>Later</Button>
-            <Button onClick={() => router.push("/user/billing/renew")}>Renew Now</Button>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <Button variant="secondary" className="h-11 rounded-xl" onClick={() => setShowRenewalPopup(false)}>Later</Button>
+              <Button className="h-11 rounded-xl font-bold" onClick={() => router.push("/user/billing/renew")}>Renew Now</Button>
+            </div>
           </div>
         </div>
       </Modal>
