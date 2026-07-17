@@ -1,5 +1,5 @@
 import axios from "axios";
-import { getApiBase } from "./api-base";
+import { getApiBase, applyBackend } from "./api-base";
 
 const portalApi = axios.create({
   baseURL: getApiBase(),
@@ -8,7 +8,8 @@ const portalApi = axios.create({
 
 portalApi.interceptors.request.use((config) => {
   // Resolve backend at request time so the dev backend switcher takes effect live.
-  config.baseURL = getApiBase();
+  // On localhost this routes through the same-origin dev proxy to sidestep CORS.
+  applyBackend(config);
   if (typeof window !== "undefined") {
     const session = localStorage.getItem("portal_session");
     if (session) {

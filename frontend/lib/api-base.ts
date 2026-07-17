@@ -82,3 +82,33 @@ export function clearApiBase(): void {
 export function getDefaultApiBase(): string {
   return DEFAULT_API;
 }
+
+/** Same-origin dev proxy path (see app/api/dev-proxy/[...path]/route.ts). */
+export const DEV_PROXY_PREFIX = "/api/dev-proxy";
+
+/**
+ * Mutate an axios request config to target the chosen backend.
+ *
+ * On a local dev host we DON'T hit the backend cross-origin (that trips CORS). Instead we
+ * send to a same-origin Next.js proxy and pass the real backend in a header — the Next
+ * server forwards it server-to-server, where CORS does not apply. So switching to the VPS
+ * works regardless of the VPS's CORS settings, with no VPS change.
+ *
+ * Off a local dev host (i.e. the live site) we set baseURL directly, exactly as before.
+ */
+export function applyBackend(config: {
+  baseURL?: string;
+  url?: string;
+  headers?: any;
+}): void {
+  const target = getApiBase();
+  if (isLocalDevHost()) {
+    const path = config.url || "";
+    config.baseURL = "";
+    config.url = DEV_PROXY_PREFIX + (path.startsWith("/") ? path : `/${path}`);
+    if (!config.headers) config.headers = {};
+    config.headers["x-dev-api-base"] = target;
+  } else {
+    config.baseURL = target;
+  }
+}

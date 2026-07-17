@@ -1,6 +1,6 @@
 import axios from "axios";
 import { getSession, signOut } from "next-auth/react";
-import { getApiBase } from "./api-base";
+import { getApiBase, applyBackend } from "./api-base";
 
 const api = axios.create({
   baseURL: getApiBase(),
@@ -11,7 +11,8 @@ const api = axios.create({
 // Attach bearer token from NextAuth session
 api.interceptors.request.use(async (config) => {
   // Resolve backend at request time so the dev backend switcher takes effect live.
-  config.baseURL = getApiBase();
+  // On localhost this routes through the same-origin dev proxy to sidestep CORS.
+  applyBackend(config);
   if (typeof window !== "undefined") {
     const session = await getSession();
     // If refresh token expired, sign out immediately
