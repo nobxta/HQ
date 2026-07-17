@@ -6,13 +6,18 @@ import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   ArrowLeft,
+  CalendarDays,
   Check,
   CheckCircle,
   ChevronRight,
+  Coins,
   Copy,
   Loader2,
   QrCode,
+  ReceiptText,
   RefreshCw,
+  Search,
+  ShieldCheck,
   X,
 } from "lucide-react";
 import toast from "react-hot-toast";
@@ -61,6 +66,7 @@ export default function RenewalPage() {
   const [creating, setCreating] = useState(false);
   const [checking, setChecking] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [cryptoQuery, setCryptoQuery] = useState("");
 
   const selectedOption = data?.options?.[duration];
   const selectedCurrency = CURRENCIES.find((item) => item.code === currency) || CURRENCIES[0];
@@ -184,18 +190,23 @@ export default function RenewalPage() {
   if (isLoading || !bot) return <PageSkeleton />;
 
   return (
-    <div className="min-h-[calc(100vh-7rem)] bg-[#050509] px-3 py-4 sm:px-5 sm:py-7">
-      <div className="mx-auto w-full max-w-[860px]">
+    <div className="min-h-[calc(100vh-7rem)] bg-[#050509] px-3 py-4 sm:px-5 sm:py-7 lg:py-10">
+      <div className="mx-auto w-full max-w-[780px]">
         <Link href="/user/billing" className="mb-4 inline-flex items-center gap-2 text-xs font-semibold text-dark-400 hover:text-white">
           <ArrowLeft className="h-4 w-4" /> Back to Billing
         </Link>
 
-        <section className="overflow-hidden rounded-[24px] border border-white/[0.08] bg-[#0d0d14] shadow-2xl shadow-black/40">
-          <header className="border-b border-white/[0.07] px-4 py-5 sm:px-6">
+        <section className="overflow-hidden rounded-[28px] border border-white/[0.08] bg-[#0d0d14] shadow-2xl shadow-black/40">
+          <header className="border-b border-white/[0.07] bg-[radial-gradient(circle_at_top_right,rgba(124,92,255,0.16),transparent_34%),linear-gradient(180deg,#11111b_0%,#0d0d14_100%)] px-4 py-5 sm:px-6">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">Renew Advert Plan</h1>
-                <p className="mt-1 text-sm text-dark-400">Extend your current plan securely.</p>
+              <div className="flex items-start gap-3">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-accent/30 bg-accent/15 text-accent-100 shadow-lg shadow-accent/10">
+                  <ShieldCheck className="h-5 w-5" />
+                </div>
+                <div>
+                  <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">Renew Advert Plan</h1>
+                  <p className="mt-1 text-sm text-dark-400">Extend your current plan securely.</p>
+                </div>
               </div>
               {hasOpenInvoice && (
                 <span className="w-fit rounded-full border border-warning/25 bg-warning/10 px-3 py-1 text-[11px] font-bold text-warning">
@@ -205,9 +216,9 @@ export default function RenewalPage() {
             </div>
 
             <div className="mt-5 grid gap-2 sm:grid-cols-3">
-              <SummaryTile label="Current Plan" value={planName} />
-              <SummaryTile label="Valid Until" value={currentExpiry} />
-              <SummaryTile label="Remaining" value={remaining} />
+              <SummaryTile icon={<ShieldCheck className="h-4 w-4" />} label="Current Plan" value={planName} />
+              <SummaryTile icon={<CalendarDays className="h-4 w-4" />} label="Valid Until" value={currentExpiry} />
+              <SummaryTile icon={<ReceiptText className="h-4 w-4" />} label="Remaining" value={remaining} />
             </div>
           </header>
 
@@ -215,7 +226,7 @@ export default function RenewalPage() {
             <StepIndicator step={step} />
           </div>
 
-          <main className="px-4 py-5 sm:px-6 sm:py-6">
+          <main className="mx-auto w-full max-w-[640px] px-4 py-5 sm:px-6 sm:py-6">
             {step === "duration" && (
               <DurationStep
                 data={data}
@@ -231,6 +242,8 @@ export default function RenewalPage() {
               <CryptoStep
                 currency={currency}
                 setCurrency={setCurrency}
+                query={cryptoQuery}
+                setQuery={setCryptoQuery}
                 summary={renewalSummary}
                 onBack={() => setStep("duration")}
                 onCreate={createPayment}
@@ -268,9 +281,9 @@ export default function RenewalPage() {
 
 function StepIndicator({ step }: { step: Step }) {
   const steps = [
-    { id: "duration", label: "Duration" },
-    { id: "crypto", label: "Crypto" },
-    { id: "invoice", label: "Invoice" },
+    { id: "duration", label: "Duration", icon: CalendarDays },
+    { id: "crypto", label: "Crypto", icon: Coins },
+    { id: "invoice", label: "Invoice", icon: ReceiptText },
   ] as const;
   const current = step === "success" ? 3 : steps.findIndex((item) => item.id === step);
   return (
@@ -278,16 +291,17 @@ function StepIndicator({ step }: { step: Step }) {
       {steps.map((item, index) => {
         const active = index === current;
         const done = index < current || step === "success";
+        const Icon = item.icon;
         return (
           <div key={item.id} className="flex min-w-0 flex-1 items-center">
             <div className="flex min-w-0 items-center gap-2">
               <span className={cn(
-                "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold",
+                "flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-bold",
                 active && "bg-accent text-white shadow-lg shadow-accent/25",
                 done && "bg-success/15 text-success",
                 !active && !done && "bg-white/[0.05] text-dark-500"
               )}>
-                {done ? <Check className="h-4 w-4" /> : index + 1}
+                {done ? <Check className="h-4 w-4" /> : <Icon className="h-4 w-4" />}
               </span>
               <span className={cn("truncate text-xs font-bold sm:text-sm", active ? "text-white" : done ? "text-success" : "text-dark-500")}>
                 {item.label}
@@ -312,7 +326,7 @@ function DurationStep({ data, bot, duration, setDuration, hasOpenInvoice, onCont
   const selected = data?.options?.[duration];
   return (
     <div className="space-y-5">
-      <SectionHeading title="Choose Renewal Duration" text="Select how long you want to extend your current plan." />
+      <SectionHeading icon={<CalendarDays className="h-5 w-5" />} title="Choose Renewal Duration" text="Select how long you want to extend your current plan." />
 
       <div className="grid gap-3 sm:grid-cols-2">
         {(["7d", "30d"] as const).map((key) => {
@@ -325,7 +339,7 @@ function DurationStep({ data, bot, duration, setDuration, hasOpenInvoice, onCont
               disabled={!opt?.available || hasOpenInvoice}
               onClick={() => setDuration(key)}
               className={cn(
-                "min-h-[156px] rounded-2xl border bg-[#14141f] p-4 text-left transition-all",
+                "min-h-[168px] rounded-2xl border bg-[#14141f] p-4 text-left transition-all",
                 active ? "border-accent bg-accent/[0.12] shadow-lg shadow-accent/10" : "border-white/[0.08] hover:border-accent/40",
                 (!opt?.available || hasOpenInvoice) && "opacity-60"
               )}
@@ -360,18 +374,26 @@ function DurationStep({ data, bot, duration, setDuration, hasOpenInvoice, onCont
   );
 }
 
-function CryptoStep({ currency, setCurrency, summary, onBack, onCreate, creating, disabled }: {
+function CryptoStep({ currency, setCurrency, query, setQuery, summary, onBack, onCreate, creating, disabled }: {
   currency: string;
   setCurrency: (currency: string) => void;
+  query: string;
+  setQuery: (query: string) => void;
   summary: { plan: string; duration: string; amount: string; newExpiry: string };
   onBack: () => void;
   onCreate: () => void;
   creating: boolean;
   disabled: boolean;
 }) {
+  const filteredCurrencies = CURRENCIES.filter((item) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    return `${item.name} ${item.symbol} ${item.network} ${item.code}`.toLowerCase().includes(q);
+  });
+
   return (
     <div className="space-y-5">
-      <SectionHeading title="Choose Payment Currency" text="Select the cryptocurrency and network you want to use." />
+      <SectionHeading icon={<Coins className="h-5 w-5" />} title="Choose Payment Currency" text="Select the cryptocurrency and network you want to use." />
       <CompactSummary rows={[
         ["Plan", summary.plan],
         ["Renewal", summary.duration],
@@ -379,8 +401,18 @@ function CryptoStep({ currency, setCurrency, summary, onBack, onCreate, creating
         ["New Expiry", summary.newExpiry],
       ]} />
 
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-dark-500" />
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search currency or network"
+          className="h-12 w-full rounded-2xl border border-white/[0.08] bg-[#090910] pl-10 pr-3 text-sm font-semibold text-white placeholder:text-dark-600 focus:border-accent/60 focus:ring-2 focus:ring-accent/20"
+        />
+      </div>
+
       <div className="grid gap-2.5 sm:grid-cols-2">
-        {CURRENCIES.map((item) => {
+        {filteredCurrencies.map((item) => {
           const active = currency === item.code;
           return (
             <button
@@ -395,7 +427,7 @@ function CryptoStep({ currency, setCurrency, summary, onBack, onCreate, creating
               <CryptoLogo code={item.code} className="h-10 w-10 shrink-0" />
               <div className="min-w-0 flex-1">
                 <p className="font-bold text-white">{item.name}</p>
-                <p className="text-xs text-dark-400">{item.symbol} · Network: {item.network}</p>
+                <p className="text-xs text-dark-400">{item.symbol} - Network: {item.network}</p>
               </div>
               <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-full border", active ? "border-accent bg-accent text-white" : "border-white/[0.16]")}>
                 {active && <Check className="h-3.5 w-3.5" />}
@@ -404,6 +436,12 @@ function CryptoStep({ currency, setCurrency, summary, onBack, onCreate, creating
           );
         })}
       </div>
+
+      {filteredCurrencies.length === 0 && (
+        <div className="rounded-2xl border border-white/[0.07] bg-white/[0.035] p-5 text-center text-sm font-semibold text-dark-400">
+          No matching currency.
+        </div>
+      )}
 
       <WarningBox text="Only send payment using the selected currency and network." />
 
@@ -434,7 +472,7 @@ function InvoiceStep({ payment, status, summary, selectedCurrency, qrUrl, onCopy
   const network = selectedCurrency.network || networkFromPayCurrency(payment.pay_currency);
   return (
     <div className="space-y-5">
-      <SectionHeading title="Complete Payment" text="Send the exact amount using the selected currency and network." />
+      <SectionHeading icon={<ReceiptText className="h-5 w-5" />} title="Complete Payment" text="Send the exact amount using the selected currency and network." />
       <CompactSummary rows={[
         ["Current Plan", summary.plan],
         ["Renewal", summary.duration],
@@ -524,20 +562,30 @@ function SuccessStep({ payment, onDashboard }: { payment: Payment | null; onDash
   );
 }
 
-function SectionHeading({ title, text }: { title: string; text: string }) {
+function SectionHeading({ icon, title, text }: { icon: React.ReactNode; title: string; text: string }) {
   return (
-    <div>
-      <h2 className="text-xl font-bold tracking-tight text-white sm:text-2xl">{title}</h2>
-      <p className="mt-1 text-sm text-dark-400">{text}</p>
+    <div className="flex items-start gap-3">
+      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-accent/25 bg-accent/10 text-accent-100">
+        {icon}
+      </div>
+      <div className="min-w-0">
+        <h2 className="text-xl font-bold tracking-tight text-white sm:text-2xl">{title}</h2>
+        <p className="mt-1 text-sm text-dark-400">{text}</p>
+      </div>
     </div>
   );
 }
 
-function SummaryTile({ label, value }: { label: string; value: string }) {
+function SummaryTile({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-white/[0.07] bg-white/[0.035] p-3">
-      <p className="text-[10px] font-black uppercase tracking-wide text-dark-500">{label}</p>
-      <p className="mt-1 truncate text-sm font-bold text-white">{value}</p>
+    <div className="flex items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.035] p-3">
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/[0.05] text-accent-100">
+        {icon}
+      </div>
+      <div className="min-w-0">
+        <p className="text-[10px] font-black uppercase tracking-wide text-dark-500">{label}</p>
+        <p className="mt-1 truncate text-sm font-bold text-white">{value}</p>
+      </div>
     </div>
   );
 }
