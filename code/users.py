@@ -5175,13 +5175,23 @@ async def create_user_bot(bot_token: str) -> None:
             except Exception:
                 await event.edit("This renewal duration is unavailable for your plan.")
                 return
+            # Same coin symbols as the AdBot purchase flow (inline buttons can't carry premium
+            # custom emoji, so the shop uses these unicode symbols too — see code/ui/emojis.py).
+            from .ui.emojis import coin_symbol
+
+            def _coin_btn(label: str, code: str):
+                sym = coin_symbol(code)
+                text = f"{sym} {label}".strip() if sym else label
+                return Button.inline(text, PREFIX_RENEW_CRY + f"{duration_days}:{code}".encode())
+
             rows = [
-                [Button.inline("BTC", PREFIX_RENEW_CRY + f"{duration_days}:BTC".encode()), Button.inline("ETH", PREFIX_RENEW_CRY + f"{duration_days}:ETH".encode())],
-                [Button.inline("USDT TRC20", PREFIX_RENEW_CRY + f"{duration_days}:USDT_TRC20".encode()), Button.inline("USDT BEP20", PREFIX_RENEW_CRY + f"{duration_days}:USDT_BEP20".encode())],
-                [Button.inline("USDC ERC20", PREFIX_RENEW_CRY + f"{duration_days}:USDC_ERC20".encode()), Button.inline("LTC", PREFIX_RENEW_CRY + f"{duration_days}:LTC".encode())],
-                [Button.inline("Back", PREFIX_RENEW_OPEN)],
+                [_coin_btn("Bitcoin", "BTC"), _coin_btn("Ethereum", "ETH")],
+                [_coin_btn("Litecoin", "LTC"), _coin_btn("TRON", "TRX")],
+                [_coin_btn("USDT TRC20", "USDT_TRC20"), _coin_btn("USDT BEP20", "USDT_BEP20")],
+                [_coin_btn("USDT ERC20", "USDT_ERC20"), _coin_btn("USDC ERC20", "USDC_ERC20")],
+                [Button.inline("‹ Back", PREFIX_RENEW_OPEN)],
             ]
-            await event.edit(f"Renewal total: ${price['amount']}\nChoose a cryptocurrency:", buttons=rows)
+            await event.edit(f"💳 **Renewal total: ${price['amount']}**\n\nChoose how you'd like to pay:", buttons=rows, parse_mode="md")
             return
         if raw.startswith(PREFIX_RENEW_CRY):
             await event.answer()
@@ -5212,7 +5222,7 @@ async def create_user_bot(bot_token: str) -> None:
                     old_valid_till=(cfg or {}).get("valid_till") or "",
                     new_valid_till_preview=price["new_valid_till_preview"],
                     payment_chat_id=event.chat_id,
-                    payment_message_id=event.message.id,
+                    payment_message_id=event.message_id,
                     notification_bot_token=bot_token,
                 )
                 if getattr(config, "PAYMENT_DEV_MODE", False):
@@ -5235,13 +5245,18 @@ async def create_user_bot(bot_token: str) -> None:
                     "invoice_expiry": invoice.get("invoice_expiry") or "",
                     "invoice_expires_at": invoice.get("invoice_expires_at") or "",
                 })
+                plan_disp = (cfg or {}).get("plan_name") or (cfg or {}).get("name") or "AdBot"
+                coin_disp = (invoice.get("pay_currency") or currency).upper()
                 await event.edit(
-                    "Renewal invoice\n\n"
-                    f"Duration: {duration_days} days\n"
-                    f"Fiat price: ${price['amount']}\n"
-                    f"Send exactly: `{invoice.get('pay_amount')}` {invoice.get('pay_currency') or currency}\n"
-                    f"Address:\n`{invoice.get('pay_address')}`\n\n"
-                    "Payment status updates automatically after confirmation.",
+                    "👛 **Complete Your Payment**\n\n"
+                    f"**Plan:** {plan_disp}\n"
+                    f"**Validity:** {duration_days} days\n"
+                    f"**Amount:** ${price['amount']}\n\n"
+                    f"Send exactly `{invoice.get('pay_amount')}` {coin_disp}\n\n"
+                    "to this address:\n\n"
+                    f"`{invoice.get('pay_address')}`\n\n"
+                    "🕖 Valid for **12 hours**. After that, start a new renewal if needed.\n\n"
+                    "Payment is detected automatically — you'll get the next step here.",
                     parse_mode="md",
                 )
             except Exception as exc:

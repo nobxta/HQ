@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -9,6 +9,7 @@ import {
   CalendarDays,
   Check,
   CheckCircle,
+  Clock,
   Coins,
   Copy,
   ReceiptText,
@@ -77,6 +78,9 @@ export default function RenewalPage() {
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  // Order id we just cancelled/dismissed, so the "restore active invoice" effect below does not
+  // immediately re-open it from the still-cached renewal-options response (the cancel race).
+  const dismissedInvoiceRef = useRef<string | null>(null);
 
   const options = data?.options || {};
   const selectedOption = options?.[selectedDuration];
@@ -182,6 +186,7 @@ export default function RenewalPage() {
       await portalApi.post(
         `/api/portal/bot/${encodeURIComponent(session.bot_name)}/renewal/${invoice.order_id}/cancel?telegram_id=${session.telegram_id}`
       );
+      dismissedInvoiceRef.current = invoice.order_id;
       setInvoice(null);
       setInvoiceStatus("idle");
       setStep(nextStep);
@@ -197,6 +202,7 @@ export default function RenewalPage() {
   // Start a fresh invoice after the current one expired (no cancel needed —
   // the backend already treats it as dead). Return to the method step.
   const startNewInvoice = () => {
+    if (invoice) dismissedInvoiceRef.current = invoice.order_id;
     setInvoice(null);
     setInvoiceStatus("idle");
     setError("");
@@ -208,6 +214,11 @@ export default function RenewalPage() {
   // duplicate invoices are never created silently.
   useEffect(() => {
     if (!data?.active_invoice || invoice) return;
+    // Don't re-open an invoice the user just cancelled/dismissed (the renewal-options response can
+    // still carry it for a moment before the backend marks it terminal).
+    if (data.active_invoice.order_id && data.active_invoice.order_id === dismissedInvoiceRef.current) return;
+    const st = (data.active_invoice.status || "").toLowerCase();
+    if (TERMINAL_STATUSES.has(st)) return;
     setInvoice(data.active_invoice);
     setInvoiceStatus(data.active_invoice.status || "payment_waiting");
     setStep(data.active_invoice.status === "completed" ? "success" : "invoice");
@@ -231,30 +242,30 @@ export default function RenewalPage() {
   if (isLoading || !bot) return <div className="p-4 sm:p-6"><PageSkeleton /></div>;
 
   return (
-    <div className="min-h-[100dvh] bg-[#07080D] px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4 sm:px-6 sm:pt-6 lg:px-8">
-      <div className={cn("mx-auto w-full", step === "invoice" ? "max-w-[980px]" : "max-w-[800px]")}>
-        <Link
-          href="/user/billing"
-          className="mb-3 inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-[#9298AD] transition-colors hover:text-[#F7F8FC] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[#07080D]"
-        >
-          <ArrowLeft className="h-4 w-4" /> Billing
-        </Link>
+    <div className="mx-auto w-full max-w-3xl space-y-4">
+      <Link
+        href="/user/billing"
+        className="inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-[#9298AD] transition-colors hover:text-[#F7F8FC] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/50"
+      >
+        <ArrowLeft className="h-4 w-4" /> Back to Billing
+      </Link>
 
-        <section className="overflow-hidden border border-[#262A3A] bg-[#0E1018] shadow-lg shadow-black/25 max-[640px]:rounded-none max-[640px]:border-x-0 sm:rounded-[18px]">
-          <RenewalHeader
-            pageTitle={pageTitle}
-            planName={planName}
-            currentExpiry={currentExpiry}
-            remaining={remaining}
-            hasOpenInvoice={hasOpenInvoice}
-          />
+      <RenewalHeader
+        planName={planName}
+        currentExpiry={currentExpiry}
+        remaining={remaining}
+        hasOpenInvoice={hasOpenInvoice}
+        planExpired={planExpired}
+        graceHoursLeft={(bot?.grace_hours_left as number | null | undefined) ?? null}
+      />
 
-          <div className="border-b border-[#262A3A] px-4 py-3 sm:px-6">
-            <RenewalProgress step={step} />
-          </div>
+      <div className="rounded-2xl border border-[#20242F] bg-[#0E1018] px-4 py-3.5 sm:px-5">
+        <RenewalProgress step={step} />
+      </div>
 
-          <main className="w-full px-4 py-5 sm:px-6 sm:py-6">
-            {error && <RenewalError message={error} />}
+      {error && <RenewalError message={error} />}
+
+      <div className="rounded-2xl border border-[#20242F] bg-[#0E1018] p-4 sm:p-5">
 
             {step === "duration" && (
               <DurationSelector
@@ -304,47 +315,54 @@ export default function RenewalPage() {
             {step === "success" && (
               <RenewalSuccess invoice={invoice} planName={planName} onDashboard={() => router.push("/user/dashboard")} />
             )}
-          </main>
-        </section>
       </div>
     </div>
   );
 }
 
 // ── Header ───────────────────────────────────────────────────────────────────
-function RenewalHeader({ pageTitle, planName, currentExpiry, remaining, hasOpenInvoice }: {
-  pageTitle: string;
+function RenewalHeader({ planName, currentExpiry, remaining, hasOpenInvoice, planExpired, graceHoursLeft }: {
   planName: string;
   currentExpiry: string;
   remaining: string;
   hasOpenInvoice: boolean;
+  planExpired: boolean;
+  graceHoursLeft: number | null;
 }) {
+  const inGrace = planExpired && graceHoursLeft !== null && graceHoursLeft > 0;
   return (
-    <header className="border-b border-[#262A3A] px-4 py-4 sm:px-6 sm:py-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-[22px] font-bold leading-tight tracking-tight text-[#F7F8FC] sm:text-[26px]">{pageTitle}</h1>
-          <p className="mt-1 text-[13px] text-[#9298AD] sm:text-sm">
-            Extend your subscription without interrupting your active service.
-          </p>
+    <div className="relative overflow-hidden rounded-2xl border border-[#20242F] bg-gradient-to-br from-[#13151F] to-[#0E1018] p-4 sm:p-5">
+      <div className="pointer-events-none absolute -right-16 -top-20 h-40 w-40 rounded-full bg-[#7657FF]/10 blur-[70px]" />
+      <div className="relative flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-[#7657FF]/25 bg-[#7657FF]/10 text-[#B9A7FF]">
+            <RefreshCw className="h-5 w-5" />
+          </span>
+          <div className="min-w-0">
+            <h1 className="truncate text-lg font-bold text-[#F7F8FC] sm:text-xl">Renew {planName} Plan</h1>
+            {planExpired ? (
+              inGrace ? (
+                <p className="mt-1 flex items-center gap-1.5 text-[13px] font-semibold text-[#F2B94B]">
+                  <Clock className="h-3.5 w-3.5 shrink-0" /> Plan expired — about {graceHoursLeft}h left before removal
+                </p>
+              ) : (
+                <p className="mt-1 text-[13px] font-semibold text-[#F2555A]">Plan expired — renew to restore your bot</p>
+              )
+            ) : (
+              <p className="mt-1 text-[13px] text-[#9298AD]">
+                Active until <span className="text-[#D9DCEA]">{currentExpiry}</span>
+                {remaining ? ` · ${remaining} remaining` : ""}
+              </p>
+            )}
+          </div>
         </div>
         {hasOpenInvoice && (
-          <span className="shrink-0 rounded-full border border-[#F2B94B]/30 bg-[#F2B94B]/10 px-3 py-1 text-xs font-bold text-[#F2B94B]">
+          <span className="shrink-0 rounded-full border border-[#F2B94B]/30 bg-[#F2B94B]/10 px-2.5 py-1 text-[11px] font-bold text-[#F2B94B]">
             Active invoice
           </span>
         )}
       </div>
-
-      <div className="mt-4 rounded-[14px] border border-[#262A3A] bg-[#151824] px-4 py-3">
-        <p className="font-bold text-[#F7F8FC]">{planName} Plan</p>
-        {/* Compact on mobile, two lines on desktop — one consistent date format. */}
-        <p className="mt-1 text-[13px] text-[#9298AD] sm:hidden">
-          Expires {currentExpiry}{remaining ? ` · ${remaining} remaining` : ""}
-        </p>
-        <p className="mt-1 hidden text-sm text-[#9298AD] sm:block">Active until {currentExpiry}</p>
-        {remaining && <p className="hidden text-sm text-[#D9DCEA] sm:block">{remaining} remaining</p>}
-      </div>
-    </header>
+    </div>
   );
 }
 

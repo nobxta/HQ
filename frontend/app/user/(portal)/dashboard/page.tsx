@@ -372,14 +372,27 @@ export default function UserDashboard() {
 
   const validTill = bot.valid_till ? parseFlexibleDate(bot.valid_till) : null;
   const daysLeft = validTill && !isNaN(validTill.getTime()) ? Math.ceil((validTill.getTime() - Date.now()) / 86400000) : null;
-  const hoursLeft = validTill && !isNaN(validTill.getTime()) ? Math.max(0, Math.ceil((validTill.getTime() - Date.now()) / 3600000)) : null;
+  const hoursToExpiry = validTill && !isNaN(validTill.getTime()) ? Math.ceil((validTill.getTime() - Date.now()) / 3600000) : null;
+  const hoursLeft = hoursToExpiry !== null ? Math.max(0, hoursToExpiry) : null;
   const renewalTimeLeft = hoursLeft === null
     ? "less than 48 hours"
     : hoursLeft >= 48
       ? `${Math.ceil(hoursLeft / 24)} days`
       : `${hoursLeft} hours`;
-  const expiringSoon = daysLeft !== null && daysLeft <= 7 && daysLeft >= 0;
-  const expired = daysLeft !== null && daysLeft < 0;
+  // Server-authoritative expiry / grace state (see serializers._expiry_fields). Distinguishes
+  // "time left until expiry" from "grace hours left before deletion" so the two never get confused.
+  const expired = !!bot.expired;
+  const inGrace = !!bot.in_grace;
+  const graceHoursLeft = typeof bot.grace_hours_left === "number" ? bot.grace_hours_left : null;
+  const expiringSoon = !expired && daysLeft !== null && daysLeft <= 7 && daysLeft >= 0;
+  // Wording for the renewal banner — grace vs approaching-expiry vs soon.
+  const renewBannerText = expired
+    ? (inGrace && graceHoursLeft !== null
+        ? `Plan expired — about ${graceHoursLeft}h left before your bot is deleted.`
+        : "Plan expired. Renew to restore your bot.")
+    : (hoursToExpiry !== null && hoursToExpiry <= 48
+        ? `Expires in ${Math.max(1, hoursToExpiry)}h — renew soon.`
+        : `Expires in ${daysLeft}d — renew soon.`);
 
   const lastStep = controlSteps[controlSteps.length - 1];
   const controlDone = lastStep?.status === "done";
@@ -430,7 +443,7 @@ export default function UserDashboard() {
       {(expired || expiringSoon) && (
         <Link href="/user/billing/renew" className={`flex items-center gap-2.5 rounded-2xl px-4 py-3 text-xs font-semibold mb-4 border animate-fade-in hover:bg-white/[0.03] ${
           expired ? "bg-danger/[0.04] text-danger border-danger/15" : "bg-warning/[0.04] text-warning border-warning/15"
-        }`}><AlertTriangle className="h-4 w-4 shrink-0" /><span className="flex-1">{expired ? "Plan expired. Renew to continue." : `Expires in ${daysLeft}d. Renew soon.`}</span><span className="text-[11px] underline">Renew Now</span></Link>
+        }`}><AlertTriangle className="h-4 w-4 shrink-0" /><span className="flex-1">{renewBannerText}</span><span className="text-[11px] underline shrink-0">Renew Now</span></Link>
       )}
     </>
   );
@@ -870,7 +883,7 @@ export default function UserDashboard() {
       {(expired || expiringSoon) && (
         <Link href="/user/billing/renew" className={`flex items-center gap-2.5 rounded-2xl px-4 py-3 text-xs font-semibold mb-4 border animate-fade-in hover:bg-white/[0.03] ${
           expired ? "bg-danger/[0.04] text-danger border-danger/15" : "bg-warning/[0.04] text-warning border-warning/15"
-        }`}><AlertTriangle className="h-4 w-4 shrink-0" /><span className="flex-1">{expired ? "Plan expired. Renew to continue." : `Expires in ${daysLeft}d. Renew soon.`}</span><span className="text-[11px] underline">Renew Now</span></Link>
+        }`}><AlertTriangle className="h-4 w-4 shrink-0" /><span className="flex-1">{renewBannerText}</span><span className="text-[11px] underline shrink-0">Renew Now</span></Link>
       )}
 
       {/* ═══════════ STAT CARDS ROW ═══════════ */}

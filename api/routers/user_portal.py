@@ -180,6 +180,16 @@ async def _get_user_bot(telegram_id: int, bot_name: str):
     raise HTTPException(404, f"Bot '{bot_name}' not found")
 
 
+def _ensure_not_expired(cfg: dict) -> None:
+    """Reject operational actions when the plan has expired. The web blur-lock is only cosmetic and
+    can be removed from the DOM — THIS is the real gate: even then, an expired bot can't be started
+    or reconfigured server-side. Renewal, stop, and read-only endpoints stay allowed so the user can
+    still recover during the grace window."""
+    from api.services.serializers import _expiry_fields
+    if _expiry_fields(cfg).get("expired"):
+        raise HTTPException(403, "Your plan has expired. Renew to continue.")
+
+
 async def _get_user_bots(telegram_id: int) -> list:
     """Find all bots a user is authorized on."""
     data = await wrappers.load_adbot()
@@ -482,6 +492,7 @@ async def portal_get_orders(bot_name: str, telegram_id: int = Query(...)):
 async def portal_start_bot(bot_name: str, telegram_id: int = Query(...)):
     from api.services.events import emit_bot_control
     token, cfg = await _get_user_bot(telegram_id, bot_name)
+    _ensure_not_expired(cfg)
     name = cfg.get("name", bot_name)
 
     emit_bot_control(name, "Initializing start...", status="progress", action="start")
@@ -535,6 +546,7 @@ async def portal_stop_bot(bot_name: str, telegram_id: int = Query(...)):
 @router.patch("/bot/{bot_name}/message")
 async def portal_update_message(bot_name: str, telegram_id: int = Query(...), body: PortalUpdateMessage = ...):
     token, cfg = await _get_user_bot(telegram_id, bot_name)
+    _ensure_not_expired(cfg)
     name = cfg.get("name", bot_name)
     full_cfg = await wrappers.load_user_data(name)
     if body.message_text is not None:
@@ -550,6 +562,7 @@ async def portal_update_message(bot_name: str, telegram_id: int = Query(...), bo
 @router.put("/bot/{bot_name}/links")
 async def portal_update_links(bot_name: str, telegram_id: int = Query(...), body: PortalUpdateLinks = ...):
     token, cfg = await _get_user_bot(telegram_id, bot_name)
+    _ensure_not_expired(cfg)
     name = cfg.get("name", bot_name)
     full_cfg = await wrappers.load_user_data(name)
     full_cfg["post_links"] = body.post_links[:10]
@@ -560,6 +573,7 @@ async def portal_update_links(bot_name: str, telegram_id: int = Query(...), body
 @router.patch("/bot/{bot_name}/settings")
 async def portal_update_settings(bot_name: str, telegram_id: int = Query(...), body: PortalUpdateSettings = ...):
     token, cfg = await _get_user_bot(telegram_id, bot_name)
+    _ensure_not_expired(cfg)
     name = cfg.get("name", bot_name)
     full_cfg = await wrappers.load_user_data(name)
     if body.cycle is not None:
@@ -586,6 +600,7 @@ async def portal_update_autoreply(bot_name: str, telegram_id: int = Query(...), 
     from code.users import compose_autoreply
     from code import dm_inbox as _dm
     token, cfg = await _get_user_bot(telegram_id, bot_name)
+    _ensure_not_expired(cfg)
     name = cfg.get("name", bot_name)
     full_cfg = await wrappers.load_user_data(name)
     ar = dict(full_cfg.get("dm_autoreply") or {})
@@ -646,6 +661,7 @@ async def portal_mark_dm_read(bot_name: str, msg_id: str, telegram_id: int = Que
 @router.put("/bot/{bot_name}/authorized")
 async def portal_update_auth(bot_name: str, telegram_id: int = Query(...), body: PortalUpdateAuth = ...):
     token, cfg = await _get_user_bot(telegram_id, bot_name)
+    _ensure_not_expired(cfg)
     name = cfg.get("name", bot_name)
     full_cfg = await wrappers.load_user_data(name)
     if telegram_id not in body.authorized:
@@ -685,6 +701,7 @@ async def portal_update_groups(bot_name: str, telegram_id: int = Query(...), bod
     """Update the group file contents directly (add, remove, reorder groups)."""
     await _get_user_bot(telegram_id, bot_name)
     cfg = await wrappers.load_user_data(bot_name)
+    _ensure_not_expired(cfg or {})
     name = cfg.get("name", bot_name)
     group_file = (cfg or {}).get("group_file", "")
     if not group_file:
@@ -703,6 +720,7 @@ async def portal_update_groups(bot_name: str, telegram_id: int = Query(...), bod
 @router.put("/bot/{bot_name}/chatlist")
 async def portal_update_chatlist(bot_name: str, telegram_id: int = Query(...), body: PortalUpdateChatlist = ...):
     token, cfg = await _get_user_bot(telegram_id, bot_name)
+    _ensure_not_expired(cfg)
     name = cfg.get("name", bot_name)
     full_cfg = await wrappers.load_user_data(name)
 

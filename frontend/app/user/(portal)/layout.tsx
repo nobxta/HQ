@@ -41,13 +41,8 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
   const pageTitle = PAGE_TITLES[pathname] ||
     Object.entries(PAGE_TITLES).find(([href]) => pathname.startsWith(href + "/"))?.[1] || "";
 
-  // Focused checkout (renewal invoice flow) owns its own padding and safe-area
-  // handling, and hides the mobile bottom nav so the sticky payment action bar
-  // can sit flush against the bottom edge without overlapping navigation.
-  const focusedCheckout = pathname.startsWith("/user/billing/renew");
-
-  // Blur-lock the whole portal once the plan has expired. Exempt every billing page (mirrors the
-  // focusedCheckout carve-out) so the Renew wizard stays reachable through the gate.
+  // Blur-lock the whole portal once the plan has expired. Exempt every billing page so the Renew
+  // wizard stays reachable through the gate.
   const onBilling = pathname.startsWith("/user/billing");
   const gateActive = !!bot?.expired && !onBilling;
 
@@ -80,9 +75,9 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
             <NotificationBell />
           </div>
         </header>
-        <main className={focusedCheckout ? "p-0" : "p-4 sm:p-6 pb-28 lg:pb-6"}>{children}</main>
+        <main className="p-4 sm:p-6 pb-28 lg:pb-6">{children}</main>
       </div>
-      {!focusedCheckout && <MobileBottomNav />}
+      <MobileBottomNav />
       {gateActive && <ExpiredGate expired graceHoursLeft={bot?.grace_hours_left as number | null | undefined} />}
     </div>
   );

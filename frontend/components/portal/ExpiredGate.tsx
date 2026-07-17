@@ -1,7 +1,6 @@
 "use client";
 import { useRouter } from "next/navigation";
-import { Lock, RefreshCw, AlertTriangle } from "lucide-react";
-import Button from "@/components/ui/Button";
+import { Lock, RefreshCw, ShieldCheck, Clock } from "lucide-react";
 
 interface ExpiredGateProps {
   /** Whether the plan is expired (server-authoritative `expired` flag). */
@@ -11,9 +10,9 @@ interface ExpiredGateProps {
 }
 
 /**
- * Full-screen blur-lock shown over the portal when the plan has expired. The user can no longer
- * operate the bot; the only action is Renew, which routes to the existing renewal wizard
- * (/user/billing/renew). The layout hides this gate on /user/billing so renewal stays reachable.
+ * Full-screen, branded blur-lock shown over the portal when the plan has expired. It is UX only —
+ * the real enforcement is server-side (expired bots reject start/config with 403). The layout hides
+ * this on /user/billing so the renewal wizard stays reachable.
  */
 export default function ExpiredGate({ expired, graceHoursLeft }: ExpiredGateProps) {
   const router = useRouter();
@@ -23,50 +22,63 @@ export default function ExpiredGate({ expired, graceHoursLeft }: ExpiredGateProp
   const inGrace = hrs !== null && hrs > 0;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-      {/* Scrim that blurs everything behind it */}
-      <div className="absolute inset-0 bg-dark-950/70 backdrop-blur-md" aria-hidden />
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
+      {/* Heavy scrim + blur over the whole portal */}
+      <div className="absolute inset-0 bg-dark-950/80 backdrop-blur-xl" aria-hidden />
 
-      <div className="relative w-full max-w-md overflow-hidden rounded-3xl border border-danger/20 bg-[#0b0b12] p-7 text-center shadow-2xl animate-fade-in">
-        {/* Ambient glows */}
-        <div className="pointer-events-none absolute -right-16 -top-20 h-40 w-40 rounded-full bg-danger/15 blur-[70px]" />
-        <div className="pointer-events-none absolute -bottom-20 -left-16 h-36 w-36 rounded-full bg-accent/15 blur-[70px]" />
-
-        <div className="relative">
-          <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-danger/25 bg-danger/10">
-            <Lock className="h-6 w-6 text-danger" />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Plan expired"
+        className="relative w-full max-w-[420px] overflow-hidden rounded-[28px] border border-white/[0.08] bg-[#0C0D14] shadow-[0_30px_80px_-20px_rgba(0,0,0,0.9)] animate-fade-in"
+      >
+        {/* Accent header band */}
+        <div className="relative h-24 overflow-hidden border-b border-white/[0.06] bg-gradient-to-br from-accent/25 via-accent/10 to-transparent">
+          <div className="pointer-events-none absolute -right-10 -top-16 h-40 w-40 rounded-full bg-accent/25 blur-[60px]" />
+          <div className="pointer-events-none absolute -bottom-16 left-6 h-32 w-32 rounded-full bg-danger/15 blur-[60px]" />
+          <div className="absolute left-1/2 top-1/2 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.06] backdrop-blur-md">
+            <Lock className="h-7 w-7 text-white" />
           </div>
+        </div>
 
-          <h2 className="text-xl font-black text-white">Plan expired</h2>
-
-          <p className="mx-auto mt-3 max-w-sm text-sm leading-relaxed text-dark-300">
-            Your AdBot plan has expired and posting has stopped. Renew now to restore your bot with
+        <div className="px-6 pb-6 pt-6 text-center sm:px-7">
+          <h2 className="text-[22px] font-black tracking-tight text-white">Your plan has expired</h2>
+          <p className="mx-auto mt-2 max-w-[320px] text-sm leading-relaxed text-dark-300">
+            Posting is paused and your dashboard is locked. Renew to bring your AdBot back online with
             the same accounts.
           </p>
 
+          {/* Countdown / status pill */}
           {inGrace ? (
-            <div className="mt-5 flex items-center justify-center gap-2 rounded-2xl border border-warning/20 bg-warning/[0.06] px-4 py-3 text-xs font-semibold text-warning">
-              <AlertTriangle className="h-4 w-4 shrink-0" />
-              <span>
-                About <span className="font-bold text-white tabular-nums">{hrs}h</span> left to renew
-                before your bot is removed.
-              </span>
+            <div className="mt-5 flex items-center justify-center gap-2.5 rounded-2xl border border-warning/20 bg-warning/[0.07] px-4 py-3">
+              <Clock className="h-4 w-4 shrink-0 text-warning" />
+              <p className="text-[13px] font-semibold text-warning">
+                <span className="tabular-nums text-white">{hrs}h</span> left before your bot is
+                permanently deleted
+              </p>
             </div>
           ) : (
-            <div className="mt-5 flex items-center justify-center gap-2 rounded-2xl border border-danger/20 bg-danger/[0.06] px-4 py-3 text-xs font-semibold text-danger">
-              <AlertTriangle className="h-4 w-4 shrink-0" />
-              <span>Renew soon — your bot will be removed once the grace period ends.</span>
+            <div className="mt-5 flex items-center justify-center gap-2.5 rounded-2xl border border-danger/20 bg-danger/[0.07] px-4 py-3">
+              <Clock className="h-4 w-4 shrink-0 text-danger" />
+              <p className="text-[13px] font-semibold text-danger">
+                Grace period ended — renew now before removal
+              </p>
             </div>
           )}
 
-          <Button
-            size="lg"
-            className="mt-6 h-12 w-full rounded-xl font-bold"
+          <button
             onClick={() => router.push("/user/billing/renew")}
+            className="mt-5 inline-flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-accent text-[15px] font-bold text-white shadow-lg shadow-accent/25 transition-all hover:bg-accent-600 active:scale-[0.99]"
           >
             <RefreshCw className="h-4 w-4" />
             Renew Now
-          </Button>
+          </button>
+
+          {/* Reassurance — nothing is lost during grace */}
+          <div className="mt-4 flex items-center justify-center gap-2 text-[12px] text-dark-400">
+            <ShieldCheck className="h-3.5 w-3.5 text-success/70" />
+            <span>Your accounts and settings are safe during the grace period.</span>
+          </div>
         </div>
       </div>
     </div>
