@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  AlertCircle,
   AlertTriangle,
   ArrowLeft,
   CalendarDays,
@@ -242,7 +243,7 @@ export default function RenewalPage() {
   if (isLoading || !bot) return <div className="p-4 sm:p-6"><PageSkeleton /></div>;
 
   return (
-    <div className="mx-auto w-full max-w-3xl space-y-4">
+    <div className="mx-auto w-full max-w-3xl space-y-4 pb-28 sm:pb-0">
       <Link
         href="/user/billing"
         className="inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-[#9298AD] transition-colors hover:text-[#F7F8FC] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/50"
@@ -331,36 +332,38 @@ function RenewalHeader({ planName, currentExpiry, remaining, hasOpenInvoice, pla
 }) {
   const inGrace = planExpired && graceHoursLeft !== null && graceHoursLeft > 0;
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-[#20242F] bg-gradient-to-br from-[#13151F] to-[#0E1018] p-4 sm:p-5">
-      <div className="pointer-events-none absolute -right-16 -top-20 h-40 w-40 rounded-full bg-[#7657FF]/10 blur-[70px]" />
-      <div className="relative flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-start gap-3">
-          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-[#7657FF]/25 bg-[#7657FF]/10 text-[#B9A7FF]">
-            <RefreshCw className="h-5 w-5" />
-          </span>
-          <div className="min-w-0">
-            <h1 className="truncate text-lg font-bold text-[#F7F8FC] sm:text-xl">Renew {planName} Plan</h1>
-            {planExpired ? (
-              inGrace ? (
-                <p className="mt-1 flex items-center gap-1.5 text-[13px] font-semibold text-[#F2B94B]">
-                  <Clock className="h-3.5 w-3.5 shrink-0" /> Plan expired — about {graceHoursLeft}h left before removal
-                </p>
-              ) : (
-                <p className="mt-1 text-[13px] font-semibold text-[#F2555A]">Plan expired — renew to restore your bot</p>
-              )
-            ) : (
-              <p className="mt-1 text-[13px] text-[#9298AD]">
-                Active until <span className="text-[#D9DCEA]">{currentExpiry}</span>
-                {remaining ? ` · ${remaining} remaining` : ""}
-              </p>
+    <div className="rounded-2xl border border-[#20242F] bg-[#0E1018] p-4 sm:p-5">
+      <div className="flex items-start gap-3 sm:gap-4">
+        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-[#7657FF]/25 bg-[#7657FF]/10 text-[#B9A7FF]">
+          <RefreshCw className="h-5 w-5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+            <h1 className="text-lg font-bold text-[#F7F8FC] sm:text-xl">Renew your {planName} plan</h1>
+            {hasOpenInvoice && (
+              <span className="rounded-full border border-[#F2B94B]/30 bg-[#F2B94B]/10 px-2.5 py-0.5 text-[11px] font-bold text-[#F2B94B]">
+                Active invoice
+              </span>
             )}
           </div>
+          {planExpired ? (
+            <>
+              <span className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-[#F2555A]/25 bg-[#F2555A]/10 px-2.5 py-1 text-[12px] font-bold text-[#F2555A]">
+                <AlertCircle className="h-3.5 w-3.5" /> Subscription expired
+              </span>
+              <p className="mt-2.5 text-[13px] leading-relaxed text-[#9298AD] sm:text-sm">
+                {inGrace
+                  ? `Renew within ${graceHoursLeft} hours to keep your accounts, campaigns and settings.`
+                  : "Renew now to restore your accounts, campaigns and settings."}
+              </p>
+            </>
+          ) : (
+            <p className="mt-2 text-[13px] text-[#9298AD] sm:text-sm">
+              Active until <span className="text-[#D9DCEA]">{currentExpiry}</span>
+              {remaining ? ` · ${remaining} remaining` : ""}
+            </p>
+          )}
         </div>
-        {hasOpenInvoice && (
-          <span className="shrink-0 rounded-full border border-[#F2B94B]/30 bg-[#F2B94B]/10 px-2.5 py-1 text-[11px] font-bold text-[#F2B94B]">
-            Active invoice
-          </span>
-        )}
       </div>
     </div>
   );
@@ -496,7 +499,7 @@ function DurationSelector({ options, currentExpiry, planExpired, planName, selec
         )}
       </p>
 
-      <StepActions primaryLabel="Continue" onPrimary={onContinue} primaryDisabled={!selected?.available} />
+      <StepActions primaryLabel="Continue to payment" onPrimary={onContinue} primaryDisabled={!selected?.available} />
     </div>
   );
 }
@@ -896,16 +899,18 @@ function StepActions({ primaryLabel, onPrimary, primaryDisabled, primaryLoading,
   onSecondary?: () => void;
 }) {
   return (
-    <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:items-center sm:justify-between">
+    // Mobile: sticky action bar flush to the safe-area bottom edge (native-checkout feel).
+    // Desktop (sm+): reverts to an inline right-aligned row inside the step card.
+    <div className="fixed inset-x-0 bottom-0 z-40 flex flex-col-reverse gap-2 border-t border-[#20242F] bg-[#0B0C12]/95 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur-md sm:static sm:z-auto sm:mt-1 sm:flex-row sm:items-center sm:justify-between sm:border-0 sm:bg-transparent sm:p-0 sm:pt-1 sm:backdrop-blur-none">
       {secondaryLabel && onSecondary ? (
-        <Button variant="secondary" className="h-11 rounded-[12px] px-5" onClick={onSecondary}>
+        <Button variant="secondary" className="h-11 rounded-xl px-5" onClick={onSecondary}>
           {secondaryLabel}
         </Button>
       ) : (
         <span className="hidden sm:block" />
       )}
       <Button
-        className="h-12 w-full rounded-[12px] bg-[#7657FF] px-5 font-bold hover:bg-[#856BFF] sm:h-11 sm:w-auto"
+        className="h-[52px] w-full rounded-xl bg-[#7657FF] px-5 text-[15px] font-bold hover:bg-[#856BFF] sm:h-11 sm:w-auto sm:text-sm"
         onClick={onPrimary}
         disabled={primaryDisabled}
         loading={primaryLoading}

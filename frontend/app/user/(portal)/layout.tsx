@@ -17,6 +17,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/user/chatlist": "Chat List",
   "/user/auto-reply": "Auto Reply",
   "/user/settings": "Settings",
+  "/user/billing/renew": "Billing Renewal",
   "/user/billing": "Billing",
 };
 
@@ -45,6 +46,10 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
   // wizard stays reachable through the gate.
   const onBilling = pathname.startsWith("/user/billing");
   const gateActive = !!bot?.expired && !onBilling;
+
+  // The renewal wizard is a focused mobile checkout: hide the bottom tab bar so its own sticky
+  // payment action bar can sit flush at the bottom edge.
+  const focusedCheckout = pathname.startsWith("/user/billing/renew");
 
   return (
     <div className="flex min-h-screen">
@@ -77,7 +82,7 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
         </header>
         <main className="p-4 sm:p-6 pb-28 lg:pb-6">{children}</main>
       </div>
-      <MobileBottomNav />
+      {!focusedCheckout && <MobileBottomNav />}
       {gateActive && <ExpiredGate expired graceHoursLeft={bot?.grace_hours_left as number | null | undefined} />}
     </div>
   );

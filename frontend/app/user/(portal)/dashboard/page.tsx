@@ -388,8 +388,8 @@ export default function UserDashboard() {
   // Wording for the renewal banner — grace vs approaching-expiry vs soon.
   const renewBannerText = expired
     ? (inGrace && graceHoursLeft !== null
-        ? `Plan expired — about ${graceHoursLeft}h left before your bot is deleted.`
-        : "Plan expired. Renew to restore your bot.")
+        ? `Your subscription has expired. Renew within ${graceHoursLeft} hours to keep your bot and existing data.`
+        : "Your subscription has expired. Renew to keep your bot and existing data.")
     : (hoursToExpiry !== null && hoursToExpiry <= 48
         ? `Expires in ${Math.max(1, hoursToExpiry)}h — renew soon.`
         : `Expires in ${daysLeft}d — renew soon.`);
@@ -676,11 +676,11 @@ export default function UserDashboard() {
               </div>
               <div className="w-px bg-white/[0.08] shrink-0" />
               <div className="flex-1 min-w-0">
-                <p className="text-dark-500 text-[11px] font-medium mb-1">Valid Until</p>
+                <p className="text-dark-500 text-[11px] font-medium mb-1">{expired ? "Subscription" : "Valid Until"}</p>
                 <div className="flex items-center gap-1.5">
                   <CalendarClock className="h-4 w-4 text-dark-400 shrink-0" />
                   <span className={`text-[14px] font-bold truncate ${expired ? "text-danger" : expiringSoon ? "text-warning" : "text-white"}`}>
-                    {validTill ? formatDate(bot.valid_till) : "—"}
+                    {expired ? "Expired" : validTill ? formatDate(bot.valid_till) : "—"}
                   </span>
                 </div>
               </div>
@@ -826,14 +826,20 @@ export default function UserDashboard() {
                     <Zap className="h-3 w-3" />{bot.plan_name}
                   </span>
                 )}
-                {/* Expiry pill — "Valid until · date" */}
+                {/* Expiry pill — a single "Subscription Expired" badge when expired, else "Valid until · date" */}
                 {validTill && (
-                  <span className={`inline-flex items-center rounded-full border overflow-hidden text-[11px] font-medium ${
-                    expired ? "border-danger/15 text-danger" : expiringSoon ? "border-warning/15 text-warning" : "border-dark-700/30 text-dark-400"
-                  }`}>
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-dark-800/40"><CalendarClock className="h-3 w-3" />Valid until</span>
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-dark-800/20 border-l border-white/[0.05]"><Clock className="h-3 w-3" />{expired ? "Expired" : expiringSoon ? `${daysLeft}d left` : formatDate(bot.valid_till)}</span>
-                  </span>
+                  expired ? (
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-danger/15 bg-danger/[0.06] px-3 py-1 text-[11px] font-semibold text-danger">
+                      <AlertTriangle className="h-3 w-3" />Subscription Expired
+                    </span>
+                  ) : (
+                    <span className={`inline-flex items-center rounded-full border overflow-hidden text-[11px] font-medium ${
+                      expiringSoon ? "border-warning/15 text-warning" : "border-dark-700/30 text-dark-400"
+                    }`}>
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-dark-800/40"><CalendarClock className="h-3 w-3" />Valid until</span>
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-dark-800/20 border-l border-white/[0.05]"><Clock className="h-3 w-3" />{expiringSoon ? `${daysLeft}d left` : formatDate(bot.valid_till)}</span>
+                    </span>
+                  )
                 )}
               </div>
             </div>
