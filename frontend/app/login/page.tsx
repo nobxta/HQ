@@ -5,6 +5,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Key, Loader2, Eye, EyeOff } from "lucide-react";
 import BrandMark from "@/components/BrandMark";
 import portalApi, { setPortalSession } from "@/lib/portal-api";
+import BackendSwitcher from "@/components/BackendSwitcher";
+import { getApiBase } from "@/lib/api-base";
 import { Suspense } from "react";
 
 function LoginContent() {
@@ -40,6 +42,7 @@ function LoginContent() {
           redirect: false,
           access_token: data.access_token,
           refresh_token: data.refresh_token,
+          api_base: getApiBase(),
         });
         if (result?.error) {
           setError("Admin login failed");
@@ -150,6 +153,10 @@ function LoginContent() {
             Your access code was provided when your bot was created.
           </p>
         </form>
+
+        {/* Local-dev only: pick which backend to authenticate + test against.
+            Renders nothing on the live domain. */}
+        <BackendSwitcher />
       </div>
     </div>
   );

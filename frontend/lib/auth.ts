@@ -16,8 +16,12 @@ export const authOptions: NextAuthOptions = {
         code: { label: "Code", type: "password" },
         access_token: { label: "Token", type: "text" },
         refresh_token: { label: "Refresh", type: "text" },
+        api_base: { label: "ApiBase", type: "text" },
       },
       async authorize(credentials) {
+        // Backend this session was authenticated against (dev switcher). Used later so
+        // token refresh hits the same backend the tokens came from. Ignored in prod.
+        const apiBase = credentials?.api_base || API_URL;
         // Mode 1: Pre-authenticated (unified login already validated)
         if (credentials?.access_token && credentials?.refresh_token) {
           return {
@@ -25,7 +29,8 @@ export const authOptions: NextAuthOptions = {
             name: credentials.username || "admin",
             accessToken: credentials.access_token,
             refreshToken: credentials.refresh_token,
-          };
+            apiBase,
+          } as any;
         }
 
         // Mode 2: Code-only login (unified)
@@ -72,6 +77,7 @@ export const authOptions: NextAuthOptions = {
       if (user) {
         token.accessToken = (user as any).accessToken;
         token.refreshToken = (user as any).refreshToken;
+        token.apiBase = (user as any).apiBase || API_URL;
         // Set expiry: access token lasts 24h, refresh before it expires
         token.accessTokenExpires = Date.now() + 23 * 60 * 60 * 1000; // 23h
       }
@@ -81,9 +87,11 @@ export const authOptions: NextAuthOptions = {
         return token;
       }
 
-      // Access token expired — try to refresh using refresh token
+      // Access token expired — try to refresh using refresh token, against the same
+      // backend the session was created on (dev switcher; falls back to env API_URL).
       try {
-        const { data } = await axios.post(`${API_URL}/api/auth/refresh`, {
+        const refreshBase = (token.apiBase as string) || API_URL;
+        const { data } = await axios.post(`${refreshBase}/api/auth/refresh`, {
           refresh_token: token.refreshToken,
         });
         token.accessToken = data.access_token;

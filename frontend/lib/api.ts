@@ -1,14 +1,17 @@
 import axios from "axios";
 import { getSession, signOut } from "next-auth/react";
+import { getApiBase } from "./api-base";
 
 const api = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000",
+  baseURL: getApiBase(),
   headers: { "Content-Type": "application/json" },
   timeout: 30000,
 });
 
 // Attach bearer token from NextAuth session
 api.interceptors.request.use(async (config) => {
+  // Resolve backend at request time so the dev backend switcher takes effect live.
+  config.baseURL = getApiBase();
   if (typeof window !== "undefined") {
     const session = await getSession();
     // If refresh token expired, sign out immediately

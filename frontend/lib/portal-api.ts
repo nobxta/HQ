@@ -1,11 +1,14 @@
 import axios from "axios";
+import { getApiBase } from "./api-base";
 
 const portalApi = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000",
+  baseURL: getApiBase(),
   headers: { "Content-Type": "application/json" },
 });
 
 portalApi.interceptors.request.use((config) => {
+  // Resolve backend at request time so the dev backend switcher takes effect live.
+  config.baseURL = getApiBase();
   if (typeof window !== "undefined") {
     const session = localStorage.getItem("portal_session");
     if (session) {
