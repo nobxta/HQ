@@ -53,13 +53,18 @@ async def resume_adbots(data: dict) -> None:
     for bot_token, cfg in bots.items():
         if not bot_token or not isinstance(cfg, dict):
             continue
-        if cfg.get("state") in ("dead", "expired"):
-            logger.info("Resume: skipping %s bot %s", cfg.get("state"), cfg.get("name") or bot_token[:20])
+        if cfg.get("state") == "dead":
+            logger.info("Resume: skipping dead bot %s", cfg.get("name") or bot_token[:20])
             continue
         try:
             asyncio.create_task(create_user_bot(bot_token))
         except Exception as e:
             logger.warning("Resume: could not start user bot %s: %s", (cfg.get("name") or bot_token[:20]), e)
+            continue
+        # In-grace (expired) bots keep their controller bot online so the owner can still renew
+        # from Telegram after a restart, but posting stays stopped until they renew.
+        if cfg.get("state") == "expired":
+            logger.info("Resume: %s in grace — controller bot up, posting held", cfg.get("name") or bot_token[:20])
             continue
         if bot_token in emergency_stopped:
             logger.info("Resume: skipping posting for %s (emergency stopped)", cfg.get("name") or bot_token[:20])

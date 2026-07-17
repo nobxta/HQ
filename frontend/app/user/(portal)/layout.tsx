@@ -2,9 +2,11 @@
 import { useState, useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { getPortalSession } from "@/lib/portal-api";
+import { usePortalBot } from "@/lib/hooks/usePortal";
 import PortalSidebar from "@/components/portal/PortalSidebar";
 import NotificationBell from "@/components/portal/NotificationBell";
 import MobileBottomNav from "@/components/portal/MobileBottomNav";
+import ExpiredGate from "@/components/portal/ExpiredGate";
 import { Menu, CalendarDays } from "lucide-react";
 
 const PAGE_TITLES: Record<string, string> = {
@@ -23,6 +25,7 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [now, setNow] = useState<Date | null>(null);
+  const { data: bot } = usePortalBot();
 
   useEffect(() => {
     const session = getPortalSession();
@@ -42,6 +45,11 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
   // handling, and hides the mobile bottom nav so the sticky payment action bar
   // can sit flush against the bottom edge without overlapping navigation.
   const focusedCheckout = pathname.startsWith("/user/billing/renew");
+
+  // Blur-lock the whole portal once the plan has expired. Exempt every billing page (mirrors the
+  // focusedCheckout carve-out) so the Renew wizard stays reachable through the gate.
+  const onBilling = pathname.startsWith("/user/billing");
+  const gateActive = !!bot?.expired && !onBilling;
 
   return (
     <div className="flex min-h-screen">
@@ -75,6 +83,7 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
         <main className={focusedCheckout ? "p-0" : "p-4 sm:p-6 pb-28 lg:pb-6"}>{children}</main>
       </div>
       {!focusedCheckout && <MobileBottomNav />}
+      {gateActive && <ExpiredGate expired graceHoursLeft={bot?.grace_hours_left as number | null | undefined} />}
     </div>
   );
 }

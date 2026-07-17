@@ -174,6 +174,10 @@ POLL_INTERVAL_AFTER_30_MIN = 600   # 10 min
 PAYMENT_WINDOW_HOURS = 12
 RENEWAL_CHECK_INTERVAL_SEC = 3600
 RENEWAL_HOURS_BEFORE = 48
+# After a plan's valid_till passes, the bot enters a grace window: posting is stopped and the
+# owner is prompted to renew, but nothing is torn down. If no renewal lands within this many
+# hours, the bot is purged (sessions freed, config archived). See grace_lifecycle_worker.
+GRACE_PERIOD_HOURS = 48
 
 # User-facing messages: professional, clear, one emoji at start when appropriate. Telegram Markdown.
 
@@ -985,8 +989,50 @@ async def renewal_scheduler_worker() -> None:
         await asyncio.sleep(RENEWAL_CHECK_INTERVAL_SEC)
 
 
+async def grace_lifecycle_worker() -> None:
+    """Drive the two-phase expiry lifecycle. Hourly:
+      - Phase 1 (enter grace): bots whose valid_till has passed but are not yet flagged expired →
+        submit "expire_bot" (stops posting, holds sessions, notifies owner). This backstops bots
+        that expire while posting is stopped — the posting cycle only detects expiry while running.
+      - Phase 2 (purge): bots in grace whose expired_at is older than GRACE_PERIOD_HOURS →
+        submit "purge_expired_bot" (frees sessions, archives config).
+    Both jobs are idempotent (expire_bot skips already-expired; purge is safe to repeat)."""
+    from ..utils import load_adbot
+    from ..admin_ptb import submit_main_loop_job
+    while True:
+        try:
+            data = load_adbot()
+            bots = data.get("bots", {})
+            now_local = datetime.now()      # valid_till is naive-local (matches users.py / crash.py)
+            now_utc = datetime.utcnow()     # expired_at is stored as UTC ISO
+            for bot_token, cfg in list(bots.items()):
+                state = cfg.get("state") or ""
+                if state == "dead":
+                    continue
+                if state == "expired":
+                    exp_at = _parse_iso(str(cfg.get("expired_at") or "").strip())
+                    if exp_at and (now_utc - exp_at) >= timedelta(hours=GRACE_PERIOD_HOURS):
+                        submit_main_loop_job("purge_expired_bot", (bot_token,))
+                        logger.info("[Grace] purge scheduled for %s (grace window elapsed)", cfg.get("name") or bot_token[:20])
+                    continue
+                vt = (cfg.get("valid_till") or "").strip()
+                if not vt:
+                    continue
+                try:
+                    end = datetime.strptime(vt, "%d/%m/%Y")
+                except ValueError:
+                    continue
+                if now_local > end:
+                    submit_main_loop_job("expire_bot", (bot_token,))
+                    logger.info("[Grace] grace-entry scheduled for %s (valid_till passed)", cfg.get("name") or bot_token[:20])
+        except Exception as e:
+            logger.warning("Grace lifecycle worker error: %s", e)
+        await asyncio.sleep(RENEWAL_CHECK_INTERVAL_SEC)
+
+
 def extend_valid_till_for_bot(bot_token: str, duration_days: int, order_id: str = "", order: dict | None = None, details: dict | None = None) -> bool:
-    """Extend valid_till by duration_days from max(current validity, now). Idempotent by order_id."""
+    """Extend valid_till by duration_days from the stored expiry date (no lost days during grace).
+    Idempotent by order_id. On grace exit, clears the grace flags and resumes posting if it was running."""
     from ..utils import get_name_by_token, save_user_data, load_user_data
     from ..user_config import append_renewal_record
     from .renewals import parse_valid_till
@@ -1011,9 +1057,12 @@ def extend_valid_till_for_bot(bot_token: str, duration_days: int, order_id: str 
         current_end = parse_valid_till(vt)
         if current_end is None:
             return False
-        now_dt = dt.utcnow()
         previous_vt = current_end.strftime("%d/%m/%Y")
-        base_end = max(current_end, now_dt)
+        # Extend from the stored expiry date, NOT from "now". A not-yet-expired bot's expiry is in
+        # the future, so early renewals still stack correctly; an expired bot renewing during the
+        # 48h grace loses no days (expiry_date + duration, e.g. 7 Dec + 30 = 6 Jan regardless of
+        # which grace hour they pay in).
+        base_end = current_end
         end = base_end + timedelta(days=duration_days)
         cfg["valid_till"] = end.strftime("%d/%m/%Y")
         now_iso = dt.utcnow().isoformat() + "Z"
@@ -1050,7 +1099,24 @@ def extend_valid_till_for_bot(bot_token: str, duration_days: int, order_id: str 
                 _reset_free_replacements_on_renewal(cfg, matched_plan)
         except Exception:
             pass
+        # Grace exit: if the bot was in the 48h grace window, clear the grace flags and restore
+        # the pre-grace state. Resume posting only if it was running when the plan expired. The
+        # controller bot was never removed during grace, so no re-provisioning is needed.
+        resume_posting = False
+        if cfg.get("state") == "expired" or cfg.get("expired_at"):
+            pre = cfg.get("pre_grace_state") or "stopped"
+            cfg["state"] = pre
+            cfg.pop("expired_at", None)
+            cfg.pop("pre_grace_state", None)
+            resume_posting = (pre == "running")
         save_user_data(name, cfg)
+        if resume_posting:
+            try:
+                from ..admin_ptb import submit_main_loop_job
+                submit_main_loop_job("resume_after_renewal", (bot_token,))
+                logger.info("Renewal restored bot %s from grace — posting resume queued", bot_token[:20])
+            except Exception as re:
+                logger.warning("Could not queue posting resume after renewal for %s: %s", bot_token[:20], re)
         if order_id:
             update_order(order_id, {
                 "applied": True,

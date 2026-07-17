@@ -1,6 +1,44 @@
 """Convert internal data structures to API-safe JSON-serializable dicts."""
 from typing import Any, Optional
+from datetime import datetime, timedelta
 import time
+
+# Grace window after a plan's valid_till passes before the bot is purged. Mirrors
+# GRACE_PERIOD_HOURS in code/shop/workers.py — kept in sync intentionally.
+_GRACE_HOURS = 48
+
+
+def _expiry_fields(cfg: dict) -> dict:
+    """Server-authoritative expiry state for the portal gate.
+    - expired: plan is past valid_till (or already flagged state=expired).
+    - in_grace: inside the 48h grace window (posting stopped, bot not yet purged).
+    - grace_hours_left: whole hours until purge (from expired_at), or None if not yet tracked.
+    """
+    state = cfg.get("state", "stopped")
+    vt = (cfg.get("valid_till") or "").strip()
+    expired_at_raw = str(cfg.get("expired_at") or "").strip()
+    expired = state == "expired"
+    if not expired and vt:
+        try:
+            expired = datetime.now() > datetime.strptime(vt, "%d/%m/%Y")
+        except ValueError:
+            pass
+    grace_hours_left = None
+    in_grace = False
+    if expired_at_raw:
+        try:
+            started = datetime.fromisoformat(expired_at_raw.replace("Z", "").split(".")[0])
+            left = (started + timedelta(hours=_GRACE_HOURS)) - datetime.utcnow()
+            grace_hours_left = max(0, int(left.total_seconds() // 3600))
+            in_grace = left.total_seconds() > 0
+        except ValueError:
+            pass
+    return {
+        "expired": expired,
+        "in_grace": in_grace,
+        "grace_hours_left": grace_hours_left,
+        "expired_at": expired_at_raw,
+    }
 
 
 def serialize_bot_summary(token: str, cfg: dict) -> dict:
@@ -24,6 +62,7 @@ def serialize_bot_summary(token: str, cfg: dict) -> dict:
         "log_group": cfg.get("log_group"),
         "group_file": cfg.get("group_file", ""),
         "created_at": cfg.get("created_at", ""),
+        **_expiry_fields(cfg),
     }
 
 

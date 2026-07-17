@@ -38,6 +38,7 @@ from code.shop.workers import (
     payment_polling_worker,
     payment_safety_sweep,
     renewal_scheduler_worker,
+    grace_lifecycle_worker,
     order_recovery_on_startup,
     daily_orders_cleanup_worker,
     daily_supported_currencies_sync_worker,
@@ -354,6 +355,7 @@ async def main() -> None:
         logger.info("Payment polling disabled (webhook-only). Set PAYMENT_POLLING=1 to re-enable the fallback worker.")
         asyncio.create_task(payment_safety_sweep(), name="payment_safety_sweep")
     asyncio.create_task(renewal_scheduler_worker(), name="renewal_scheduler_worker")
+    asyncio.create_task(grace_lifecycle_worker(), name="grace_lifecycle_worker")
     asyncio.create_task(daily_orders_cleanup_worker(), name="daily_orders_cleanup_worker")
     asyncio.create_task(daily_supported_currencies_sync_worker(), name="daily_supported_currencies_sync_worker")
     asyncio.create_task(_worker_watchdog_loop(), name="_worker_watchdog_loop")
@@ -372,8 +374,8 @@ async def main() -> None:
     async def _main_loop_job_consumer() -> None:
         """Run jobs that must execute on the main loop (e.g. delete_bot, expire_bot).
         Never call application.shutdown/stop or request.shutdown here; guard PTB sends with _admin_ptb_running()."""
-        from code.users import disconnect_and_remove_controller_bot, _stop_posting, _start_posting
-        from code.utils import delete_bot_from_storage, expire_bot_return_sessions_to_pool, get_name_by_token, load_user_data
+        from code.users import disconnect_and_remove_controller_bot, _stop_posting, _start_posting, cleanup_active_sessions_for_bot
+        from code.utils import delete_bot_from_storage, expire_bot_return_sessions_to_pool, get_name_by_token, load_user_data, save_user_data
         from telegram.helpers import escape_markdown
         while True:
             try:
@@ -402,6 +404,58 @@ async def main() -> None:
                         except Exception:
                             pass
             elif job_type == "expire_bot":
+                # Phase 1 — enter the 48h grace window. Stop posting (workers disconnect the
+                # posting sessions), but KEEP the controller bot connected and the sessions
+                # assigned so the owner can renew and resume with the same accounts. The
+                # grace_lifecycle_worker purges (Phase 2) if no renewal lands within 48h.
+                (bot_token,) = payload
+                try:
+                    from datetime import datetime as _dt
+                    name = get_name_by_token(bot_token)
+                    cfg = load_user_data(name) if name else {}
+                    if not name or not cfg:
+                        logger.warning("expire_bot: no config for %s — skipping grace", bot_token[:20])
+                    elif cfg.get("state") == "expired":
+                        logger.info("expire_bot: %s already in grace — skipping", bot_token[:20])
+                    else:
+                        name_display = cfg.get("name") or bot_token[:20]
+                        pre_grace_state = cfg.get("state") or "stopped"
+                        await _stop_posting(bot_token)
+                        await asyncio.sleep(1)
+                        # Reload after _stop_posting (it rewrites state to "stopped"), then flag grace.
+                        cfg = load_user_data(name) or cfg
+                        cfg["state"] = "expired"
+                        cfg["expired_at"] = _dt.utcnow().isoformat() + "Z"
+                        cfg["pre_grace_state"] = pre_grace_state
+                        save_user_data(name, cfg)
+                        # Notify the owner through their controller bot with a working Renew button.
+                        owner_id = cfg.get("owner_id")
+                        if owner_id:
+                            try:
+                                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                                from code import bot_ptb
+                                uname = (cfg.get("bot_username") or "").strip().lstrip("@").lower() or name_display
+                                kb = InlineKeyboardMarkup([[InlineKeyboardButton("Renew Now", callback_data=f"renew_open:{uname}")]])
+                                await bot_ptb.send_message_with_bot(
+                                    owner_id,
+                                    "Your AdBot plan has expired and posting has stopped.\n\n"
+                                    "You have 48 hours to renew before your bot is removed. "
+                                    "Renew now to resume with the same accounts.",
+                                    bot_token=bot_token,
+                                    reply_markup=kb,
+                                )
+                            except Exception as ne:
+                                logger.warning("expire_bot owner notice failed for %s: %s", bot_token[:20], ne)
+                        if _admin_ptb_running():
+                            notify.notify_admin("bot_expired", f"AdBot entered 48h grace: {name_display}. Posting stopped; sessions held.")
+                except Exception as e:
+                    logger.exception("expire_bot (grace) job failed: %s", e)
+                    if _admin_ptb_running():
+                        notify.notify_admin("bot_expired", f"AdBot grace-entry failed: {e}")
+            elif job_type == "purge_expired_bot":
+                # Phase 2 — grace elapsed with no renewal. Full teardown: disconnect+remove the
+                # controller bot, return admin sessions to the pool (user-uploaded left on disk),
+                # and archive the config. Same behavior expiry had before the grace window existed.
                 (bot_token,) = payload
                 try:
                     name = get_name_by_token(bot_token)
@@ -411,13 +465,23 @@ async def main() -> None:
                     await asyncio.sleep(1)
                     await disconnect_and_remove_controller_bot(bot_token)
                     returned, dead = await expire_bot_return_sessions_to_pool(bot_token)
-                    msg = f"AdBot expired: {name_display}. Sessions returned: {returned}. Sessions dead: {dead}."
+                    msg = f"AdBot purged after grace: {name_display}. Sessions returned: {returned}. Sessions dead: {dead}."
                     if _admin_ptb_running():
                         notify.notify_admin("bot_expired", msg)
                 except Exception as e:
-                    logger.exception("expire_bot job failed: %s", e)
+                    logger.exception("purge_expired_bot job failed: %s", e)
                     if _admin_ptb_running():
-                        notify.notify_admin("bot_expired", f"AdBot expiry failed: {e}")
+                        notify.notify_admin("bot_expired", f"AdBot purge failed: {e}")
+            elif job_type == "resume_after_renewal":
+                # A renewal landed while the bot was in grace and it was posting before expiry —
+                # bring posting back up. The controller bot was never removed during grace.
+                (bot_token,) = payload
+                try:
+                    cleanup_active_sessions_for_bot(bot_token)
+                    started = await _start_posting(bot_token, preserve_cycle_time=False)
+                    logger.info("resume_after_renewal: %s posting restarted=%s", bot_token[:20], started)
+                except Exception as e:
+                    logger.exception("resume_after_renewal job failed: %s", e)
             elif job_type == "stop_posting":
                 (bot_token,) = payload
                 try:

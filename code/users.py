@@ -995,9 +995,8 @@ def _autoreply_menu_text_and_buttons(cfg: dict) -> tuple[str, list]:
 
 
 def _menu_buttons_expired() -> list:
-    """Menu when subscription expired: only Extend Subscription."""
-    contact = getattr(config, "ADMIN_CONTACT", "admin")
-    return [[Button.inline("Extend Subscription", CB_EXTEND)]]
+    """Menu when subscription expired: self-service Renew (drops into the crypto renewal flow)."""
+    return [[Button.inline("🔄 Renew Now", PREFIX_RENEW_OPEN)]]
 
 
 def _list_group_files() -> list[str]:
@@ -5046,10 +5045,30 @@ async def create_user_bot(bot_token: str) -> None:
         c = _get_cfg(bot_token)
         return c or {}
 
+    def _grace_hours_left(cfg: dict) -> int | None:
+        """Hours left in the 48h grace window (from expired_at), or None if not tracked."""
+        raw = str((cfg or {}).get("expired_at") or "").strip()
+        if not raw:
+            return None
+        try:
+            started = datetime.fromisoformat(raw.replace("Z", "").split(".")[0])
+            left = (started + timedelta(hours=48)) - datetime.utcnow()
+            return max(0, int(left.total_seconds() // 3600))
+        except Exception:
+            return None
+
     def _expired_message() -> str:
-        contact = getattr(config, "ADMIN_CONTACT", "admin")
-        handle = f"@{contact}" if contact and not contact.startswith("@") else (contact or "@admin")
-        return f"Subscription expired. Contact {handle}"
+        hrs = _grace_hours_left(get_cfg())
+        if hrs is not None:
+            return (
+                "⚠️ Your AdBot plan has expired and posting has stopped.\n\n"
+                f"You have about {hrs} hour(s) left to renew before your bot is removed. "
+                "Tap Renew Now to restore it with the same accounts."
+            )
+        return (
+            "⚠️ Your AdBot plan has expired and posting has stopped.\n\n"
+            "Renew now to restore your bot."
+        )
 
     @client.on(events.NewMessage(pattern=r"^/start\s*$"))
     async def on_start(event: events.NewMessage.Event) -> None:
@@ -5109,21 +5128,20 @@ async def create_user_bot(bot_token: str) -> None:
             await event.answer("Not authorized.", alert=True)
             return
         raw = event.data
-        if _is_expired(cfg) and not raw.startswith(b"renew_"):
-            if raw == CB_EXTEND:
-                await event.answer()
-                contact = getattr(config, "ADMIN_CONTACT", "admin")
-                handle = f"@{contact}" if contact and not str(contact).startswith("@") else (contact or "@admin")
-                try:
-                    await event.edit(f"Contact {handle} to extend your subscription.", buttons=_menu_buttons_expired())
-                except MessageNotModifiedError:
-                    pass
-            else:
-                await event.answer("Subscription expired.", alert=True)
-                try:
-                    await event.edit(_expired_message(), buttons=_menu_buttons_expired())
-                except MessageNotModifiedError:
-                    pass
+        # When expired, only the renewal flow (renew_* callbacks and the Renew Now button, CB_EXTEND)
+        # is reachable. Every other (stale) button the user still has open from before expiry is
+        # blocked with a short "renew — X hours left" notice instead of running its action.
+        if _is_expired(cfg) and not raw.startswith(b"renew_") and raw != CB_EXTEND:
+            hrs = _grace_hours_left(cfg)
+            alert = (
+                f"Plan expired — about {hrs}h left to renew before removal." if hrs is not None
+                else "Your plan has expired. Renew to continue."
+            )
+            await event.answer(alert, alert=True)
+            try:
+                await event.edit(_expired_message(), buttons=_menu_buttons_expired())
+            except MessageNotModifiedError:
+                pass
             return
         if raw.startswith(PREFIX_RENEW_OPEN) or raw == CB_EXTEND:
             await event.answer()
@@ -6026,7 +6044,14 @@ async def create_user_bot(bot_token: str) -> None:
             days = _validity_days_left(vt)
             try:
                 text, entities = build_panel_message("panel_validity", f"**Validity:** {days}")
-                await event.edit(text, buttons=[[Button.inline("‹ Back", b"back")]], formatting_entities=entities)
+                await event.edit(
+                    text,
+                    buttons=[
+                        [Button.inline("🔄 Renew Now", PREFIX_RENEW_OPEN)],
+                        [Button.inline("‹ Back", b"back")],
+                    ],
+                    formatting_entities=entities,
+                )
             except MessageNotModifiedError:
                 pass
         elif raw == CB_CHATLIST:

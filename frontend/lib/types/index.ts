@@ -149,6 +149,11 @@ export interface BotSummary {
   running: boolean;
   frozen: boolean;
   suspended: boolean;
+  // Server-authoritative expiry state (see api/services/serializers.py _expiry_fields)
+  expired?: boolean;
+  in_grace?: boolean;
+  grace_hours_left?: number | null;
+  expired_at?: string;
 }
 
 export interface BotDetail extends BotSummary {

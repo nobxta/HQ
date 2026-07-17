@@ -59,9 +59,20 @@ class RenewalPricingTests(unittest.TestCase):
         self.assertEqual(opts["options"]["7d"]["new_valid_till"], "06/09/2026")
 
     @patch("code.shop.renewals.load_plans", return_value=PLANS)
-    def test_expired_renewal_starts_from_now(self, _plans):
+    def test_expired_renewal_starts_from_expiry_date(self, _plans):
+        # Renewal counts from the stored expiry date, NOT from "now" — an expired bot renewing
+        # during the 48h grace loses no days: 01/08 + 30 = 31/08, regardless of when they pay.
         opts = effective_renewal_options(self.cfg(valid_till="01/08/2026"), now=datetime(2026, 8, 24, 12, 0, 0))
-        self.assertEqual(opts["options"]["30d"]["new_valid_till"], "23/09/2026")
+        self.assertEqual(opts["options"]["30d"]["new_valid_till"], "31/08/2026")
+
+    @patch("code.shop.renewals.load_plans", return_value=PLANS)
+    def test_grace_renewal_independent_of_pay_time(self, _plans):
+        # Same expiry, two different "pay moments" within grace → identical new_valid_till.
+        cfg = self.cfg(valid_till="07/12/2026")
+        a = effective_renewal_options(cfg, now=datetime(2026, 12, 8, 1, 0, 0))
+        b = effective_renewal_options(cfg, now=datetime(2026, 12, 8, 23, 0, 0))
+        self.assertEqual(a["options"]["30d"]["new_valid_till"], "06/01/2027")
+        self.assertEqual(b["options"]["30d"]["new_valid_till"], "06/01/2027")
 
     @patch("code.shop.renewals.load_plans", return_value=PLANS)
     def test_unsupported_duration_rejected(self, _plans):

@@ -69,7 +69,9 @@ def effective_renewal_options(cfg: dict[str, Any], now: datetime | None = None) 
     overrides = normalize_renewal_prices(cfg)
     plan, mode = find_plan_for_bot(cfg)
     valid_dt = parse_valid_till(cfg.get("valid_till"))
-    base_dt = max(valid_dt or now, now)
+    # Preview extends from the stored expiry date (matches extend_valid_till_for_bot), so an
+    # expired bot renewing during grace previews expiry_date + duration, not now + duration.
+    base_dt = valid_dt or now
     options: dict[str, Any] = {}
     for days, key, plan_key in ((7, "7d", "price_week"), (30, "30d", "price_month")):
         override = money(overrides.get(key))

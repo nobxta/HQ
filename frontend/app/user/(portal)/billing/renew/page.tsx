@@ -917,13 +917,14 @@ function PaymentWarning({ children }: { children: React.ReactNode }) {
 
 function CryptoLogo({ code }: { code: string }) {
   const base = code.split("_")[0];
+  // Bundled locally (frontend/public/crypto) — no external CDN dependency, works offline.
   const logo: Record<string, string> = {
-    BTC: "https://cryptologos.cc/logos/bitcoin-btc-logo.svg?v=040",
-    ETH: "https://cryptologos.cc/logos/ethereum-eth-logo.svg?v=040",
-    LTC: "https://cryptologos.cc/logos/litecoin-ltc-logo.svg?v=040",
-    TRX: "https://cryptologos.cc/logos/tron-trx-logo.svg?v=040",
-    BNB: "https://cryptologos.cc/logos/bnb-bnb-logo.svg?v=040",
-    USDT: "https://cryptologos.cc/logos/tether-usdt-logo.svg?v=040",
+    BTC: "/crypto/bitcoin.svg",
+    ETH: "/crypto/ethereum.svg",
+    LTC: "/crypto/litecoin.svg",
+    TRX: "/crypto/tron.svg",
+    BNB: "/crypto/bnb.svg",
+    USDT: "/crypto/tether.svg",
   };
   return (
     <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white p-1">

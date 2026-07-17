@@ -270,8 +270,15 @@ export default function UserDashboard() {
     </div>
   );
   if (!bot) return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] text-dark-400">
-      <ShieldAlert className="h-12 w-12 mb-3 opacity-30" /><p className="text-lg font-medium">Bot not found</p>
+    <div className="flex flex-col items-center justify-center min-h-[60vh] text-center text-dark-400 px-4">
+      <ShieldAlert className="h-12 w-12 mb-3 opacity-30" />
+      <p className="text-lg font-semibold text-white">No active plan</p>
+      <p className="mt-2 max-w-sm text-sm text-dark-400">
+        Your AdBot plan has expired and the bot was removed. To get started again, purchase a new plan.
+      </p>
+      <Link href="/pricing" className="mt-5 inline-flex items-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-accent/20 hover:bg-accent-600 transition-colors">
+        View plans
+      </Link>
     </div>
   );
 
