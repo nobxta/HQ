@@ -80,8 +80,16 @@ def _bot_api_post(bot_token: str, method: str, payload: dict) -> bool:
 # Sync primitives (safe to call directly from worker-thread event loops such as
 # the create pipeline).
 # ---------------------------------------------------------------------------
-def set_menu_button_webapp_sync(bot_token: str, web_token: str, text: str = MENU_BUTTON_TEXT) -> bool:
-    """Point the bot's default chat menu button at the user's dashboard Web App."""
+def set_menu_button_webapp_sync(
+    bot_token: str, web_token: str, text: str = MENU_BUTTON_TEXT, chat_id: int | None = None
+) -> bool:
+    """Point a chat menu button at the user's dashboard Web App.
+
+    When ``chat_id`` is given the Web App button is set only for that private
+    chat (per-user); when omitted it changes the bot's default button, which is
+    shown to every user. The dashboard carries the owner's web_token, so the
+    default button must NOT be a Web App — always target authorized users by
+    chat_id and leave the default as the plain commands button."""
     url = build_dashboard_url(web_token)
     if not url:
         website = (getattr(config, "WEBSITE_URL", "") or "").strip()
@@ -95,19 +103,29 @@ def set_menu_button_webapp_sync(bot_token: str, web_token: str, text: str = MENU
             reason = "unknown"
         logger.info("Mini app not linked for token %s…: %s", (bot_token or "")[:10], reason)
         return False
-    ok = _bot_api_post(
-        bot_token,
-        "setChatMenuButton",
-        {"menu_button": {"type": "web_app", "text": (text or "Dashboard")[:64], "web_app": {"url": url}}},
-    )
+    payload: dict = {
+        "menu_button": {"type": "web_app", "text": (text or "Dashboard")[:64], "web_app": {"url": url}}
+    }
+    if chat_id is not None:
+        payload["chat_id"] = int(chat_id)
+    ok = _bot_api_post(bot_token, "setChatMenuButton", payload)
     if ok:
-        logger.info("Mini app menu button linked for token %s…", (bot_token or "")[:10])
+        logger.info(
+            "Mini app menu button linked for token %s… (chat %s)",
+            (bot_token or "")[:10], chat_id if chat_id is not None else "default",
+        )
     return ok
 
 
-def reset_menu_button_sync(bot_token: str) -> bool:
-    """Remove the Web App menu button, restoring Telegram's default (commands) button."""
-    return _bot_api_post(bot_token, "setChatMenuButton", {"menu_button": {"type": "default"}})
+def reset_menu_button_sync(bot_token: str, chat_id: int | None = None) -> bool:
+    """Remove a Web App menu button, restoring Telegram's default (commands) button.
+
+    With ``chat_id`` this only clears the per-user override for that chat; without
+    it, the bot's default button is reset."""
+    payload: dict = {"menu_button": {"type": "default"}}
+    if chat_id is not None:
+        payload["chat_id"] = int(chat_id)
+    return _bot_api_post(bot_token, "setChatMenuButton", payload)
 
 
 def set_bot_name_not_in_use_sync(bot_token: str, label: str = NOT_IN_USE_NAME) -> bool:
@@ -118,12 +136,14 @@ def set_bot_name_not_in_use_sync(bot_token: str, label: str = NOT_IN_USE_NAME) -
 # ---------------------------------------------------------------------------
 # Async wrappers (safe to await on the main event loop — HTTP runs off-thread).
 # ---------------------------------------------------------------------------
-async def set_menu_button_webapp(bot_token: str, web_token: str, text: str = MENU_BUTTON_TEXT) -> bool:
-    return await asyncio.to_thread(set_menu_button_webapp_sync, bot_token, web_token, text)
+async def set_menu_button_webapp(
+    bot_token: str, web_token: str, text: str = MENU_BUTTON_TEXT, chat_id: int | None = None
+) -> bool:
+    return await asyncio.to_thread(set_menu_button_webapp_sync, bot_token, web_token, text, chat_id)
 
 
-async def reset_menu_button(bot_token: str) -> bool:
-    return await asyncio.to_thread(reset_menu_button_sync, bot_token)
+async def reset_menu_button(bot_token: str, chat_id: int | None = None) -> bool:
+    return await asyncio.to_thread(reset_menu_button_sync, bot_token, chat_id)
 
 
 async def set_bot_name_not_in_use(bot_token: str, label: str = NOT_IN_USE_NAME) -> bool:

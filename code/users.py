@@ -930,6 +930,28 @@ def _is_admin(user_id: int | None) -> bool:
     return _universal_admin() is not None and user_id == _universal_admin()
 
 
+def _dashboard_user_ids(cfg: dict) -> list[int]:
+    """User IDs allowed to see the dashboard mini app menu button.
+
+    Mirrors _is_authorized: universal admin + bot owner + everyone in the
+    authorized list. The dashboard menu button is set per-chat for exactly these
+    users so unauthorized users never get a Web App button (which would carry the
+    owner's web_token)."""
+    ids: set[int] = set()
+    admin = _universal_admin()
+    if admin is not None:
+        ids.add(int(admin))
+    owner = cfg.get("owner_id") or 0
+    if owner:
+        ids.add(int(owner))
+    for uid in cfg.get("authorized", []) or []:
+        try:
+            ids.add(int(uid))
+        except (TypeError, ValueError):
+            continue
+    return [i for i in ids if i]
+
+
 def _is_expired(cfg: dict) -> bool:
     """True if valid_till is set and in the past (or state is expired)."""
     if cfg.get("state") == "expired":
@@ -4785,10 +4807,32 @@ def _ensure_web_token(bot_token: str) -> str:
     return ((_get_cfg(bot_token) or {}).get("web_token") or new_wt).strip()
 
 
-def _link_dashboard_miniapp(bot_token: str) -> None:
-    """Ensure a web_token exists and point the bot's menu button at the dashboard.
+async def _apply_dashboard_menu_buttons(bot_token: str, web_token: str) -> None:
+    """Keep the bot's default menu button plain and give the dashboard Web App
+    button only to authorized users (per-chat).
 
-    Fire-and-forget: schedules the Bot API call on the running loop so bot
+    The dashboard URL auto-logs into the owner's panel via web_token, so it must
+    never be the bot-wide default (which every user sees). We reset the default
+    to Telegram's commands button and set a per-chat Web App button for each
+    authorized user. Best-effort: setting a per-chat button can fail for a user
+    who has never messaged the bot; their /start handler self-heals it."""
+    from .miniapp import reset_menu_button, set_menu_button_webapp
+
+    # Strip any legacy bot-wide Web App default button so the public sees none.
+    await reset_menu_button(bot_token)
+    cfg = _get_cfg(bot_token) or {}
+    for uid in _dashboard_user_ids(cfg):
+        try:
+            await set_menu_button_webapp(bot_token, web_token, chat_id=uid)
+        except Exception as e:
+            logger.debug("Mini app per-chat link failed for %s… chat %s: %s", bot_token[:10], uid, e)
+
+
+def _link_dashboard_miniapp(bot_token: str) -> None:
+    """Ensure a web_token exists and point authorized users' menu buttons at the
+    dashboard, keeping the bot-wide default button plain.
+
+    Fire-and-forget: schedules the Bot API calls on the running loop so bot
     startup is never blocked by network latency."""
     try:
         web_token = _ensure_web_token(bot_token)
@@ -4797,8 +4841,7 @@ def _link_dashboard_miniapp(bot_token: str) -> None:
         web_token = ((_get_cfg(bot_token) or {}).get("web_token") or "").strip()
     if not web_token:
         return
-    from .miniapp import set_menu_button_webapp
-    asyncio.create_task(set_menu_button_webapp(bot_token, web_token))
+    asyncio.create_task(_apply_dashboard_menu_buttons(bot_token, web_token))
 
 
 # Interval for the mini app self-healing sweep (every 24h).
@@ -4813,7 +4856,7 @@ async def run_miniapp_menu_button_sweep() -> None:
     were created before the mini app existed, had their button cleared, or whose
     web_token was (re)generated. Idempotent and skipped entirely when no public
     HTTPS site is configured."""
-    from .miniapp import dashboard_configured, set_menu_button_webapp
+    from .miniapp import dashboard_configured
 
     await asyncio.sleep(300)  # let startup settle before the first sweep
     while True:
@@ -4827,7 +4870,8 @@ async def run_miniapp_menu_button_sweep() -> None:
             for token in tokens:
                 try:
                     web_token = _ensure_web_token(token)
-                    if web_token and await set_menu_button_webapp(token, web_token):
+                    if web_token:
+                        await _apply_dashboard_menu_buttons(token, web_token)
                         linked += 1
                 except Exception as e:
                     logger.debug("Mini app sweep failed for %s…: %s", token[:10], e)
@@ -5125,7 +5169,24 @@ async def create_user_bot(bot_token: str) -> None:
             return
         cfg = get_cfg()
         if not _is_authorized(event.sender_id, cfg):
+            # Unauthorized users must not keep a dashboard Web App button. Clear
+            # any per-chat override so they fall back to the plain default button.
+            try:
+                from .miniapp import reset_menu_button
+                asyncio.create_task(reset_menu_button(bot_token, chat_id=event.sender_id))
+            except Exception:
+                pass
             return
+        # Self-heal: make sure this authorized user has the dashboard menu button.
+        try:
+            web_token = _ensure_web_token(bot_token)
+            if web_token:
+                from .miniapp import set_menu_button_webapp
+                asyncio.create_task(
+                    set_menu_button_webapp(bot_token, web_token, chat_id=event.sender_id)
+                )
+        except Exception:
+            pass
         if _is_expired(cfg):
             _mark_bot_expired(bot_token)
             await event.reply(_expired_message(), buttons=_menu_buttons_expired())
@@ -7344,6 +7405,14 @@ async def create_user_bot(bot_token: str) -> None:
             if uid not in c["authorized"]:
                 c["authorized"].append(uid)
         if _save_bot_config(bot_token, add_id):
+            # Give the new authorized user the dashboard menu button immediately.
+            try:
+                web_token = _ensure_web_token(bot_token)
+                if web_token:
+                    from .miniapp import set_menu_button_webapp
+                    asyncio.create_task(set_menu_button_webapp(bot_token, web_token, chat_id=uid))
+            except Exception:
+                pass
             await event.reply(f"Added {uid} to authorized.")
         else:
             await event.reply("Bot config not found.")
@@ -7360,6 +7429,12 @@ async def create_user_bot(bot_token: str) -> None:
             c.setdefault("authorized", [])
             c["authorized"] = [x for x in c["authorized"] if x != uid]
         if _save_bot_config(bot_token, remove_id):
+            # Strip the dashboard menu button from the de-authorized user.
+            try:
+                from .miniapp import reset_menu_button
+                asyncio.create_task(reset_menu_button(bot_token, chat_id=uid))
+            except Exception:
+                pass
             await event.reply(f"Removed {uid} from authorized.")
         else:
             await event.reply("Bot config not found.")
