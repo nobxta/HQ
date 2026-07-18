@@ -391,6 +391,8 @@ CB_CFG_VALID_TILL = b"cfg_valid_till"
 PREFIX_RENEW_OPEN = b"renew_open"
 PREFIX_RENEW_DUR = b"renew_dur:"
 PREFIX_RENEW_CRY = b"renew_cry:"
+PREFIX_RENEW_NET = b"renew_net:"    # USDT/USDC network sub-menu (renew_net:{days}:{coin})
+PREFIX_RENEW_MORE = b"renew_more:"  # "More" crypto grid (renew_more:{days})
 CB_CFG_VALID_TILL_CUSTOM = b"cfg_vt_custom"
 CB_CFG_MESSAGE = b"cfg_message"
 CB_CFG_MSG_MODE_TEXT = b"cfg_msg_t"   # set message_mode text (Config)
@@ -997,6 +999,51 @@ def _autoreply_menu_text_and_buttons(cfg: dict) -> tuple[str, list]:
 def _menu_buttons_expired() -> list:
     """Menu when subscription expired: self-service Renew (drops into the crypto renewal flow)."""
     return [[Button.inline("🔄 Renew Now", PREFIX_RENEW_OPEN)]]
+
+
+# ── Controller-bot renewal crypto menu (PTB-rendered so buttons carry premium coin emoji) ──
+# Telethon Button.inline can't set icon_custom_emoji_id, so these screens are rendered/edited via
+# the PTB bot (reusing the shop's exact _coin_button). Callbacks still arrive at Telethon on_callback.
+def _renew_crypto_keyboard_ptb(days: int):
+    """Main crypto grid matching the shop purchase menu (BTC/ETH/XMR, USDT/USDC/LTC, More)."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    from .shop.handlers import _coin_button
+    d = str(days)
+    return InlineKeyboardMarkup([
+        [_coin_button("BTC", f"renew_cry:{d}:BTC"), _coin_button("ETH", f"renew_cry:{d}:ETH"), _coin_button("XMR", f"renew_cry:{d}:XMR")],
+        [_coin_button("USDT", f"renew_net:{d}:usdt"), _coin_button("USDC", f"renew_net:{d}:usdc"), _coin_button("LTC", f"renew_cry:{d}:LTC")],
+        [InlineKeyboardButton("More", callback_data=f"renew_more:{d}")],
+        [InlineKeyboardButton("‹ Back", callback_data="renew_open")],
+    ])
+
+
+def _renew_network_keyboard_ptb(days: int, coin: str):
+    """USDT/USDC network sub-menu (same networks as the shop)."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    from .shop.handlers import _coin_button, USDT_NETWORKS, USDC_NETWORKS
+    d = str(days)
+    up = coin.upper()
+    nets = USDT_NETWORKS if coin == "usdt" else USDC_NETWORKS
+    rows = []
+    for i in range(0, len(nets), 2):
+        pair = [_coin_button(nets[i][1], f"renew_cry:{d}:{up}_{nets[i][1]}", nets[i][0])]
+        if i + 1 < len(nets):
+            pair.append(_coin_button(nets[i + 1][1], f"renew_cry:{d}:{up}_{nets[i + 1][1]}", nets[i + 1][0]))
+        rows.append(pair)
+    rows.append([InlineKeyboardButton("‹ Back", callback_data=f"renew_dur:{d}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _renew_more_keyboard_ptb(days: int):
+    """'More' crypto grid (same coins as the shop)."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    from .shop.handlers import _coin_button, MORE_CURRENCIES
+    d = str(days)
+    rows = []
+    for i in range(0, len(MORE_CURRENCIES), 3):
+        rows.append([_coin_button(code, f"renew_cry:{d}:{code}", label) for (label, code) in MORE_CURRENCIES[i:i + 3]])
+    rows.append([InlineKeyboardButton("‹ Back", callback_data=f"renew_dur:{d}")])
+    return InlineKeyboardMarkup(rows)
 
 
 def _list_group_files() -> list[str]:
@@ -5175,23 +5222,80 @@ async def create_user_bot(bot_token: str) -> None:
             except Exception:
                 await event.edit("This renewal duration is unavailable for your plan.")
                 return
-            # Same coin symbols as the AdBot purchase flow (inline buttons can't carry premium
-            # custom emoji, so the shop uses these unicode symbols too — see code/ui/emojis.py).
-            from .ui.emojis import coin_symbol
+            text = f"💳 Renewal total: ${price['amount']}\n\nChoose how you'd like to pay:"
+            # Prefer the shop's exact crypto grid rendered via the PTB bot (premium coin emoji on the
+            # buttons). If the PTB edit fails for any reason, fall back to Telethon unicode-symbol
+            # buttons so the flow always works.
+            from . import bot_ptb
+            ok = await bot_ptb.edit_message_with_bot(
+                event.chat_id, event.message_id, text,
+                bot_token=bot_token, reply_markup=_renew_crypto_keyboard_ptb(duration_days),
+            )
+            if not ok:
+                from .ui.emojis import coin_symbol
 
-            def _coin_btn(label: str, code: str):
-                sym = coin_symbol(code)
-                text = f"{sym} {label}".strip() if sym else label
-                return Button.inline(text, PREFIX_RENEW_CRY + f"{duration_days}:{code}".encode())
+                def _coin_btn(label: str, code: str):
+                    sym = coin_symbol(code)
+                    t = f"{sym} {label}".strip() if sym else label
+                    return Button.inline(t, PREFIX_RENEW_CRY + f"{duration_days}:{code}".encode())
 
-            rows = [
-                [_coin_btn("Bitcoin", "BTC"), _coin_btn("Ethereum", "ETH")],
-                [_coin_btn("Litecoin", "LTC"), _coin_btn("TRON", "TRX")],
-                [_coin_btn("USDT TRC20", "USDT_TRC20"), _coin_btn("USDT BEP20", "USDT_BEP20")],
-                [_coin_btn("USDT ERC20", "USDT_ERC20"), _coin_btn("USDC ERC20", "USDC_ERC20")],
-                [Button.inline("‹ Back", PREFIX_RENEW_OPEN)],
-            ]
-            await event.edit(f"💳 **Renewal total: ${price['amount']}**\n\nChoose how you'd like to pay:", buttons=rows, parse_mode="md")
+                rows = [
+                    [_coin_btn("Bitcoin", "BTC"), _coin_btn("Ethereum", "ETH"), _coin_btn("Monero", "XMR")],
+                    [_coin_btn("USDT", "USDT_TRC20"), _coin_btn("USDC", "USDC_ERC20"), _coin_btn("Litecoin", "LTC")],
+                    [Button.inline("‹ Back", PREFIX_RENEW_OPEN)],
+                ]
+                await event.edit(text, buttons=rows)
+            return
+        if raw.startswith(PREFIX_RENEW_NET):
+            # USDT/USDC network sub-menu — renew_net:{days}:{coin}
+            await event.answer()
+            try:
+                d_s, coin = raw.split(b":", 2)[1:]
+                coin = coin.decode("utf-8", "ignore").strip().lower()
+                duration_days = 30 if d_s.decode() == "30" else 7
+            except Exception:
+                return
+            text = f"{coin.upper()} — pick a network:"
+            from . import bot_ptb
+            ok = await bot_ptb.edit_message_with_bot(
+                event.chat_id, event.message_id, text,
+                bot_token=bot_token, reply_markup=_renew_network_keyboard_ptb(duration_days, coin),
+            )
+            if not ok:
+                from .shop.handlers import USDT_NETWORKS, USDC_NETWORKS
+                up = coin.upper()
+                nets = USDT_NETWORKS if coin == "usdt" else USDC_NETWORKS
+                rows = []
+                for i in range(0, len(nets), 2):
+                    pair = [Button.inline(nets[i][0], PREFIX_RENEW_CRY + f"{duration_days}:{up}_{nets[i][1]}".encode())]
+                    if i + 1 < len(nets):
+                        pair.append(Button.inline(nets[i + 1][0], PREFIX_RENEW_CRY + f"{duration_days}:{up}_{nets[i + 1][1]}".encode()))
+                    rows.append(pair)
+                rows.append([Button.inline("‹ Back", PREFIX_RENEW_DUR + str(duration_days).encode())])
+                await event.edit(text, buttons=rows)
+            return
+        if raw.startswith(PREFIX_RENEW_MORE):
+            await event.answer()
+            d_s = raw.split(b":", 1)[1].decode("utf-8", "ignore")
+            duration_days = 30 if d_s == "30" else 7
+            text = "More cryptocurrencies:"
+            from . import bot_ptb
+            ok = await bot_ptb.edit_message_with_bot(
+                event.chat_id, event.message_id, text,
+                bot_token=bot_token, reply_markup=_renew_more_keyboard_ptb(duration_days),
+            )
+            if not ok:
+                from .shop.handlers import MORE_CURRENCIES
+                from .ui.emojis import coin_symbol
+                rows = []
+                for i in range(0, len(MORE_CURRENCIES), 2):
+                    row = []
+                    for label, code in MORE_CURRENCIES[i:i + 2]:
+                        sym = coin_symbol(code)
+                        row.append(Button.inline(f"{sym} {label}".strip() if sym else label, PREFIX_RENEW_CRY + f"{duration_days}:{code}".encode()))
+                    rows.append(row)
+                rows.append([Button.inline("‹ Back", PREFIX_RENEW_DUR + str(duration_days).encode())])
+                await event.edit(text, buttons=rows)
             return
         if raw.startswith(PREFIX_RENEW_CRY):
             await event.answer()
