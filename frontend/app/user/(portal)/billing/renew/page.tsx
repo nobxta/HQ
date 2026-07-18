@@ -7,12 +7,15 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  CalendarDays,
   Check,
   CheckCircle2,
   ChevronRight,
   Clock,
+  Coins,
   Copy,
   Info,
+  ReceiptText,
   RefreshCw,
   ShieldAlert,
 } from "lucide-react";
@@ -508,38 +511,35 @@ function PlanStatusSummary({ planName, planExpired, remaining, graceHoursLeft }:
   const windowLabel = inGrace ? `${graceHoursLeft}h` : remaining;
   return (
     <div
-      className="flex items-center justify-between gap-3 rounded-2xl border p-3.5 sm:px-5"
-      style={{ borderColor: C.border, background: C.card }}
+      className="flex items-center justify-between gap-3 rounded-2xl border p-4 sm:p-5"
+      style={{ borderColor: C.border, background: "linear-gradient(180deg,#10131D,#0C0E15)" }}
     >
-      <div className="flex min-w-0 items-center gap-3">
+      <div className="flex min-w-0 items-center gap-3 sm:gap-3.5">
         <span
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl sm:h-11 sm:w-11"
-          style={{ background: "rgba(118,87,255,0.10)", border: "1px solid rgba(118,87,255,0.22)", color: "#B9A7FF" }}
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl"
+          style={{ background: "rgba(118,87,255,0.12)", border: "1px solid rgba(118,87,255,0.22)", color: "#B9A7FF" }}
         >
-          <RefreshCw className="h-5 w-5" />
+          <RefreshCw className="h-[22px] w-[22px]" />
         </span>
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="truncate text-[15px] font-bold" style={{ color: C.text }}>{planName} Plan</span>
-            {planExpired ? (
-              <span className="rounded-full px-2 py-0.5 text-[11px] font-bold" style={{ color: "#F2555A", background: "rgba(242,85,90,0.12)" }}>
-                Expired
-              </span>
-            ) : (
-              <span className="rounded-full px-2 py-0.5 text-[11px] font-bold" style={{ color: C.success, background: "rgba(37,201,160,0.12)" }}>
-                Active
-              </span>
-            )}
-          </div>
+          <p className="truncate text-[16px] font-bold leading-tight" style={{ color: C.text }}>{planName} Plan</p>
+          <p className="mt-1 text-[13px] font-semibold" style={{ color: planExpired ? "#F2555A" : C.success }}>
+            {planExpired ? "Subscription expired" : "Subscription active"}
+          </p>
         </div>
       </div>
       {windowLabel && (
-        <div className="flex shrink-0 items-center gap-2 text-right">
+        <div className="flex shrink-0 items-center gap-2.5 text-right">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: C.sub }}>Renew within</p>
-            <p className="text-[15px] font-bold tabular-nums" style={{ color: planExpired ? C.amber : C.text }}>{windowLabel}</p>
+            <p className="text-[12px]" style={{ color: C.sub }}>Renew within</p>
+            <p className="text-[19px] font-bold tabular-nums leading-tight sm:text-[20px]" style={{ color: C.text }}>{windowLabel}</p>
           </div>
-          <Clock className="h-4 w-4" style={{ color: planExpired ? C.amber : C.sub }} />
+          <span
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
+            style={{ border: `1px solid ${planExpired ? "rgba(242,85,90,0.4)" : C.border2}` }}
+          >
+            <Clock className="h-[18px] w-[18px]" style={{ color: planExpired ? "#F2555A" : C.sub }} />
+          </span>
         </div>
       )}
     </div>
@@ -972,12 +972,15 @@ function InvoiceStep({ invoice, status, method, now, planName, cancelling, cance
   const cryptoAmount = String(invoice.pay_amount ?? "").trim();
   const stable = isStable(method);
   const unit = payUnit(method);
+  const addrCaption = stable
+    ? `${method.assetCode} (${networkLabel(method.network)}) address`
+    : `${method.assetName} address`;
 
   if (expired) {
     return (
       <section className="mx-auto w-full max-w-[560px] text-center">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl" style={{ background: "rgba(240,100,114,0.12)", color: C.danger }}>
-          <Clock className="h-6 w-6" />
+        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl" style={{ background: "rgba(240,100,114,0.12)", border: "1px solid rgba(240,100,114,0.28)", color: C.danger }}>
+          <Clock className="h-7 w-7" />
         </div>
         <h2 className="mt-4 text-[22px] font-bold" style={{ color: C.text }}>Invoice {s === "cancelled" ? "cancelled" : "expired"}</h2>
         <p className="mt-2 text-[14px]" style={{ color: C.sub }}>
@@ -991,132 +994,128 @@ function InvoiceStep({ invoice, status, method, now, planName, cancelling, cance
   }
 
   return (
-    <section className="grid gap-6 lg:grid-cols-[1.05fr_0.95fr] lg:items-start">
-      {/* Left — amount, address, instructions */}
-      <div className="space-y-5">
-        {/* Amount */}
-        <div>
-          <p className="text-[13px] font-semibold uppercase tracking-wide" style={{ color: C.sub }}>Amount to pay</p>
-          <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-            <span className="break-all font-mono text-[clamp(28px,7vw,36px)] font-black leading-none tabular-nums" style={{ color: C.text }}>
-              {cryptoAmount}
+    <section className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr] lg:items-start">
+      {/* LEFT — unified invoice card */}
+      <div className="min-w-0 rounded-2xl border p-4 sm:p-6" style={{ borderColor: C.border, background: "linear-gradient(180deg,#0F1220,#0B0D14)" }}>
+        {/* Amount to pay */}
+        <p className="text-[16px] font-bold" style={{ color: C.text }}>Amount to pay</p>
+        <div className="mt-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-2">
+          <span className="break-all font-mono text-[clamp(32px,8.5vw,44px)] font-black leading-none tabular-nums" style={{ color: "#8B6CFF" }}>
+            {cryptoAmount}
+          </span>
+          <span className="text-[clamp(18px,4vw,22px)] font-bold" style={{ color: C.text }}>{method.assetCode}</span>
+          {stable && (
+            <span className="rounded-lg px-2.5 py-1 text-[12px] font-bold" style={{ color: "#B9A7FF", border: "1px solid rgba(118,87,255,0.4)", background: "rgba(118,87,255,0.08)" }}>
+              {networkLabel(method.network)}
             </span>
-            <span className="text-[18px] font-bold" style={{ color: C.sub }}>{method.assetCode}</span>
-            {stable && (
-              <span className="rounded-md px-2 py-0.5 text-[12px] font-bold" style={{ color: "#B9A7FF", background: "rgba(118,87,255,0.14)" }}>
-                {networkLabel(method.network)}
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={() => onCopy(invoice.pay_amount, "Amount")}
-              aria-label="Copy amount"
-              className="ml-auto flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border transition-colors hover:text-[color:var(--t)]"
-              style={{ borderColor: C.border, color: C.sub, ["--t" as any]: C.text }}
-            >
-              <Copy className="h-4 w-4" />
-            </button>
-          </div>
-          <p className="mt-1.5 text-[14px]" style={{ color: C.sub }}>≈ {formatUSD(Number(invoice.amount_usd))} USD</p>
-
-          {/* Subtle status line — never a dominant badge */}
-          <div className="mt-2.5" aria-live="polite">
-            {underpaid ? (
-              <StatusLine tone="amber" text={`Partial payment received — ${trimNum(received)} of ${trimNum(payAmount)} ${method.assetCode}. Send the remaining ${trimNum(payAmount - received)}.`} />
-            ) : detected ? (
-              <StatusLine tone="accent" text="Payment detected — waiting for blockchain confirmation." />
-            ) : (
-              <StatusLine tone="sub" text="Awaiting payment · detected automatically on-chain." />
-            )}
-          </div>
+          )}
+          <button
+            type="button"
+            onClick={() => onCopy(invoice.pay_amount, "Amount")}
+            aria-label="Copy amount"
+            className="ml-auto flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition-colors hover:border-[#7657FF]/50"
+            style={{ borderColor: C.border, background: C.field, color: C.sub }}
+          >
+            <Copy className="h-4 w-4" />
+          </button>
         </div>
+        <p className="mt-2 text-[13px]" style={{ color: C.faint }}>≈ {formatUSD(Number(invoice.amount_usd))} USD</p>
 
         {/* Exact-payment instruction */}
-        <p className="text-[14px] leading-relaxed" style={{ color: C.text2 }}>
-          Send exactly <span className="font-bold" style={{ color: C.text }}>{cryptoAmount} {unit}</span> to the address below.
+        <p className="mt-3.5 text-[14px] leading-relaxed" style={{ color: C.sub }}>
+          Send exactly <span className="font-bold" style={{ color: C.text2 }}>{cryptoAmount} {unit}</span> to the address below
         </p>
 
-        {/* Wallet address */}
-        <CopyField
-          label="Wallet address"
-          value={invoice.pay_address}
-          onCopy={() => onCopy(invoice.pay_address, "Wallet address")}
-        />
-
-        {/* Important instructions */}
-        <PaymentInstructions method={method} planName={planName} stable={stable} unit={unit} />
-
-        {/* Cancel — low emphasis */}
-        {cancellable ? (
-          <div className="pt-1">
-            <button
-              type="button"
-              onClick={onRequestCancel}
-              disabled={cancelling}
-              className="text-[13px] font-semibold transition-colors hover:text-[color:var(--d)] disabled:opacity-50"
-              style={{ color: C.sub, ["--d" as any]: C.danger }}
-            >
-              Cancel invoice
-            </button>
+        {/* Status banner — only for meaningful states (detected / underpaid) */}
+        {(detected || underpaid) && (
+          <div className="mt-3.5" aria-live="polite">
+            <StatusBanner
+              tone={underpaid ? "amber" : "accent"}
+              text={underpaid
+                ? `Received ${trimNum(received)} of ${trimNum(payAmount)} ${method.assetCode} — send the remaining ${trimNum(payAmount - received)}.`
+                : "Payment detected — waiting for blockchain confirmation."}
+            />
           </div>
+        )}
+
+        {/* Address */}
+        <div className="mt-4">
+          <CopyField value={invoice.pay_address} onCopy={() => onCopy(invoice.pay_address, "Wallet address")} />
+        </div>
+
+        {/* Divider */}
+        <div className="my-5 h-px" style={{ background: C.border }} />
+
+        {/* QR + metadata — side-by-side on all common phones; stacks only below 360px */}
+        <div className="flex flex-col items-center gap-4 min-[360px]:flex-row min-[360px]:items-start sm:gap-5">
+          <div className="flex shrink-0 flex-col items-center gap-2">
+            <QrCode value={invoice.pay_address} />
+            <p className="max-w-[132px] text-center text-[11.5px] leading-tight sm:max-w-[150px] lg:max-w-[180px]" style={{ color: C.sub }}>{addrCaption}</p>
+          </div>
+          <dl className="flex min-w-0 flex-1 flex-col justify-center gap-4">
+            <MetaRow icon={Coins} label="Payment Method" value={methodLabel(method)} />
+            <MetaRow icon={CalendarDays} label="Plan Duration" value={`${invoice.duration_days} days`} />
+            <MetaRow icon={Clock} label="Invoice Expires In" value={countdown} valueStyle={{ color: C.amber }} mono />
+            <MetaRow icon={ReceiptText} label="Invoice ID" value={shortId(invoice.order_id)} mono onCopy={() => onCopy(invoice.order_id, "Invoice ID")} />
+          </dl>
+        </div>
+      </div>
+
+      {/* RIGHT — instructions + cancel */}
+      <div className="min-w-0 space-y-4">
+        <InstructionsCard method={method} planName={planName} stable={stable} />
+        {cancellable ? (
+          <button
+            type="button"
+            onClick={onRequestCancel}
+            disabled={cancelling}
+            className="h-12 w-full rounded-xl border text-[14px] font-semibold transition-colors hover:border-[#F06472]/40 hover:text-[color:var(--d)] disabled:opacity-50"
+            style={{ borderColor: C.border2, background: "transparent", color: C.sub, ["--d" as any]: C.danger }}
+          >
+            Cancel Invoice
+          </button>
         ) : (
-          <p className="pt-1 text-[12px]" style={{ color: C.sub }}>
+          <p className="text-center text-[12px]" style={{ color: C.sub }}>
             This invoice can no longer be cancelled — a payment is being processed.
           </p>
         )}
-      </div>
-
-      {/* Right — QR + metadata */}
-      <div className="rounded-2xl border p-4 sm:p-5" style={{ borderColor: C.border, background: C.card }}>
-        <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-center lg:flex-col">
-          <QrCode value={invoice.pay_address} />
-          <dl className="w-full flex-1 space-y-3">
-            <MetaRow label="Payment method" value={methodLabel(method)} />
-            <MetaRow label="Plan duration" value={`${invoice.duration_days} days`} />
-            <MetaRow label="Invoice expires in" value={countdown} valueStyle={{ color: C.amber }} mono />
-            <MetaRow
-              label="Invoice ID"
-              value={shortId(invoice.order_id)}
-              mono
-              onCopy={() => onCopy(invoice.order_id, "Invoice ID")}
-            />
-          </dl>
-        </div>
       </div>
     </section>
   );
 }
 
-function StatusLine({ tone, text }: { tone: "amber" | "accent" | "sub"; text: string }) {
-  const color = tone === "amber" ? C.amber : tone === "accent" ? "#B9A7FF" : C.sub;
+function StatusBanner({ tone, text }: { tone: "amber" | "accent"; text: string }) {
+  const color = tone === "amber" ? C.amber : "#B9A7FF";
+  const bg = tone === "amber" ? "rgba(242,185,75,0.08)" : "rgba(118,87,255,0.08)";
+  const bd = tone === "amber" ? "rgba(242,185,75,0.28)" : "rgba(118,87,255,0.3)";
   return (
-    <span className="inline-flex items-center gap-2 text-[12px] font-semibold" style={{ color }}>
-      <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} aria-hidden />
-      {text}
-    </span>
-  );
-}
-
-function CopyField({ label, value, onCopy }: { label: string; value: string; onCopy: () => void }) {
-  return (
-    <div>
-      <p className="mb-1.5 text-[12px] font-semibold" style={{ color: C.sub }}>{label}</p>
-      <button
-        type="button"
-        onClick={onCopy}
-        title={value}
-        aria-label={`Copy ${label.toLowerCase()}`}
-        className="flex w-full items-center gap-2 rounded-xl border px-3.5 py-3 text-left transition-colors hover:border-[#7657FF]/50"
-        style={{ borderColor: C.border, background: C.field }}
-      >
-        <span className="min-w-0 flex-1 truncate font-mono text-[13px]" style={{ color: C.text }}>{value}</span>
-        <Copy className="h-4 w-4 shrink-0" style={{ color: C.sub }} />
-      </button>
+    <div className="flex items-center gap-2 rounded-lg border px-3 py-2 text-[12.5px] font-semibold" style={{ color, background: bg, borderColor: bd }}>
+      <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: color }} aria-hidden />
+      <span>{text}</span>
     </div>
   );
 }
 
-function MetaRow({ label, value, valueStyle, mono, onCopy }: {
+function CopyField({ value, onCopy }: { value: string; onCopy: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onCopy}
+      title={value}
+      aria-label="Copy wallet address"
+      className="flex w-full items-center gap-3 rounded-xl border px-4 py-3.5 text-left transition-colors hover:border-[#7657FF]/50"
+      style={{ borderColor: C.border, background: C.field }}
+    >
+      <span className="min-w-0 flex-1 truncate font-mono text-[13.5px]" style={{ color: C.text }}>{value}</span>
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ background: C.surface2, color: C.sub }}>
+        <Copy className="h-4 w-4" />
+      </span>
+    </button>
+  );
+}
+
+function MetaRow({ icon: Icon, label, value, valueStyle, mono, onCopy }: {
+  icon?: React.ComponentType<{ className?: string }>;
   label: string;
   value: string;
   valueStyle?: React.CSSProperties;
@@ -1124,16 +1123,23 @@ function MetaRow({ label, value, valueStyle, mono, onCopy }: {
   onCopy?: () => void;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 border-b pb-3 last:border-0 last:pb-0" style={{ borderColor: C.border }}>
-      <dt className="text-[13px]" style={{ color: C.sub }}>{label}</dt>
-      <dd className="flex items-center gap-1.5 text-right">
-        <span className={cn("text-[14px] font-bold tabular-nums", mono && "font-mono")} style={{ color: C.text, ...valueStyle }}>{value}</span>
-        {onCopy && (
-          <button type="button" onClick={onCopy} aria-label={`Copy ${label.toLowerCase()}`} className="text-[color:var(--s)] transition-colors hover:text-[color:var(--t)]" style={{ ["--s" as any]: C.sub, ["--t" as any]: C.text }}>
-            <Copy className="h-3.5 w-3.5" />
-          </button>
-        )}
-      </dd>
+    <div className="flex items-center gap-2.5 sm:gap-3">
+      {Icon && (
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ background: "rgba(118,87,255,0.10)", color: "#B9A7FF" }}>
+          <Icon className="h-4 w-4" />
+        </span>
+      )}
+      <div className="flex min-w-0 flex-1 flex-col lg:flex-row lg:items-center lg:justify-between lg:gap-2">
+        <dt className="text-[12px] lg:truncate lg:text-[13px]" style={{ color: C.sub }}>{label}</dt>
+        <dd className="flex min-w-0 items-center gap-1.5">
+          <span className={cn("truncate text-[13px] font-bold tabular-nums lg:text-[13.5px]", mono && "font-mono")} style={{ color: C.text, ...valueStyle }}>{value}</span>
+          {onCopy && (
+            <button type="button" onClick={onCopy} aria-label={`Copy ${label.toLowerCase()}`} className="shrink-0 transition-colors hover:text-[color:var(--t)]" style={{ color: C.sub, ["--t" as any]: C.text }}>
+              <Copy className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </dd>
+      </div>
     </div>
   );
 }
@@ -1143,19 +1149,19 @@ function QrCode({ value }: { value: string }) {
     ? `https://api.qrserver.com/v1/create-qr-code/?size=440x440&margin=0&qzone=1&data=${encodeURIComponent(value)}`
     : "";
   return (
-    <div className="shrink-0 rounded-2xl bg-white p-3">
+    <div className="shrink-0 rounded-2xl bg-white p-2.5 sm:p-3">
       {url ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
           src={url}
           alt="Payment QR code"
-          width={200}
-          height={200}
-          className="h-[168px] w-[168px] lg:h-[200px] lg:w-[200px]"
+          width={190}
+          height={190}
+          className="h-[124px] w-[124px] min-[360px]:h-[136px] min-[360px]:w-[136px] sm:h-[152px] sm:w-[152px] lg:h-[180px] lg:w-[180px]"
           style={{ imageRendering: "pixelated" }}
         />
       ) : (
-        <div className="flex h-[168px] w-[168px] items-center justify-center text-sm font-semibold lg:h-[200px] lg:w-[200px]" style={{ color: "#0E1018" }}>
+        <div className="flex h-[136px] w-[136px] items-center justify-center text-sm font-semibold lg:h-[180px] lg:w-[180px]" style={{ color: "#0E1018" }}>
           QR unavailable
         </div>
       )}
@@ -1163,24 +1169,35 @@ function QrCode({ value }: { value: string }) {
   );
 }
 
-function PaymentInstructions({ method, planName, stable, unit }: { method: ResolvedMethod; planName: string; stable: boolean; unit: string }) {
+function InstructionsCard({ method, planName, stable }: { method: ResolvedMethod; planName: string; stable: boolean }) {
+  const netLabel = networkLabel(method.network);
   const netFull = method.network ? NETWORK_META[method.network].full : "";
+  const items = [
+    stable ? `Send only ${method.assetCode} (${netLabel}) to the address above.` : `Send only ${method.assetName} to the address above.`,
+    "Send the exact amount. Do not send less or more.",
+    "Your payment will be detected automatically.",
+    `After successful payment, your ${planName} plan will be renewed instantly.`,
+  ];
   return (
-    <div className="rounded-xl border p-3.5" style={{ borderColor: C.border2, background: C.surface2 }}>
-      <div className="flex items-center gap-2">
-        <Info className="h-4 w-4 shrink-0" style={{ color: C.accent }} />
-        <p className="text-[13px] font-bold" style={{ color: C.text }}>Important</p>
+    <div className="rounded-2xl border p-4 sm:p-5" style={{ borderColor: C.border, background: "linear-gradient(180deg,#0F1220,#0B0D14)" }}>
+      <div className="flex items-center gap-2.5">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg" style={{ background: "rgba(118,87,255,0.12)", color: "#B9A7FF" }}>
+          <Info className="h-4 w-4" />
+        </span>
+        <p className="text-[15px] font-bold" style={{ color: C.text }}>Important Instructions</p>
       </div>
-      <ul className="mt-2 space-y-1.5 text-[12.5px] leading-relaxed" style={{ color: C.sub }}>
-        <li>Send only {stable ? `${method.assetCode} on the ${networkLabel(method.network)} network` : method.assetName} to the address above.</li>
-        <li>Send the exact amount shown above — no less, no more.</li>
-        <li>Payments are detected automatically after blockchain confirmation.</li>
-        <li>Your {planName} plan renews once the payment is confirmed.</li>
+      <ul className="mt-3.5 space-y-2.5">
+        {items.map((t, i) => (
+          <li key={i} className="flex gap-2.5 text-[13px] leading-relaxed" style={{ color: C.sub }}>
+            <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: C.faint }} aria-hidden />
+            <span>{t}</span>
+          </li>
+        ))}
       </ul>
       {stable && (
-        <p className="mt-2.5 flex items-start gap-1.5 text-[12px] font-semibold" style={{ color: C.amber }}>
-          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          Using a different token or the wrong network ({netFull ? `not ${netFull}` : "wrong chain"}) may permanently lose the funds.
+        <p className="mt-3.5 flex items-start gap-2 rounded-lg border p-2.5 text-[12px] font-semibold leading-relaxed" style={{ color: C.amber, borderColor: "rgba(242,185,75,0.25)", background: "rgba(242,185,75,0.07)" }}>
+          <ShieldAlert className="mt-[1px] h-3.5 w-3.5 shrink-0" />
+          Send on the {netLabel} network only{netFull ? ` (${netFull})` : ""} — a different network can permanently lose the funds.
         </p>
       )}
     </div>
@@ -1360,5 +1377,5 @@ function trimNum(n: number): string {
 }
 
 function shortId(id: string): string {
-  return id && id.length > 12 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id || "—";
+  return id && id.length > 11 ? `${id.slice(0, 8)}…${id.slice(-2)}` : id || "—";
 }
