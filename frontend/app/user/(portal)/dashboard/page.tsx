@@ -384,15 +384,14 @@ export default function UserDashboard() {
   const expired = !!bot.expired;
   const inGrace = !!bot.in_grace;
   const graceHoursLeft = typeof bot.grace_hours_left === "number" ? bot.grace_hours_left : null;
-  const expiringSoon = !expired && daysLeft !== null && daysLeft <= 7 && daysLeft >= 0;
-  // Wording for the renewal banner — grace vs approaching-expiry vs soon.
+  // The renew banner/nudge only appears within the final 48h before expiry — a fresh purchase
+  // (e.g. a new 7-day plan) never shows it.
+  const expiringSoon = !expired && hoursToExpiry !== null && hoursToExpiry <= 48 && hoursToExpiry > 0;
   const renewBannerText = expired
     ? (inGrace && graceHoursLeft !== null
         ? `Your subscription has expired. Renew within ${graceHoursLeft} hours to keep your bot and existing data.`
         : "Your subscription has expired. Renew to keep your bot and existing data.")
-    : (hoursToExpiry !== null && hoursToExpiry <= 48
-        ? `Expires in ${Math.max(1, hoursToExpiry)}h — renew soon.`
-        : `Expires in ${daysLeft}d — renew soon.`);
+    : `Expires in ${Math.max(1, hoursToExpiry ?? 0)}h — renew now.`;
 
   const lastStep = controlSteps[controlSteps.length - 1];
   const controlDone = lastStep?.status === "done";

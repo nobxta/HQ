@@ -17,6 +17,12 @@ export default function UserBillingPage() {
   const orders = ordersData?.orders || [];
   const plan = bot.plan || {};
 
+  // "Renew" once expired or within the final 48h; "Extend Validity" while comfortably active.
+  const vt = bot.valid_till ? new Date(String(bot.valid_till).split("/").reverse().join("-")) : null;
+  const hoursToExpiry = vt && !isNaN(vt.getTime()) ? Math.ceil((vt.getTime() - Date.now()) / 3600000) : null;
+  const renewMode = !!bot.expired || (hoursToExpiry !== null && hoursToExpiry <= 48);
+  const billingCtaLabel = renewMode ? "Renew now" : "Extend validity";
+
   return (
     <div className="space-y-5 sm:space-y-6 animate-fade-in">
       <h1 className="text-xl sm:text-2xl font-bold text-dark-100">Billing</h1>
@@ -61,7 +67,7 @@ export default function UserBillingPage() {
               </div>
             </div>
             <Link href="/user/billing/renew" className="inline-flex items-center gap-1.5 text-xs text-accent hover:text-accent/80 transition-colors">
-              <CreditCard className="h-3.5 w-3.5" /> Renew or extend plan
+              <CreditCard className="h-3.5 w-3.5" /> {billingCtaLabel}
             </Link>
           </div>
         </Card>

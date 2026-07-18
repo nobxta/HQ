@@ -394,6 +394,7 @@ PREFIX_RENEW_CRY = b"renew_cry:"
 PREFIX_RENEW_NET = b"renew_net:"    # USDT/USDC network sub-menu (renew_net:{days}:{coin})
 PREFIX_RENEW_MORE = b"renew_more:"  # "More" crypto grid (renew_more:{days})
 PREFIX_RENEW_CANCEL = b"renew_cancel:"  # cancel an active renewal invoice (renew_cancel:{order_id})
+PREFIX_RENEW_VIEW = b"renew_view:"      # view the full invoice for an active order (renew_view:{order_id})
 CB_CFG_VALID_TILL_CUSTOM = b"cfg_vt_custom"
 CB_CFG_MESSAGE = b"cfg_message"
 CB_CFG_MSG_MODE_TEXT = b"cfg_msg_t"   # set message_mode text (Config)
@@ -1113,6 +1114,31 @@ async def _render_renewal_invoice(bot_token: str, chat_id: int, msg_id: int, ord
     from . import bot_ptb
     html_text, kb = _renewal_invoice_html_and_kb(order, cfg, note=note)
     return await bot_ptb.edit_message_with_bot(chat_id, msg_id, html_text, bot_token=bot_token, parse_mode="HTML", reply_markup=kb)
+
+
+def _renewal_active_notice_html_and_kb(order: dict):
+    """Compact "you already have an active invoice" card — order id + status, NOT the full address.
+    View re-shows the full invoice; Cancel voids it."""
+    import html as _html
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    from .ui.emoji_entities import tg_emoji_html
+    oid = str(order.get("order_id") or "")
+    amount = order.get("amount_usd")
+    days = int(order.get("duration_days") or 0)
+    status = order.get("status") or "payment_waiting"
+    status_label = {"payment_waiting": "Awaiting payment", "confirming": "Confirming on-chain"}.get(status, status)
+    text = (
+        f"{tg_emoji_html('billing')} <b>You already have an active renewal invoice.</b>\n\n"
+        f"<b>Order ID:</b> <code>{_html.escape(oid)}</code>\n"
+        f"<b>Plan:</b> {days} days · ${amount}\n"
+        f"<b>Status:</b> {status_label}\n\n"
+        "Tap <b>View invoice</b> to pay it, or <b>Cancel</b> to start a new renewal."
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("👁 View invoice", callback_data=f"renew_view:{oid}")],
+        [InlineKeyboardButton("✖ Cancel invoice", callback_data=f"renew_cancel:{oid}")],
+    ])
+    return text, kb
 
 
 def _list_group_files() -> list[str]:
@@ -5244,12 +5270,9 @@ async def create_user_bot(bot_token: str) -> None:
         if _active:
             try:
                 from . import bot_ptb
-                html_text, kb = _renewal_invoice_html_and_kb(
-                    _active, cfg,
-                    note="⚠️ You already have an active renewal invoice. Pay it below, or ✖ Cancel (or send /cancel) to start over.",
-                )
+                text_c, kb_c = _renewal_active_notice_html_and_kb(_active)
                 ok, _mid = await bot_ptb.send_message_with_bot_return_id(
-                    event.chat_id, html_text, bot_token=bot_token, parse_mode="HTML", reply_markup=kb,
+                    event.chat_id, text_c, bot_token=bot_token, parse_mode="HTML", reply_markup=kb_c,
                 )
                 if ok:
                     return
@@ -5469,10 +5492,9 @@ async def create_user_bot(bot_token: str) -> None:
                 # the web), show that one instead of creating another.
                 _existing = find_active_renewal_order(bot_token)
                 if _existing:
-                    if not await _render_renewal_invoice(
-                        bot_token, event.chat_id, event.message_id, _existing, cfg,
-                        note="⚠️ You already have an active renewal invoice — pay it below, or ✖ Cancel to start over.",
-                    ):
+                    from . import bot_ptb as _bp
+                    text_c, kb_c = _renewal_active_notice_html_and_kb(_existing)
+                    if not await _bp.edit_message_with_bot(event.chat_id, event.message_id, text_c, bot_token=bot_token, parse_mode="HTML", reply_markup=kb_c):
                         await event.edit("You already have an active renewal invoice. Send /cancel to cancel it, then start a new renewal.")
                     return
                 price = resolve_renewal_price(cfg or {}, duration_days)
@@ -5542,6 +5564,21 @@ async def create_user_bot(bot_token: str) -> None:
             except Exception as exc:
                 logger.warning("Controller renewal callback failed: %s", exc)
                 await event.edit("Renewal is temporarily unavailable. Please try again later.")
+            return
+        if raw.startswith(PREFIX_RENEW_VIEW):
+            await event.answer()
+            order_id = raw.split(b":", 1)[1].decode("utf-8", "ignore")
+            try:
+                from .shop.storage import get_order
+                order = get_order(order_id)
+                if not order or order.get("status") not in ("payment_waiting", "confirming") or not order.get("pay_address"):
+                    await event.edit("That invoice is no longer active. Send /start to renew again.")
+                    return
+                if not await _render_renewal_invoice(bot_token, event.chat_id, event.message_id, order, cfg):
+                    await event.edit("Couldn't load the invoice. Send /start and try again.")
+            except Exception as exc:
+                logger.warning("Renewal view failed: %s", exc)
+                await event.answer("Couldn't load the invoice.", alert=True)
             return
         if raw.startswith(PREFIX_RENEW_CANCEL):
             await event.answer("Cancelling…")
@@ -6356,14 +6393,20 @@ async def create_user_bot(bot_token: str) -> None:
             await event.answer()
             vt = cfg.get("valid_till", "")
             days = _validity_days_left(vt)
+            # "Extend Validity" while comfortably active; "Renew Now" within 48h of expiry / after.
+            near_expiry = _is_expired(cfg)
+            if not near_expiry:
+                try:
+                    end = datetime.strptime(str(vt).strip(), "%d/%m/%Y")
+                    near_expiry = (end - datetime.now()).total_seconds() <= 48 * 3600
+                except (ValueError, TypeError):
+                    pass
+            renew_btn = Button.inline("🔄 Renew Now" if near_expiry else "➕ Extend Validity", PREFIX_RENEW_OPEN)
             try:
                 text, entities = build_panel_message("panel_validity", f"**Validity:** {days}")
                 await event.edit(
                     text,
-                    buttons=[
-                        [Button.inline("🔄 Renew Now", PREFIX_RENEW_OPEN)],
-                        [Button.inline("‹ Back", b"back")],
-                    ],
+                    buttons=[[renew_btn], [Button.inline("‹ Back", b"back")]],
                     formatting_entities=entities,
                 )
             except MessageNotModifiedError:
