@@ -393,6 +393,7 @@ PREFIX_RENEW_DUR = b"renew_dur:"
 PREFIX_RENEW_CRY = b"renew_cry:"
 PREFIX_RENEW_NET = b"renew_net:"    # USDT/USDC network sub-menu (renew_net:{days}:{coin})
 PREFIX_RENEW_MORE = b"renew_more:"  # "More" crypto grid (renew_more:{days})
+PREFIX_RENEW_CANCEL = b"renew_cancel:"  # cancel an active renewal invoice (renew_cancel:{order_id})
 CB_CFG_VALID_TILL_CUSTOM = b"cfg_vt_custom"
 CB_CFG_MESSAGE = b"cfg_message"
 CB_CFG_MSG_MODE_TEXT = b"cfg_msg_t"   # set message_mode text (Config)
@@ -1066,6 +1067,52 @@ def _renew_more_keyboard_ptb(days: int):
         rows.append([_coin_button(code, f"renew_cry:{d}:{code}", label) for (label, code) in MORE_CURRENCIES[i:i + 3]])
     rows.append([InlineKeyboardButton("‹ Back", callback_data=f"renew_dur:{d}")])
     return InlineKeyboardMarkup(rows)
+
+
+_NET_DISPLAY = {"BTC": "Bitcoin", "ETH": "Ethereum", "LTC": "Litecoin", "XMR": "Monero", "TRX": "TRON", "SOL": "Solana"}
+
+
+def _renewal_invoice_html_and_kb(order: dict, cfg: dict, note: str = ""):
+    """Build (html_text, ptb_keyboard) for a renewal invoice from a stored order dict.
+    Same premium-emoji layout as a freshly created invoice; keyboard has a single Cancel button so
+    the invoice can be cancelled from the bot (mirrors the web). `note` optionally prepends a line."""
+    import html as _html
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    from .ui.emoji_entities import tg_emoji_html
+    plan_disp = _html.escape((cfg or {}).get("plan_name") or (cfg or {}).get("name") or order.get("plan_name") or "AdBot")
+    coin_code = str(order.get("pay_currency") or "").upper()
+    pay_amt = _html.escape(str(order.get("pay_amount") or ""))
+    addr = _html.escape(order.get("pay_address") or "")
+    duration_days = int(order.get("duration_days") or 0)
+    amount_usd = order.get("amount_usd")
+    if "_" in coin_code:
+        coin_base, net_label = coin_code.split("_", 1)
+    else:
+        coin_base = coin_code
+        net_label = _NET_DISPLAY.get(coin_code, coin_code)
+    head = f"{_html.escape(note)}\n\n" if note else ""
+    html_text = (
+        f"{head}"
+        f"{tg_emoji_html('payment')} <b>Complete Your Renewal</b>\n\n"
+        f"{tg_emoji_html('plan_info')} <b>Plan:</b> {plan_disp}\n"
+        f"{tg_emoji_html('panel_validity')} <b>Validity:</b> {duration_days} Days\n"
+        f"{tg_emoji_html('dollar')} <b>Amount:</b> ${amount_usd}\n\n"
+        f"Send exactly:\n<b>{pay_amt} {coin_base}</b>\n\n"
+        f"{tg_emoji_html('crypto')} <b>Network:</b> {net_label}\n"
+        f"{tg_emoji_html('link')} <b>Address:</b>\n<code>{addr}</code>\n\n"
+        f"{tg_emoji_html('invoice_clock')} <b>This payment request expires in 12 hours.</b>\n\n"
+        f"Send only {coin_base} through the {net_label} network. Payments made using another coin or network cannot be recovered.\n\n"
+        f"Your payment will be detected automatically — once confirmed, <b>{duration_days} days</b> will be added to your subscription, including any remaining validity."
+    )
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✖ Cancel invoice", callback_data=f"renew_cancel:{order.get('order_id', '')}")]])
+    return html_text, kb
+
+
+async def _render_renewal_invoice(bot_token: str, chat_id: int, msg_id: int, order: dict, cfg: dict, note: str = "") -> bool:
+    """Edit the given message into the renewal invoice (premium emoji + Cancel button) via PTB."""
+    from . import bot_ptb
+    html_text, kb = _renewal_invoice_html_and_kb(order, cfg, note=note)
+    return await bot_ptb.edit_message_with_bot(chat_id, msg_id, html_text, bot_token=bot_token, parse_mode="HTML", reply_markup=kb)
 
 
 def _list_group_files() -> list[str]:
@@ -5187,6 +5234,29 @@ async def create_user_bot(bot_token: str) -> None:
                 )
         except Exception:
             pass
+        # If a renewal invoice is already live (started here or on the web), surface it so the user
+        # can pay or cancel it — never let them silently create a second invoice.
+        try:
+            from .shop.storage import find_active_renewal_order
+            _active = find_active_renewal_order(bot_token)
+        except Exception:
+            _active = None
+        if _active:
+            try:
+                from . import bot_ptb
+                html_text, kb = _renewal_invoice_html_and_kb(
+                    _active, cfg,
+                    note="⚠️ You already have an active renewal invoice. Pay it below, or ✖ Cancel (or send /cancel) to start over.",
+                )
+                ok, _mid = await bot_ptb.send_message_with_bot_return_id(
+                    event.chat_id, html_text, bot_token=bot_token, parse_mode="HTML", reply_markup=kb,
+                )
+                if ok:
+                    return
+            except Exception as _e:
+                logger.warning("Active-invoice notice failed: %s", _e)
+            await event.reply("You have an active renewal invoice. Send /cancel to cancel it, or wait for payment to be detected.")
+            return
         if _is_expired(cfg):
             _mark_bot_expired(bot_token)
             await event.reply(_expired_message(), buttons=_menu_buttons_expired())
@@ -5195,6 +5265,25 @@ async def create_user_bot(bot_token: str) -> None:
         _config_custom_state.setdefault(bot_token, {}).pop(event.sender_id, None)
         _config_custom_message_id.pop((bot_token, event.sender_id), None)
         await event.reply("**AdBot** — What would you like to do?", buttons=_menu_buttons(), parse_mode="md")
+
+    @client.on(events.NewMessage(pattern=r"^/cancel\s*$"))
+    async def on_cancel(event: events.NewMessage.Event) -> None:
+        cfg = get_cfg()
+        if not _is_authorized(event.sender_id, cfg):
+            return
+        try:
+            from .shop.storage import find_active_renewal_order, update_order_status
+            active = find_active_renewal_order(bot_token)
+        except Exception:
+            active = None
+        if not active:
+            await event.reply("You don't have an active renewal invoice.")
+            return
+        if active.get("status") == "payment_waiting":
+            update_order_status(active["order_id"], "cancelled", cancelled_by="user_bot", cancelled_at=datetime.utcnow().isoformat() + "Z")
+            await event.reply("Invoice cancelled. You can start a new renewal anytime.", buttons=[[Button.inline("🔄 Renew Now", PREFIX_RENEW_OPEN)]])
+        else:
+            await event.reply("Your payment is already being processed and can't be cancelled now.")
 
     def _fix_menu_buttons():
         return [
@@ -5373,9 +5462,19 @@ async def create_user_bot(bot_token: str) -> None:
                 duration_days = 30 if duration_s == "30" else 7
                 currency = currency.strip().upper()
                 from .shop.renewals import resolve_renewal_price
-                from .shop.storage import create_renewal_order, update_order, update_order_status
+                from .shop.storage import create_renewal_order, update_order, update_order_status, get_order, find_active_renewal_order
                 from .shop.payment import create_invoice
                 from .shop.workers import extend_valid_till_for_bot
+                # Never mint a duplicate: if this bot already has a live invoice (created here or on
+                # the web), show that one instead of creating another.
+                _existing = find_active_renewal_order(bot_token)
+                if _existing:
+                    if not await _render_renewal_invoice(
+                        bot_token, event.chat_id, event.message_id, _existing, cfg,
+                        note="⚠️ You already have an active renewal invoice — pay it below, or ✖ Cancel to start over.",
+                    ):
+                        await event.edit("You already have an active renewal invoice. Send /cancel to cancel it, then start a new renewal.")
+                    return
                 price = resolve_renewal_price(cfg or {}, duration_days)
                 rev_order = create_renewal_order(
                     parent_order_id="",
@@ -5423,52 +5522,45 @@ async def create_user_bot(bot_token: str) -> None:
                     "invoice_expiry": invoice.get("invoice_expiry") or "",
                     "invoice_expires_at": invoice.get("invoice_expires_at") or "",
                 })
-                import html as _html
-                from .ui.emoji_entities import tg_emoji_html
-                plan_disp = _html.escape((cfg or {}).get("plan_name") or (cfg or {}).get("name") or "AdBot")
-                coin_code = (invoice.get("pay_currency") or currency).upper()
-                pay_amt = _html.escape(str(invoice.get("pay_amount") or ""))
-                addr = _html.escape(invoice.get("pay_address") or "")
-                # Split coin/network for display (USDT_TRC20 → USDT on TRC20; BTC → BTC on Bitcoin).
-                if "_" in coin_code:
-                    coin_base, net_label = coin_code.split("_", 1)
-                else:
-                    coin_base = coin_code
-                    net_label = {"BTC": "Bitcoin", "ETH": "Ethereum", "LTC": "Litecoin", "XMR": "Monero", "TRX": "TRON", "SOL": "Solana"}.get(coin_code, coin_code)
-                # Premium custom-emoji invoice via PTB HTML (<tg-emoji>), same id set as the buttons.
-                invoice_html = (
-                    f"{tg_emoji_html('payment')} <b>Complete Your Renewal</b>\n\n"
-                    f"{tg_emoji_html('plan_info')} <b>Plan:</b> {plan_disp}\n"
-                    f"{tg_emoji_html('panel_validity')} <b>Validity:</b> {duration_days} Days\n"
-                    f"{tg_emoji_html('dollar')} <b>Amount:</b> ${price['amount']}\n\n"
-                    f"Send exactly:\n<b>{pay_amt} {coin_base}</b>\n\n"
-                    f"{tg_emoji_html('crypto')} <b>Network:</b> {net_label}\n"
-                    f"{tg_emoji_html('link')} <b>Address:</b>\n<code>{addr}</code>\n\n"
-                    f"{tg_emoji_html('invoice_clock')} <b>This payment request expires in 12 hours.</b>\n\n"
-                    f"Send only {coin_base} through the {net_label} network. Payments made using another coin or network cannot be recovered.\n\n"
-                    f"Your payment will be detected automatically — once confirmed, <b>{duration_days} days</b> will be added to your subscription, including any remaining validity."
-                )
-                from . import bot_ptb
-                ok = await bot_ptb.edit_message_with_bot(
-                    event.chat_id, event.message_id, invoice_html, bot_token=bot_token, parse_mode="HTML",
-                )
-                if not ok:
+                # Render the premium-emoji invoice (with a Cancel button) from the stored order, so
+                # it looks identical whether created here or restored later / from the web.
+                fresh = get_order(rev_order["order_id"]) or rev_order
+                if not await _render_renewal_invoice(bot_token, event.chat_id, event.message_id, fresh, cfg):
+                    coin_code = (invoice.get("pay_currency") or currency).upper()
+                    coin_base = coin_code.split("_", 1)[0]
                     await event.edit(
                         "👛 **Complete Your Renewal**\n\n"
                         f"**Plan:** {(cfg or {}).get('plan_name') or (cfg or {}).get('name') or 'AdBot'}\n"
                         f"**Validity:** {duration_days} days\n"
                         f"**Amount:** ${price['amount']}\n\n"
                         f"Send exactly `{invoice.get('pay_amount')}` {coin_base}\n\n"
-                        f"**Network:** {net_label}\n"
-                        "Address:\n"
                         f"`{invoice.get('pay_address')}`\n\n"
-                        "🕖 Valid for **12 hours**.\n\n"
+                        "🕖 Valid for **12 hours**. Send /cancel to cancel.\n\n"
                         "Payment is detected automatically — you'll get the next step here.",
                         parse_mode="md",
                     )
             except Exception as exc:
                 logger.warning("Controller renewal callback failed: %s", exc)
                 await event.edit("Renewal is temporarily unavailable. Please try again later.")
+            return
+        if raw.startswith(PREFIX_RENEW_CANCEL):
+            await event.answer("Cancelling…")
+            order_id = raw.split(b":", 1)[1].decode("utf-8", "ignore")
+            try:
+                from .shop.storage import get_order, update_order_status
+                order = get_order(order_id)
+                if order and order.get("order_type") == "renewal" and order.get("status") == "payment_waiting":
+                    update_order_status(order_id, "cancelled", cancelled_by="user_bot", cancelled_at=datetime.utcnow().isoformat() + "Z")
+                from . import bot_ptb
+                from .ui.emoji_entities import tg_emoji_html
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                text = f"{tg_emoji_html('declined')} <b>Invoice cancelled.</b>\n\nYou can start a new renewal anytime."
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Renew again", callback_data="renew_open")]])
+                if not await bot_ptb.edit_message_with_bot(event.chat_id, event.message_id, text, bot_token=bot_token, parse_mode="HTML", reply_markup=kb):
+                    await event.edit("Invoice cancelled. You can start a new renewal anytime.", buttons=[[Button.inline("🔄 Renew again", PREFIX_RENEW_OPEN)]])
+            except Exception as exc:
+                logger.warning("Renewal cancel failed: %s", exc)
+                await event.answer("Couldn't cancel. Try again.", alert=True)
             return
         if raw in (CB_AR_MENU, CB_AR_TOGGLE, CB_AR_EDIT, CB_AR_RECENT, CB_AR_BACK):
             await event.answer()

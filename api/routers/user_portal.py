@@ -792,31 +792,15 @@ async def portal_renewal_options(bot_name: str, telegram_id: int = Query(...)):
     """Return server-calculated renewal options for the authenticated user's bot."""
     token, cfg = await _get_user_bot(telegram_id, bot_name)
     from code.shop.renewals import effective_renewal_options, parse_valid_till
-    from code.shop.storage import load_orders
+    from code.shop.storage import find_active_renewal_order
     import datetime as _dt
     opts = effective_renewal_options(cfg)
     current = parse_valid_till(cfg.get("valid_till"))
     hours_left = None
     if current:
         hours_left = int((current - _dt.datetime.utcnow()).total_seconds() // 3600)
-    active_invoice = None
-    now_dt = _dt.datetime.utcnow()
-    for order in reversed(load_orders()):
-        if order.get("order_type") != "renewal":
-            continue
-        if order.get("bot_token") != token:
-            continue
-        if order.get("user_id") != telegram_id and telegram_id != 0:
-            continue
-        if order.get("status") not in ("payment_waiting", "confirming"):
-            continue
-        if not order.get("pay_address"):
-            continue
-        exp = _parse_order_dt(order.get("invoice_expires_at") or order.get("expiry_time"))
-        if exp and now_dt > exp:
-            continue
-        active_invoice = _safe_renewal_order(order)
-        break
+    active_order = find_active_renewal_order(token, telegram_id)
+    active_invoice = _safe_renewal_order(active_order) if active_order else None
     return {
         "bot": {
             "name": cfg.get("name", bot_name),
@@ -851,23 +835,10 @@ async def portal_create_renewal(bot_name: str, telegram_id: int = Query(...), bo
         raise HTTPException(400, str(exc))
     amount = price["amount"]
 
-    # Find parent completed order for this bot
-    from code.shop.storage import load_orders, create_renewal_order, update_order
-    from datetime import datetime as _dt
-    for existing in reversed(load_orders()):
-        if existing.get("order_type") != "renewal":
-            continue
-        if existing.get("bot_token") != token:
-            continue
-        if existing.get("user_id") != telegram_id and telegram_id != 0:
-            continue
-        if existing.get("status") not in ("payment_waiting", "confirming"):
-            continue
-        if not existing.get("pay_address"):
-            continue
-        exp = _parse_order_dt(existing.get("invoice_expires_at") or existing.get("expiry_time"))
-        if exp and _dt.utcnow() > exp:
-            continue
+    # Reuse an existing live invoice (from web OR the controller bot) instead of minting a duplicate.
+    from code.shop.storage import load_orders, create_renewal_order, update_order, find_active_renewal_order
+    existing = find_active_renewal_order(token, telegram_id)
+    if existing:
         return _safe_renewal_order(existing)
 
     parent_order_id = ""

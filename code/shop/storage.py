@@ -120,6 +120,38 @@ def get_order(order_id: str) -> dict[str, Any] | None:
     return None
 
 
+def find_active_renewal_order(bot_token: str, user_id: int | None = None) -> dict[str, Any] | None:
+    """Return the most recent live renewal invoice for a bot (payment_waiting/confirming, has a
+    pay_address, not past its invoice window), or None. Shared by the web portal AND the controller
+    bot so an invoice created on either surface is found on both — preventing duplicate invoices.
+    Pass user_id to restrict to one buyer (0/None = any authorized user of the bot)."""
+    import datetime as _dt
+    if not bot_token:
+        return None
+    now = _dt.datetime.utcnow()
+    for order in reversed(load_orders()):
+        if order.get("order_type") != "renewal":
+            continue
+        if order.get("bot_token") != bot_token:
+            continue
+        if user_id not in (None, 0) and order.get("user_id") != user_id:
+            continue
+        if order.get("status") not in ("payment_waiting", "confirming"):
+            continue
+        if not order.get("pay_address"):
+            continue
+        raw = (order.get("invoice_expires_at") or order.get("expiry_time") or "").strip()
+        if raw:
+            try:
+                exp = _dt.datetime.fromisoformat(raw.replace("Z", "").split(".")[0])
+                if now > exp:
+                    continue
+            except ValueError:
+                pass
+        return order
+    return None
+
+
 def get_order_by_payment_id(payment_id: str) -> dict[str, Any] | None:
     """Return first order with given payment_id or None. Used for idempotent temppay→orders."""
     pid = (payment_id or "").strip()
