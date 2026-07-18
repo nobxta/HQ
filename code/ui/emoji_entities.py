@@ -36,6 +36,7 @@ EMOJI_FALLBACKS: dict[str, str] = {
     "ready": "✅",
     "failed": "❌",
     "declined": "🚫",
+    "dollar": "💵",
     "delete": "🗑",
     "link": "🔗",
     "pointer": "👉",
@@ -88,6 +89,16 @@ def u16len(s: str) -> int:
 def fallback_glyph(emoji_key: str) -> str:
     """Unicode fallback glyph for a custom-emoji key (PLACEHOLDER if none defined)."""
     return EMOJI_FALLBACKS.get(emoji_key, PLACEHOLDER)
+
+
+def tg_emoji_html(emoji_key: str) -> str:
+    """HTML <tg-emoji> span for a configured custom emoji, for use with parse_mode="HTML".
+    Falls back to the plain Unicode glyph when the key has no custom id, so non-Premium users
+    (or bots without access to the set) always see a fitting emoji — never a raw tag or id.
+    Reuses the same CUSTOM_EMOJIS ids as the inline keyboard buttons."""
+    glyph = fallback_glyph(emoji_key)
+    eid = CUSTOM_EMOJIS.get(emoji_key)
+    return f'<tg-emoji emoji-id="{eid}">{glyph}</tg-emoji>' if eid else glyph
 
 
 def build_emoji_message(label: str, emoji_key: str) -> tuple[str, list[MessageEntity]]:

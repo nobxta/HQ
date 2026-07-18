@@ -5267,8 +5267,11 @@ async def create_user_bot(bot_token: str) -> None:
                     await event.edit("Renewal is unavailable for this plan. Please contact support.", buttons=_menu_buttons_expired() if _is_expired(cfg) else _menu_buttons())
                     return
                 await event.edit(
-                    "Renew your AdBot.\n\nChoose validity. Any remaining time is preserved.",
+                    "**Renew Your AdBot**\n\n"
+                    "Extend your subscription by selecting a renewal period below. "
+                    "Any remaining time will be carried forward automatically.",
                     buttons=rows,
+                    parse_mode="md",
                 )
             except Exception:
                 await event.edit("Renewal is temporarily unavailable. Please try again later.")
@@ -5283,14 +5286,18 @@ async def create_user_bot(bot_token: str) -> None:
             except Exception:
                 await event.edit("This renewal duration is unavailable for your plan.")
                 return
-            text = f"💳 Renewal total: ${price['amount']}\n\nChoose how you'd like to pay:"
+            # Premium wallet emoji in the heading (same custom-emoji set as the coin buttons).
+            from .ui.emoji_entities import tg_emoji_html
+            amount = price["amount"]
+            text_html = f"{tg_emoji_html('invoice_wallet')} <b>Renewal Total: ${amount}</b>\n\nChoose how you'd like to pay:"
+            text_plain = f"👛 Renewal Total: ${amount}\n\nChoose how you'd like to pay:"
             # Prefer the shop's exact crypto grid rendered via the PTB bot (premium coin emoji on the
-            # buttons). If the PTB edit fails for any reason, fall back to Telethon unicode-symbol
-            # buttons so the flow always works.
+            # buttons + heading). If the PTB edit fails for any reason, fall back to Telethon
+            # unicode-symbol buttons so the flow always works.
             from . import bot_ptb
             ok = await bot_ptb.edit_message_with_bot(
-                event.chat_id, event.message_id, text,
-                bot_token=bot_token, reply_markup=_renew_crypto_keyboard_ptb(duration_days),
+                event.chat_id, event.message_id, text_html,
+                bot_token=bot_token, parse_mode="HTML", reply_markup=_renew_crypto_keyboard_ptb(duration_days),
             )
             if not ok:
                 from .ui.emojis import coin_symbol
@@ -5305,7 +5312,7 @@ async def create_user_bot(bot_token: str) -> None:
                     [_coin_btn("USDT", "USDT_TRC20"), _coin_btn("USDC", "USDC_ERC20"), _coin_btn("Litecoin", "LTC")],
                     [Button.inline("‹ Back", PREFIX_RENEW_OPEN)],
                 ]
-                await event.edit(text, buttons=rows)
+                await event.edit(text_plain, buttons=rows)
             return
         if raw.startswith(PREFIX_RENEW_NET):
             # USDT/USDC network sub-menu — renew_net:{days}:{coin}
@@ -5400,7 +5407,13 @@ async def create_user_bot(bot_token: str) -> None:
                 invoice = create_invoice(float(price["amount"]), currency, rev_order["order_id"], f"AdBot renewal {duration_days} days")
                 if invoice.get("_invoice_failed"):
                     update_order(rev_order["order_id"], {"status": "invoice_failed"})
-                    await event.edit("Couldn't generate this invoice. Pick another coin or try again.", buttons=[[Button.inline("Back", PREFIX_RENEW_DUR + str(duration_days).encode())]])
+                    from . import bot_ptb
+                    from .ui.emoji_entities import tg_emoji_html
+                    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                    failed_html = f"{tg_emoji_html('failed')} <b>Couldn't generate this invoice.</b>\n\nPick another coin or try again."
+                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("‹ Back", callback_data=f"renew_dur:{duration_days}")]])
+                    if not await bot_ptb.edit_message_with_bot(event.chat_id, event.message_id, failed_html, bot_token=bot_token, parse_mode="HTML", reply_markup=kb):
+                        await event.edit("Couldn't generate this invoice. Pick another coin or try again.", buttons=[[Button.inline("Back", PREFIX_RENEW_DUR + str(duration_days).encode())]])
                     return
                 update_order(rev_order["order_id"], {
                     "payment_id": invoice.get("payment_id", ""),
@@ -5410,20 +5423,49 @@ async def create_user_bot(bot_token: str) -> None:
                     "invoice_expiry": invoice.get("invoice_expiry") or "",
                     "invoice_expires_at": invoice.get("invoice_expires_at") or "",
                 })
-                plan_disp = (cfg or {}).get("plan_name") or (cfg or {}).get("name") or "AdBot"
-                coin_disp = (invoice.get("pay_currency") or currency).upper()
-                await event.edit(
-                    "👛 **Complete Your Payment**\n\n"
-                    f"**Plan:** {plan_disp}\n"
-                    f"**Validity:** {duration_days} days\n"
-                    f"**Amount:** ${price['amount']}\n\n"
-                    f"Send exactly `{invoice.get('pay_amount')}` {coin_disp}\n\n"
-                    "to this address:\n\n"
-                    f"`{invoice.get('pay_address')}`\n\n"
-                    "🕖 Valid for **12 hours**. After that, start a new renewal if needed.\n\n"
-                    "Payment is detected automatically — you'll get the next step here.",
-                    parse_mode="md",
+                import html as _html
+                from .ui.emoji_entities import tg_emoji_html
+                plan_disp = _html.escape((cfg or {}).get("plan_name") or (cfg or {}).get("name") or "AdBot")
+                coin_code = (invoice.get("pay_currency") or currency).upper()
+                pay_amt = _html.escape(str(invoice.get("pay_amount") or ""))
+                addr = _html.escape(invoice.get("pay_address") or "")
+                # Split coin/network for display (USDT_TRC20 → USDT on TRC20; BTC → BTC on Bitcoin).
+                if "_" in coin_code:
+                    coin_base, net_label = coin_code.split("_", 1)
+                else:
+                    coin_base = coin_code
+                    net_label = {"BTC": "Bitcoin", "ETH": "Ethereum", "LTC": "Litecoin", "XMR": "Monero", "TRX": "TRON", "SOL": "Solana"}.get(coin_code, coin_code)
+                # Premium custom-emoji invoice via PTB HTML (<tg-emoji>), same id set as the buttons.
+                invoice_html = (
+                    f"{tg_emoji_html('payment')} <b>Complete Your Renewal</b>\n\n"
+                    f"{tg_emoji_html('plan_info')} <b>Plan:</b> {plan_disp}\n"
+                    f"{tg_emoji_html('panel_validity')} <b>Validity:</b> {duration_days} Days\n"
+                    f"{tg_emoji_html('dollar')} <b>Amount:</b> ${price['amount']}\n\n"
+                    f"Send exactly:\n<b>{pay_amt} {coin_base}</b>\n\n"
+                    f"{tg_emoji_html('crypto')} <b>Network:</b> {net_label}\n"
+                    f"{tg_emoji_html('link')} <b>Address:</b>\n<code>{addr}</code>\n\n"
+                    f"{tg_emoji_html('invoice_clock')} <b>This payment request expires in 12 hours.</b>\n\n"
+                    f"Send only {coin_base} through the {net_label} network. Payments made using another coin or network cannot be recovered.\n\n"
+                    f"Your payment will be detected automatically — once confirmed, <b>{duration_days} days</b> will be added to your subscription, including any remaining validity."
                 )
+                from . import bot_ptb
+                ok = await bot_ptb.edit_message_with_bot(
+                    event.chat_id, event.message_id, invoice_html, bot_token=bot_token, parse_mode="HTML",
+                )
+                if not ok:
+                    await event.edit(
+                        "👛 **Complete Your Renewal**\n\n"
+                        f"**Plan:** {(cfg or {}).get('plan_name') or (cfg or {}).get('name') or 'AdBot'}\n"
+                        f"**Validity:** {duration_days} days\n"
+                        f"**Amount:** ${price['amount']}\n\n"
+                        f"Send exactly `{invoice.get('pay_amount')}` {coin_base}\n\n"
+                        f"**Network:** {net_label}\n"
+                        "Address:\n"
+                        f"`{invoice.get('pay_address')}`\n\n"
+                        "🕖 Valid for **12 hours**.\n\n"
+                        "Payment is detected automatically — you'll get the next step here.",
+                        parse_mode="md",
+                    )
             except Exception as exc:
                 logger.warning("Controller renewal callback failed: %s", exc)
                 await event.edit("Renewal is temporarily unavailable. Please try again later.")
