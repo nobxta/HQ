@@ -27,19 +27,60 @@ import { cn, formatDate, formatUSD } from "@/lib/utils";
 // ── Supported crypto assets/networks ────────────────────────────────────────
 // Asset and network are ALWAYS stored separately so display code never has to
 // concatenate codes (which produced strings like "USDTTRC20").
-const PAYMENT_METHODS = [
-  { code: "BTC", assetName: "Bitcoin", assetCode: "BTC", networkName: "Bitcoin", networkCode: "Bitcoin", blurb: "Original cryptocurrency" },
-  { code: "SOL", assetName: "Solana", assetCode: "SOL", networkName: "Solana", networkCode: "Solana", blurb: "Fast network" },
-  { code: "ETH", assetName: "Ethereum", assetCode: "ETH", networkName: "Ethereum", networkCode: "ERC20", blurb: "Popular network" },
-  { code: "USDT_TRC20", assetName: "Tether", assetCode: "USDT", networkName: "TRON", networkCode: "TRC20", blurb: "Stablecoin" },
-  { code: "USDC_ERC20", assetName: "USD Coin", assetCode: "USDC", networkName: "Ethereum", networkCode: "ERC20", blurb: "USD-backed stablecoin" },
-  { code: "TRX", assetName: "TRON", assetCode: "TRX", networkName: "TRON", networkCode: "TRC20", blurb: "Tron network token" },
-  { code: "LTC", assetName: "Litecoin", assetCode: "LTC", networkName: "Litecoin", networkCode: "Litecoin", blurb: "Fast payments" },
-  { code: "XMR", assetName: "Monero", assetCode: "XMR", networkName: "Monero", networkCode: "Monero", blurb: "Privacy-focused" },
-] as const;
+// Real, CC0 coin logos (cryptocurrency-icons) served from the jsDelivr CDN — no API key.
+const CRYPTO_LOGOS: Record<string, string> = {
+  BTC: "https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/btc.svg",
+  ETH: "https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/eth.svg",
+  SOL: "https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/sol.svg",
+  USDT: "https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/usdt.svg",
+  USDC: "https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/usdc.svg",
+  TRX: "https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/trx.svg",
+  LTC: "https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/ltc.svg",
+  XMR: "https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/xmr.svg",
+};
+
+type NetworkOption = { label: string; code: string; name: string };
+type CryptoAsset = {
+  code: string;
+  name: string;
+  blurb: string;
+  network: NetworkOption;           // effective network when there is no choice
+  networks: NetworkOption[] | null; // selectable networks (USDT / USDC only); null = single fixed chain
+};
+
+// Network selection is offered ONLY for USDT and USDC. Every other coin runs on its own chain.
+// USDC intentionally has no TRC20.
+const CRYPTO_ASSETS: CryptoAsset[] = [
+  { code: "BTC", name: "Bitcoin", blurb: "Original cryptocurrency", network: { label: "Bitcoin", code: "Bitcoin", name: "Bitcoin" }, networks: null },
+  { code: "SOL", name: "Solana", blurb: "Fast network", network: { label: "Solana", code: "Solana", name: "Solana" }, networks: null },
+  { code: "ETH", name: "Ethereum", blurb: "Popular network", network: { label: "Ethereum", code: "ERC20", name: "Ethereum" }, networks: null },
+  {
+    code: "USDT", name: "Tether", blurb: "Stablecoin",
+    network: { label: "TRC20", code: "TRC20", name: "TRON" },
+    networks: [
+      { label: "TRC20", code: "TRC20", name: "TRON" },
+      { label: "BEP20", code: "BEP20", name: "BNB Smart Chain" },
+      { label: "ERC20", code: "ERC20", name: "Ethereum" },
+      { label: "Solana", code: "SOL", name: "Solana" },
+    ],
+  },
+  {
+    code: "USDC", name: "USD Coin", blurb: "USD-backed stablecoin",
+    network: { label: "ERC20", code: "ERC20", name: "Ethereum" },
+    networks: [
+      { label: "ERC20", code: "ERC20", name: "Ethereum" },
+      { label: "BEP20", code: "BEP20", name: "BNB Smart Chain" },
+      { label: "Solana", code: "SOL", name: "Solana" },
+      { label: "Arbitrum", code: "ARB", name: "Arbitrum" },
+    ],
+  },
+  { code: "TRX", name: "TRON", blurb: "Tron network token", network: { label: "TRC20", code: "TRC20", name: "TRON" }, networks: null },
+  { code: "LTC", name: "Litecoin", blurb: "Fast payments", network: { label: "Litecoin", code: "Litecoin", name: "Litecoin" }, networks: null },
+  { code: "XMR", name: "Monero", blurb: "Privacy-focused", network: { label: "Monero", code: "Monero", name: "Monero" }, networks: null },
+];
 
 type Step = "duration" | "method" | "invoice" | "success";
-type PaymentMethod = (typeof PAYMENT_METHODS)[number] | {
+type PaymentMethod = {
   code: string;
   assetName: string;
   assetCode: string;
@@ -47,6 +88,13 @@ type PaymentMethod = (typeof PAYMENT_METHODS)[number] | {
   networkCode: string;
   blurb?: string;
 };
+
+// Flat asset × network list — resolves a stored invoice's currency code back to a display method.
+const PAYMENT_METHODS: PaymentMethod[] = CRYPTO_ASSETS.flatMap((a) =>
+  a.networks
+    ? a.networks.map((n) => ({ code: `${a.code}_${n.code}`, assetName: a.name, assetCode: a.code, networkName: n.name, networkCode: n.code, blurb: a.blurb }))
+    : [{ code: a.code, assetName: a.name, assetCode: a.code, networkName: a.network.name, networkCode: a.network.code, blurb: a.blurb }]
+);
 
 type Payment = {
   order_id: string;
@@ -62,6 +110,13 @@ type Payment = {
   new_valid_till_preview?: string;
 };
 
+type ProviderCurrency = {
+  code: string;
+  symbol?: string;
+  name?: string;
+  network?: string;
+};
+
 const TERMINAL_STATUSES = new Set(["completed", "paid", "expired", "cancelled", "failed", "invoice_failed"]);
 
 export default function RenewalPage() {
@@ -71,16 +126,17 @@ export default function RenewalPage() {
   const { data, isLoading, mutate } = useRenewalOptions();
 
   const [selectedDuration, setSelectedDuration] = useState<"7d" | "30d">("30d");
-  const [selectedMethodCode, setSelectedMethodCode] = useState("USDT_TRC20");
+  const [selectedAsset, setSelectedAsset] = useState("USDT");
+  const [selectedNetwork, setSelectedNetwork] = useState("TRC20");
   const [step, setStep] = useState<Step>("duration");
   const [invoice, setInvoice] = useState<Payment | null>(null);
   const [invoiceStatus, setInvoiceStatus] = useState("idle");
   const [creating, setCreating] = useState(false);
-  const [checking, setChecking] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [copiedAmount, setCopiedAmount] = useState(false);
+  const [providerCodes, setProviderCodes] = useState<Set<string> | null>(null);
   const [now, setNow] = useState(() => Date.now());
   // Order id we just cancelled/dismissed, so the "restore active invoice" effect below does not
   // immediately re-open it from the still-cached renewal-options response (the cancel race).
@@ -88,7 +144,29 @@ export default function RenewalPage() {
 
   const options = data?.options || {};
   const selectedOption = options?.[selectedDuration];
-  const selectedMethod = findMethod(selectedMethodCode);
+  const supportedAssets = useMemo(
+    () => filterProviderBackedAssets(CRYPTO_ASSETS, providerCodes),
+    [providerCodes]
+  );
+  // Resolve the chosen asset + (for USDT/USDC) network into the flat currency code sent to the API.
+  const asset = supportedAssets.find((a) => a.code === selectedAsset) ?? supportedAssets[0] ?? CRYPTO_ASSETS[0];
+  const activeNetwork = asset.networks
+    ? (asset.networks.find((n) => n.code === selectedNetwork) ?? asset.networks[0])
+    : asset.network;
+  const selectedMethodCode = asset.networks ? `${asset.code}_${activeNetwork.code}` : asset.code;
+  const selectedMethod: PaymentMethod = {
+    code: selectedMethodCode,
+    assetName: asset.name,
+    assetCode: asset.code,
+    networkName: activeNetwork.name,
+    networkCode: activeNetwork.code,
+    blurb: asset.blurb,
+  };
+  const selectAsset = (code: string) => {
+    setSelectedAsset(code);
+    const a = supportedAssets.find((x) => x.code === code);
+    if (a?.networks) setSelectedNetwork(a.networks[0].code);
+  };
   const status = invoiceStatus.toLowerCase();
   const isTerminal = TERMINAL_STATUSES.has(status);
   const hasOpenInvoice = !!invoice && !isTerminal;
@@ -99,7 +177,6 @@ export default function RenewalPage() {
   const hoursLeft = data?.bot?.hours_left;
   const remaining = hoursLeft != null ? formatRemaining(Number(hoursLeft)) : "";
   const planExpired = hoursLeft != null && Number(hoursLeft) <= 0;
-  const pageTitle = `Renew ${planName} Plan`;
 
   // Single source of truth for the order summary shown in steps 2 & 3.
   const summary = useMemo<RenewalSummary>(() => ({
@@ -146,7 +223,6 @@ export default function RenewalPage() {
 
   const requestStatus = async (silent = false) => {
     if (!session || !invoice) return;
-    setChecking(true);
     setError("");
     try {
       const res = await portalApi.get(
@@ -164,8 +240,6 @@ export default function RenewalPage() {
       }
     } catch (e: any) {
       if (!silent) setError(e?.response?.data?.detail || "Could not check payment status.");
-    } finally {
-      setChecking(false);
     }
   };
 
@@ -197,6 +271,14 @@ export default function RenewalPage() {
 
   const cancelInvoice = async (nextStep: Step = "duration") => {
     if (!session || !invoice) return;
+    if (TERMINAL_STATUSES.has(invoiceStatus.toLowerCase())) {
+      dismissedInvoiceRef.current = invoice.order_id;
+      setInvoice(null);
+      setInvoiceStatus("idle");
+      setError("");
+      setStep(nextStep);
+      return;
+    }
     setCancelling(true);
     setError("");
     try {
@@ -216,17 +298,40 @@ export default function RenewalPage() {
     }
   };
 
-  // Start a fresh invoice after the current one expired (no cancel needed —
-  // the backend already treats it as dead). Return to the method step.
-  const startNewInvoice = () => {
-    if (invoice) dismissedInvoiceRef.current = invoice.order_id;
-    setInvoice(null);
-    setInvoiceStatus("idle");
-    setError("");
-    setStep("method");
-  };
-
   // ── Effects ────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    let cancelled = false;
+    portalApi.get("/api/portal/crypto/currencies")
+      .then((res) => {
+        if (cancelled) return;
+        const currencies = Array.isArray(res.data?.currencies) ? res.data.currencies : [];
+        const codes = currencies
+          .map((currency: ProviderCurrency) => String(currency.code || "").toUpperCase())
+          .filter(Boolean);
+        setProviderCodes(new Set(codes));
+      })
+      .catch(() => {
+        if (!cancelled) setProviderCodes(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!supportedAssets.length) return;
+    const current = supportedAssets.find((a) => a.code === selectedAsset);
+    if (!current) {
+      const next = supportedAssets[0];
+      setSelectedAsset(next.code);
+      if (next.networks) setSelectedNetwork(next.networks[0].code);
+      return;
+    }
+    if (current.networks && !current.networks.some((n) => n.code === selectedNetwork)) {
+      setSelectedNetwork(current.networks[0].code);
+    }
+  }, [supportedAssets, selectedAsset, selectedNetwork]);
+
   // Restore an active unpaid invoice after a refresh so users never lose it and
   // duplicate invoices are never created silently.
   useEffect(() => {
@@ -299,10 +404,13 @@ export default function RenewalPage() {
 
             {step === "method" && (
               <PaymentMethodSelector
-                selectedMethodCode={selectedMethodCode}
-                setSelectedMethodCode={setSelectedMethodCode}
+                selectedAsset={selectedAsset}
+                onSelectAsset={selectAsset}
+                assets={supportedAssets}
+                networks={asset.networks}
+                selectedNetwork={selectedNetwork}
+                onSelectNetwork={setSelectedNetwork}
                 summary={summary}
-                selectedMethod={selectedMethod}
                 onBack={() => setStep("duration")}
                 onCreate={createInvoice}
                 creating={creating}
@@ -322,11 +430,7 @@ export default function RenewalPage() {
                 onCopy={copyAddress}
                 copiedAmount={copiedAmount}
                 onCopyAmount={copyAmount}
-                onCheckStatus={() => requestStatus(false)}
-                checking={checking}
-                onChangeMethod={() => cancelInvoice("method")}
                 onCancel={() => cancelInvoice("duration")}
-                onNewInvoice={startNewInvoice}
                 cancelling={cancelling}
               />
             )}
@@ -523,11 +627,14 @@ function DurationSelector({ options, currentExpiry, planExpired, planName, selec
 }
 
 // ── Step 2: Payment method ───────────────────────────────────────────────────
-function PaymentMethodSelector({ selectedMethodCode, setSelectedMethodCode, summary, selectedMethod, onBack, onCreate, creating, disabled }: {
-  selectedMethodCode: string;
-  setSelectedMethodCode: (method: string) => void;
+function PaymentMethodSelector({ selectedAsset, onSelectAsset, assets, networks, selectedNetwork, onSelectNetwork, summary, onBack, onCreate, creating, disabled }: {
+  selectedAsset: string;
+  onSelectAsset: (code: string) => void;
+  assets: CryptoAsset[];
+  networks: NetworkOption[] | null;
+  selectedNetwork: string;
+  onSelectNetwork: (code: string) => void;
   summary: RenewalSummary;
-  selectedMethod: PaymentMethod;
   onBack: () => void;
   onCreate: () => void;
   creating: boolean;
@@ -540,20 +647,24 @@ function PaymentMethodSelector({ selectedMethodCode, setSelectedMethodCode, summ
         <RenewalOrderSummary summary={summary} />
       </div>
 
-      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4" role="radiogroup" aria-label="Payment method">
-        {PAYMENT_METHODS.map((method) => (
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4" role="radiogroup" aria-label="Cryptocurrency">
+        {assets.map((a) => (
           <PaymentMethodCard
-            key={method.code}
-            method={method}
-            selected={selectedMethodCode === method.code}
-            onSelect={() => setSelectedMethodCode(method.code)}
+            key={a.code}
+            asset={a}
+            selected={selectedAsset === a.code}
+            onSelect={() => onSelectAsset(a.code)}
           />
         ))}
       </div>
 
+      {networks && (
+        <NetworkSelector assetCode={selectedAsset} networks={networks} selected={selectedNetwork} onSelect={onSelectNetwork} />
+      )}
+
       <div className="flex items-start gap-2.5 rounded-[14px] border border-[#262A3A] bg-[#151824] p-3.5 text-[13px] text-[#9298AD]">
         <Info className="mt-0.5 h-4 w-4 shrink-0 text-[#7657FF]" aria-hidden="true" />
-        <p>Available networks and the payment address will be shown on the next step.</p>
+        <p>The exact amount, wallet address and QR code are generated on the next step.</p>
       </div>
 
       <StepActions
@@ -564,6 +675,42 @@ function PaymentMethodSelector({ selectedMethodCode, setSelectedMethodCode, summ
         primaryDisabled={disabled || creating}
         primaryLoading={creating}
       />
+    </div>
+  );
+}
+
+function NetworkSelector({ assetCode, networks, selected, onSelect }: {
+  assetCode: string;
+  networks: NetworkOption[];
+  selected: string;
+  onSelect: (code: string) => void;
+}) {
+  const activeName = networks.find((n) => n.code === selected)?.name || "";
+  return (
+    <div className="rounded-[14px] border border-[#262A3A] bg-[#11131D] p-3.5">
+      <p className="mb-2.5 text-[13px] font-semibold text-[#D9DCEA]">Select {assetCode} network</p>
+      <div className="flex flex-wrap gap-2" role="radiogroup" aria-label={`${assetCode} network`}>
+        {networks.map((n) => {
+          const active = selected === n.code;
+          return (
+            <button
+              key={n.code}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              onClick={() => onSelect(n.code)}
+              className={cn(
+                "inline-flex min-h-[40px] items-center gap-1.5 rounded-full border px-3.5 text-[13px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60",
+                active ? "border-[#7657FF] bg-[#7657FF]/[0.12] text-white" : "border-[#262A3A] bg-[#151824] text-[#9298AD] hover:border-[#7657FF]/50"
+              )}
+            >
+              {active && <Check className="h-3.5 w-3.5" />}
+              {n.label}
+            </button>
+          );
+        })}
+      </div>
+      {activeName && <p className="mt-2 text-[12px] text-[#9298AD]">You&apos;ll pay {assetCode} on the {activeName} network.</p>}
     </div>
   );
 }
@@ -587,13 +734,13 @@ function RenewalOrderSummary({ summary }: { summary: RenewalSummary }) {
   );
 }
 
-function PaymentMethodCard({ method, selected, onSelect }: { method: PaymentMethod; selected: boolean; onSelect: () => void }) {
+function PaymentMethodCard({ asset, selected, onSelect }: { asset: CryptoAsset; selected: boolean; onSelect: () => void }) {
   return (
     <button
       type="button"
       role="radio"
       aria-checked={selected}
-      aria-label={`${method.assetName} (${method.assetCode})`}
+      aria-label={`${asset.name} (${asset.code})`}
       onClick={onSelect}
       className={cn(
         // Mobile: a touch-friendly row (icon · name/ticker/blurb · radio).
@@ -603,15 +750,13 @@ function PaymentMethodCard({ method, selected, onSelect }: { method: PaymentMeth
         selected ? "border-[#7657FF] bg-[#7657FF]/[0.08]" : "border-[#262A3A] bg-[#11131D] hover:border-[#7657FF]/50"
       )}
     >
-      <CryptoLogo code={method.assetCode} size={44} />
+      <CryptoLogo code={asset.code} size={44} />
       <div className="min-w-0 flex-1 sm:flex-none">
         <div className="flex items-baseline gap-1.5 sm:justify-center">
-          <span className="text-[15px] font-bold text-[#F7F8FC]">{method.assetName}</span>
-          <span className="text-[12px] font-semibold text-[#9298AD]">{method.assetCode}</span>
+          <span className="text-[15px] font-bold text-[#F7F8FC]">{asset.name}</span>
+          <span className="text-[12px] font-semibold text-[#9298AD]">{asset.code}</span>
         </div>
-        {"blurb" in method && method.blurb && (
-          <p className="truncate text-[12px] text-[#9298AD] sm:mt-0.5">{method.blurb}</p>
-        )}
+        <p className="truncate text-[12px] text-[#9298AD] sm:mt-0.5">{asset.blurb}</p>
       </div>
       <span
         className={cn(
@@ -626,7 +771,7 @@ function PaymentMethodCard({ method, selected, onSelect }: { method: PaymentMeth
 }
 
 // ── Step 3: Invoice ──────────────────────────────────────────────────────────
-function InvoicePaymentPanel({ invoice, status, method, summary, qrUrl, now, copied, onCopy, copiedAmount, onCopyAmount, onCheckStatus, checking, onChangeMethod, onCancel, onNewInvoice, cancelling }: {
+function InvoicePaymentPanel({ invoice, status, method, summary, qrUrl, now, copied, onCopy, copiedAmount, onCopyAmount, onCancel, cancelling }: {
   invoice: Payment;
   status: string;
   method: PaymentMethod;
@@ -637,11 +782,7 @@ function InvoicePaymentPanel({ invoice, status, method, summary, qrUrl, now, cop
   onCopy: () => void;
   copiedAmount: boolean;
   onCopyAmount: () => void;
-  onCheckStatus: () => void;
-  checking: boolean;
-  onChangeMethod: () => void;
   onCancel: () => void;
-  onNewInvoice: () => void;
   cancelling: boolean;
 }) {
   const statusInfo = getStatusInfo(status, invoice, method);
@@ -654,7 +795,7 @@ function InvoicePaymentPanel({ invoice, status, method, summary, qrUrl, now, cop
 
   // Reusable blocks — arranged differently per breakpoint below.
   const statusBlock = (
-    <InvoiceStatus statusInfo={statusInfo} countdown={countdown} expiryExact={expiryExact} onRefresh={onCheckStatus} refreshing={checking} expired={expired} />
+    <InvoiceStatus statusInfo={statusInfo} countdown={countdown} expiryExact={expiryExact} expired={expired} />
   );
   const amountBlock = (
     <PaymentAmounts amountUsd={formatUSD(Number(invoice.amount_usd))} cryptoAmount={cryptoAmount} assetCode={method.assetCode} networkLabel={networkLabel} copiedAmount={copiedAmount} onCopyAmount={onCopyAmount} />
@@ -671,12 +812,7 @@ function InvoicePaymentPanel({ invoice, status, method, summary, qrUrl, now, cop
   );
   const actionsBlock = (
     <PaymentActions
-      expired={expired}
-      onCheckStatus={onCheckStatus}
-      checking={checking}
-      onChangeMethod={onChangeMethod}
       onCancel={onCancel}
-      onNewInvoice={onNewInvoice}
       cancelling={cancelling}
     />
   );
@@ -714,12 +850,10 @@ function InvoicePaymentPanel({ invoice, status, method, summary, qrUrl, now, cop
   );
 }
 
-function InvoiceStatus({ statusInfo, countdown, expiryExact, onRefresh, refreshing, expired }: {
+function InvoiceStatus({ statusInfo, countdown, expiryExact, expired }: {
   statusInfo: StatusInfo;
   countdown: string;
   expiryExact: string;
-  onRefresh: () => void;
-  refreshing: boolean;
   expired: boolean;
 }) {
   const toneText = statusInfo.tone === "success" ? "text-[#25C9A0]"
@@ -732,7 +866,7 @@ function InvoiceStatus({ statusInfo, countdown, expiryExact, onRefresh, refreshi
     : "bg-[#F2B94B]";
   return (
     <div className="rounded-[14px] border border-[#262A3A] bg-[#151824] p-4">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-start gap-3">
         <div className="min-w-0">
           <p className={cn("flex items-center gap-2 text-sm font-bold", toneText)}>
             <span className={cn("h-2 w-2 shrink-0 rounded-full", dot, !expired && "animate-pulse")} aria-hidden="true" />
@@ -740,15 +874,6 @@ function InvoiceStatus({ statusInfo, countdown, expiryExact, onRefresh, refreshi
           </p>
           <p className="mt-1 text-[13px] text-[#9298AD]">{statusInfo.description}</p>
         </div>
-        <button
-          type="button"
-          aria-label="Refresh payment status"
-          onClick={onRefresh}
-          disabled={refreshing}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-[#262A3A] text-[#9298AD] transition-colors hover:text-[#F7F8FC] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60 disabled:opacity-50"
-        >
-          <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
-        </button>
       </div>
       {!expired && (
         <div className="mt-3 rounded-[10px] bg-[#11131D] p-3">
@@ -865,44 +990,19 @@ function WalletAddress({ address, network, copied, onCopy }: {
   );
 }
 
-function PaymentActions({ expired, onCheckStatus, checking, onChangeMethod, onCancel, onNewInvoice, cancelling }: {
-  expired: boolean;
-  onCheckStatus: () => void;
-  checking: boolean;
-  onChangeMethod: () => void;
+function PaymentActions({ onCancel, cancelling }: {
   onCancel: () => void;
-  onNewInvoice: () => void;
   cancelling: boolean;
 }) {
-  if (expired) {
-    return (
-      <div className="space-y-3">
-        <Button className="h-12 w-full rounded-[12px] bg-[#7657FF] font-bold hover:bg-[#856BFF]" onClick={onNewInvoice}>
-          Create a new invoice
-        </Button>
-      </div>
-    );
-  }
   return (
-    <div className="space-y-3">
-      <Button className="h-12 w-full rounded-[12px] bg-[#7657FF] font-bold hover:bg-[#856BFF]" onClick={onCheckStatus} loading={checking}>
-        I&apos;ve sent the payment
-      </Button>
-      <p className="text-center text-[13px] text-[#9298AD]">Payment status is also checked automatically.</p>
-      <div className="flex flex-col gap-2 pt-1 sm:flex-row sm:items-center sm:justify-between">
-        <Button variant="secondary" className="h-10 rounded-[10px] px-4" onClick={onChangeMethod} loading={cancelling}>
-          Change payment method
-        </Button>
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={cancelling}
-          className="min-h-10 rounded-[10px] px-4 text-[13px] font-bold text-[#F06472] transition-colors hover:bg-[#F06472]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F06472]/50 disabled:opacity-50"
-        >
-          Cancel invoice
-        </button>
-      </div>
-    </div>
+    <button
+      type="button"
+      onClick={onCancel}
+      disabled={cancelling}
+      className="min-h-11 w-full rounded-[12px] border border-[#F06472]/35 px-4 text-[14px] font-bold text-[#F06472] transition-colors hover:bg-[#F06472]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F06472]/50 disabled:opacity-50"
+    >
+      {cancelling ? "Cancelling..." : "Cancel invoice"}
+    </button>
   );
 }
 
@@ -985,21 +1085,10 @@ function PaymentWarning({ children }: { children: React.ReactNode }) {
 
 function CryptoLogo({ code, size = 40 }: { code: string; size?: number }) {
   const base = code.split("_")[0];
-  // Bundled locally (frontend/public/crypto) — self-coloured coin marks, no external CDN, works offline.
-  const logo: Record<string, string> = {
-    BTC: "/crypto/bitcoin.svg",
-    SOL: "/crypto/solana.svg",
-    ETH: "/crypto/ethereum.svg",
-    USDT: "/crypto/tether.svg",
-    USDC: "/crypto/usdc.svg",
-    TRX: "/crypto/tron.svg",
-    LTC: "/crypto/litecoin.svg",
-    XMR: "/crypto/monero.svg",
-    BNB: "/crypto/bnb.svg",
-  };
-  const src = logo[base];
+  const src = CRYPTO_LOGOS[base];
   return src ? (
-    <img src={src} alt={`${base} logo`} className="shrink-0 rounded-full" style={{ width: size, height: size }} />
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={src} alt={`${base} logo`} loading="lazy" className="shrink-0 rounded-full" style={{ width: size, height: size }} />
   ) : (
     <span
       className="flex shrink-0 items-center justify-center rounded-full bg-[#1B1E2B] text-[11px] font-black text-[#D9DCEA]"
@@ -1014,20 +1103,34 @@ function CryptoLogo({ code, size = 40 }: { code: string; size?: number }) {
 type StatusTone = "warning" | "success" | "error" | "accent";
 type StatusInfo = { title: string; description: string; tone: StatusTone };
 
-function findMethod(code: string): PaymentMethod {
-  return PAYMENT_METHODS.find((m) => m.code === code) || PAYMENT_METHODS[0];
+function formatNetworkLabel(method: PaymentMethod): string {
+  if (method.networkCode === "SOL") return "Solana";
+  if (method.networkCode === "ARB") return "Arbitrum";
+  return method.networkCode || method.networkName || "";
 }
 
-function formatNetworkLabel(method: PaymentMethod): string {
-  return method.networkCode || method.networkName || "";
+function internalCurrencyCode(asset: CryptoAsset, network?: NetworkOption): string {
+  return asset.networks && network ? `${asset.code}_${network.code}` : asset.code;
+}
+
+function filterProviderBackedAssets(assets: CryptoAsset[], providerCodes: Set<string> | null): CryptoAsset[] {
+  if (!providerCodes || providerCodes.size === 0) return assets;
+  return assets.flatMap((asset) => {
+    if (!asset.networks) {
+      return providerCodes.has(asset.code) ? [asset] : [];
+    }
+    const networks = asset.networks.filter((network) => providerCodes.has(internalCurrencyCode(asset, network)));
+    return networks.length ? [{ ...asset, network: networks[0], networks }] : [];
+  });
 }
 
 function methodForInvoice(invoice: Payment, fallback: PaymentMethod): PaymentMethod {
   const pay = String(invoice.pay_currency || "").toUpperCase();
-  const exact = PAYMENT_METHODS.find((method) => method.code === pay);
+  const normalized = normalizeCurrencyCode(pay);
+  const exact = PAYMENT_METHODS.find((method) => method.code === normalized || method.code === pay);
   if (exact) return exact;
-  const asset = assetFromPayCurrency(pay, fallback.assetCode);
-  const network = networkFromPayCurrency(pay || fallback.code);
+  const asset = assetFromPayCurrency(normalized || pay, fallback.assetCode);
+  const network = networkFromPayCurrency(normalized || pay || fallback.code);
   return (
     PAYMENT_METHODS.find((method) => method.assetCode === asset && method.networkCode === network) || {
       code: pay || fallback.code,
@@ -1113,7 +1216,7 @@ function formatCryptoAmount(value: string | number): string {
 }
 
 function assetFromPayCurrency(currency: string, fallback: string): string {
-  const upper = String(currency || "").toUpperCase();
+  const upper = normalizeCurrencyCode(currency);
   if (upper.startsWith("USDT")) return "USDT";
   if (upper.startsWith("USDC")) return "USDC";
   if (upper.includes("_")) return upper.split("_")[0];
@@ -1121,13 +1224,33 @@ function assetFromPayCurrency(currency: string, fallback: string): string {
 }
 
 function networkFromPayCurrency(currency: string): string {
-  const upper = String(currency || "").toUpperCase();
+  const upper = normalizeCurrencyCode(currency);
   if (upper.includes("TRC20") || upper === "TRX") return "TRC20";
-  if (upper.includes("BEP20") || upper === "BNB") return "BEP20";
+  if (upper.includes("BEP20") || upper.includes("BSC") || upper === "BNB") return "BEP20";
   if (upper.includes("ERC20") || upper === "ETH") return "ERC20";
+  if (upper.includes("SOL")) return "SOL";
+  if (upper.includes("ARB")) return "ARB";
   if (upper === "BTC") return "Bitcoin";
   if (upper === "LTC") return "Litecoin";
   return upper;
+}
+
+function normalizeCurrencyCode(currency: string): string {
+  const upper = String(currency || "").trim().toUpperCase().replace(/[-\s]/g, "_");
+  const providerMap: Record<string, string> = {
+    USDTTRC20: "USDT_TRC20",
+    USDTBSC: "USDT_BEP20",
+    USDTBEP20: "USDT_BEP20",
+    USDTERC20: "USDT_ERC20",
+    USDTSOL: "USDT_SOL",
+    USDTARB: "USDT_ARB",
+    USDCBSC: "USDC_BEP20",
+    USDCBEP20: "USDC_BEP20",
+    USDCERC20: "USDC_ERC20",
+    USDCSOL: "USDC_SOL",
+    USDCARB: "USDC_ARB",
+  };
+  return providerMap[upper] || upper;
 }
 
 function shortId(id: string): string {

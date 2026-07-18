@@ -780,6 +780,7 @@ async def portal_get_currencies():
             {"label": "BEP-20", "code": "USDC_BEP20"},
             {"label": "ERC-20", "code": "USDC_ERC20"},
             {"label": "SOL", "code": "USDC_SOL"},
+            {"label": "Arbitrum", "code": "USDC_ARB"},
         ],
     }
     more = ["TRX", "BNB", "DOGE", "XRP", "SOL", "MATIC", "ADA", "TON"]

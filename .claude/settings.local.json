@@ -245,7 +245,17 @@
       "Bash(gh pr create --base main --head checkout-preparing-screen-copy --title 'Checkout: rewrite \"preparing\" screen copy + center access code' --body ' *)",
       "Bash(git checkout *)",
       "Bash(git pull *)",
-      "Bash(xargs grep -l \"preparing\\\\|Preparing\")"
+      "Bash(xargs grep -l \"preparing\\\\|Preparing\")",
+      "Bash(rm -f data/dm_inbox/by_token.json)",
+      "Bash(rmdir data/dm_inbox)",
+      "Bash(curl -s -o /dev/null -w \"autoreply PUT: %{http_code}\\\\n\" -X PUT \"http://127.0.0.1:8000/api/portal/bot/x/autoreply?telegram_id=1\" -H \"Content-Type: application/json\" -d '{\"enabled\":true}')",
+      "Bash(curl -s -o /dev/null -w \"dm-inbox GET: %{http_code}\\\\n\" \"http://127.0.0.1:8000/api/portal/bot/x/dm-inbox?telegram_id=1\")",
+      "Bash(curl -s -o /dev/null -w \"home: %{http_code}\\\\n\" http://localhost:3000/)",
+      "Bash(curl -s -o /dev/null -w \"auto-reply: %{http_code}\\\\n\" http://localhost:3000/user/auto-reply)",
+      "Bash(curl -s -o /dev/null -w \"admin dm-inbox: %{http_code}\\\\n\" http://localhost:3000/admin/dm-inbox)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ]
   }
 }
