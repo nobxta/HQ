@@ -363,6 +363,33 @@ export default function RenewalPage() {
 
   if (isLoading || !bot) return <div className="p-4 sm:p-6"><PageSkeleton /></div>;
 
+  // The invoice step is a focused, compact checkout with its own header/progress — rendered outside
+  // the shared duration/method chrome to maximise information density on mobile.
+  if (step === "invoice" && invoice) {
+    return (
+      <div className="pb-24 sm:pb-10">
+        <InvoicePaymentPanel
+          invoice={invoice}
+          status={invoiceStatus}
+          method={methodForInvoice(invoice, selectedMethod)}
+          qrUrl={qrUrl}
+          now={now}
+          copied={copied}
+          onCopy={copyAddress}
+          copiedAmount={copiedAmount}
+          onCopyAmount={copyAmount}
+          onBack={() => setStep("method")}
+          onCancel={() => cancelInvoice("duration")}
+          onNewInvoice={() => cancelInvoice("method")}
+          cancelling={cancelling}
+          planExpired={planExpired}
+          graceHoursLeft={(bot?.grace_hours_left as number | null | undefined) ?? null}
+          error={error}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto w-full max-w-3xl space-y-4 pb-28 sm:pb-0">
       <Link
@@ -415,24 +442,6 @@ export default function RenewalPage() {
                 onCreate={createInvoice}
                 creating={creating}
                 disabled={!selectedOption?.available || hasOpenInvoice}
-              />
-            )}
-
-            {step === "invoice" && invoice && (
-              <InvoicePaymentPanel
-                invoice={invoice}
-                status={invoiceStatus}
-                method={methodForInvoice(invoice, selectedMethod)}
-                summary={summary}
-                qrUrl={qrUrl}
-                now={now}
-                copied={copied}
-                onCopy={copyAddress}
-                copiedAmount={copiedAmount}
-                onCopyAmount={copyAmount}
-                onCancel={() => cancelInvoice("duration")}
-                onNewInvoice={() => cancelInvoice("method")}
-                cancelling={cancelling}
               />
             )}
 
@@ -772,176 +781,161 @@ function PaymentMethodCard({ asset, selected, onSelect }: { asset: CryptoAsset; 
 }
 
 // ── Step 3: Invoice ──────────────────────────────────────────────────────────
-function InvoicePaymentPanel({ invoice, status, method, summary, qrUrl, now, copied, onCopy, copiedAmount, onCopyAmount, onCancel, onNewInvoice, cancelling }: {
+function InvoicePaymentPanel({ invoice, status, method, qrUrl, now, copied, onCopy, copiedAmount, onCopyAmount, onBack, onCancel, onNewInvoice, cancelling, planExpired, graceHoursLeft, error }: {
   invoice: Payment;
   status: string;
   method: PaymentMethod;
-  summary: RenewalSummary;
   qrUrl: string;
   now: number;
   copied: boolean;
   onCopy: () => void;
   copiedAmount: boolean;
   onCopyAmount: () => void;
+  onBack: () => void;
   onCancel: () => void;
   onNewInvoice: () => void;
   cancelling: boolean;
+  planExpired: boolean;
+  graceHoursLeft: number | null;
+  error: string;
 }) {
   const statusInfo = getStatusInfo(status, invoice, method);
   const expired = statusInfo.tone === "error";
   const countdown = formatRemainingTime(invoice.invoice_expires_at, now);
   const cryptoAmount = formatCryptoAmount(invoice.pay_amount);
-  const networkLabel = formatNetworkLabel(method);
-  const renewsThrough = formatDate(invoice.new_valid_till || invoice.new_valid_till_preview || summary.newExpiry);
-
-  if (expired) {
-    return (
-      <div className="space-y-4">
-        <SectionTitle title="Invoice expired" text="No payment was received in time — your plan has not been charged." />
-        <Button className="h-12 w-full rounded-[12px] bg-[#7657FF] font-bold hover:bg-[#856BFF] sm:w-auto sm:px-6" onClick={onNewInvoice}>
-          Generate a new invoice
-        </Button>
-      </div>
-    );
-  }
-
-  const amountBlock = (
-    <div className="flex items-end justify-between gap-3 rounded-[14px] border border-[#262A3A] bg-[#151824] p-4">
-      <div className="min-w-0">
-        <p className="text-xs font-semibold uppercase tracking-wide text-[#9298AD]">Amount to pay</p>
-        <p className="mt-1 break-all font-mono text-[26px] font-black leading-none text-[#F7F8FC] sm:text-[30px]">
-          {cryptoAmount} <span className="text-lg font-bold text-[#9298AD]">{method.assetCode}</span>
-        </p>
-        <p className="mt-1.5 text-[13px] text-[#9298AD]">≈ {formatUSD(Number(invoice.amount_usd))} USD</p>
-      </div>
-      <CopyPill copied={copiedAmount} onClick={onCopyAmount} label="amount" />
-    </div>
-  );
-
-  const detailsBlock = (
-    <div className="rounded-[14px] border border-[#262A3A] bg-[#151824]">
-      <MetaRow label="Network" value={networkLabel} />
-      <MetaRow label="You'll get" value={`${invoice.duration_days} days · until ${renewsThrough}`} />
-      <MetaRow label="Invoice expires in" value={countdown} />
-      <MetaRow label="Invoice ID" value={shortId(invoice.order_id)} mono />
-    </div>
-  );
-
-  const qrBlock = (
-    <div className="flex flex-col items-center rounded-[14px] border border-[#262A3A] bg-[#151824] p-4">
-      <div className="flex aspect-square w-full max-w-[220px] items-center justify-center rounded-[12px] bg-white p-3">
-        {qrUrl ? (
-          <img src={qrUrl} alt="Payment QR code" className="h-full w-full object-contain" />
-        ) : (
-          <span className="text-sm font-semibold text-[#0E1018]">QR unavailable</span>
-        )}
-      </div>
-      <p className="mt-3 text-[13px] font-semibold text-[#D9DCEA]">Scan to pay</p>
-    </div>
-  );
-
-  const addressBlock = <WalletAddress address={invoice.pay_address} network={networkLabel} copied={copied} onCopy={onCopy} />;
-  const autoNote = (
-    <p className="text-center text-[12px] text-[#9298AD]">Payment is detected automatically after blockchain confirmation.</p>
-  );
-  const cancelBlock = (
-    <button
-      type="button"
-      onClick={onCancel}
-      disabled={cancelling}
-      className="mx-auto block min-h-10 px-5 text-[13px] font-bold text-[#9298AD] transition-colors hover:text-[#F06472] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F06472]/40 disabled:opacity-50"
-    >
-      {cancelling ? "Cancelling…" : "Cancel invoice"}
-    </button>
-  );
+  const inGrace = planExpired && graceHoursLeft !== null && graceHoursLeft > 0;
+  const toneDot = statusInfo.tone === "success" ? "bg-[#25C9A0]" : statusInfo.tone === "error" ? "bg-[#F06472]" : "bg-[#F2B94B]";
+  const toneText = statusInfo.tone === "success" ? "text-[#25C9A0]" : statusInfo.tone === "error" ? "text-[#F06472]" : "text-[#F2B94B]";
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-start justify-between gap-3">
-        <SectionTitle title="Complete payment" text={`Scan the QR or copy the details to renew your ${summary.planName} plan.`} />
-        <StatusPill statusInfo={statusInfo} />
-      </div>
-
-      {/* Desktop: QR left, details right */}
-      <div className="hidden gap-5 md:grid md:grid-cols-[260px_minmax(0,1fr)]">
-        <div className="space-y-3">{qrBlock}{autoNote}</div>
-        <div className="space-y-3">{amountBlock}{detailsBlock}{addressBlock}</div>
-      </div>
-
-      {/* Mobile: stacked, QR near the top */}
-      <div className="space-y-3 md:hidden">
-        {amountBlock}
-        {qrBlock}
-        {detailsBlock}
-        {addressBlock}
-        {autoNote}
-      </div>
-
-      {cancelBlock}
-    </div>
-  );
-}
-
-function StatusPill({ statusInfo }: { statusInfo: StatusInfo }) {
-  const tone = statusInfo.tone === "success" ? { text: "text-[#25C9A0]", ring: "border-[#25C9A0]/25 bg-[#25C9A0]/10", dot: "bg-[#25C9A0]" }
-    : statusInfo.tone === "error" ? { text: "text-[#F06472]", ring: "border-[#F06472]/25 bg-[#F06472]/10", dot: "bg-[#F06472]" }
-    : statusInfo.tone === "accent" ? { text: "text-[#856BFF]", ring: "border-[#856BFF]/25 bg-[#856BFF]/10", dot: "bg-[#856BFF]" }
-    : { text: "text-[#F2B94B]", ring: "border-[#F2B94B]/25 bg-[#F2B94B]/10", dot: "bg-[#F2B94B]" };
-  return (
-    <span className={cn("inline-flex shrink-0 items-center gap-2 self-start rounded-full border px-3 py-1.5 text-[13px] font-bold", tone.text, tone.ring)}>
-      <span className={cn("h-2 w-2 rounded-full", tone.dot, statusInfo.tone !== "error" && "animate-pulse")} aria-hidden="true" />
-      {statusInfo.title}
-    </span>
-  );
-}
-
-function MetaRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="flex items-center justify-between gap-4 border-b border-[#262A3A] px-4 py-3 last:border-0">
-      <p className="shrink-0 text-[13px] font-semibold text-[#9298AD]">{label}</p>
-      <p className={cn("min-w-0 break-words text-right text-sm font-bold text-[#F7F8FC]", mono && "font-mono")}>{value}</p>
-    </div>
-  );
-}
-
-function CopyPill({ copied, onClick, label }: { copied: boolean; onClick: () => void; label: string }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={copied ? `${label} copied` : `Copy ${label}`}
-      className="inline-flex min-h-9 shrink-0 items-center gap-2 rounded-[10px] border border-[#262A3A] px-3 text-[13px] font-bold text-[#D9DCEA] transition-colors hover:border-[#7657FF]/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60"
-    >
-      {copied ? <Check className="h-4 w-4 text-[#25C9A0]" /> : <Copy className="h-4 w-4" />}
-      {copied ? "Copied" : "Copy"}
-    </button>
-  );
-}
-
-function WalletAddress({ address, network, copied, onCopy }: {
-  address: string;
-  network: string;
-  copied: boolean;
-  onCopy: () => void;
-}) {
-  return (
-    <div className="rounded-[14px] border border-[#262A3A] bg-[#151824] p-4">
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-bold text-[#F7F8FC]">Wallet address</p>
-          <p className="truncate text-[13px] text-[#9298AD]">{network} network</p>
-        </div>
-        <CopyPill copied={copied} onClick={onCopy} label="address" />
-      </div>
-      <button
-        type="button"
-        onClick={onCopy}
-        title={address}
-        aria-label="Copy wallet address"
-        className="block w-full select-all break-all rounded-[10px] bg-[#11131D] p-3 text-left font-mono text-[13px] leading-relaxed text-[#F7F8FC] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60"
-      >
-        {address}
+    <div className="mx-auto w-full max-w-[460px] space-y-5">
+      {/* Header */}
+      <button type="button" onClick={onBack} className="-ml-1 inline-flex min-h-9 items-center gap-1.5 text-[15px] font-semibold text-[#9298AD] transition-colors hover:text-[#F7F8FC]">
+        <ArrowLeft className="h-4 w-4" /> Renewal
       </button>
+
+      {/* Subscription status — one dominant line, only when expired */}
+      {planExpired && (
+        <div className="flex items-start gap-2">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[#F2B94B]" aria-hidden="true" />
+          <p className="text-[13px] leading-relaxed text-[#D9DCEA]">
+            <span className="font-bold text-[#F2B94B]">Subscription expired.</span>{" "}
+            {inGrace ? `Renew within ${graceHoursLeft} hours to keep your campaigns, settings and accounts.` : "Renew now to restore your bot."}
+          </p>
+        </div>
+      )}
+
+      {/* Progress — Step 3/3 + thin bar, no card */}
+      <div>
+        <div className="mb-1.5 flex items-center justify-between text-[12px] font-semibold text-[#9298AD]">
+          <span className="text-[#D9DCEA]">Complete payment</span>
+          <span>Step 3 / 3</span>
+        </div>
+        <div className="h-1 overflow-hidden rounded-full bg-[#20242F]">
+          <div className="h-full rounded-full bg-[#7657FF]" style={{ width: "100%" }} />
+        </div>
+      </div>
+
+      {error && <RenewalError message={error} />}
+
+      {expired ? (
+        <div className="space-y-3 pt-1">
+          <p className="text-[17px] font-bold text-[#F7F8FC]">Invoice expired</p>
+          <p className="text-[13px] text-[#9298AD]">No payment was received in time — your plan wasn&apos;t charged.</p>
+          <Button className="h-12 w-full rounded-2xl bg-[#7657FF] font-bold hover:bg-[#856BFF]" onClick={onNewInvoice}>Generate a new invoice</Button>
+        </div>
+      ) : (
+        <>
+          {/* Amount — primary focus */}
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="break-all font-mono text-[32px] font-black leading-none text-[#F7F8FC]">
+                {cryptoAmount} <span className="text-[18px] font-bold text-[#9298AD]">{method.assetCode}</span>
+              </p>
+              <p className="mt-1.5 text-[14px] text-[#9298AD]">≈ {formatUSD(Number(invoice.amount_usd))} USD</p>
+              <span className={cn("mt-2 inline-flex items-center gap-1.5 text-[12px] font-semibold", toneText)}>
+                <span className={cn("h-1.5 w-1.5 rounded-full animate-pulse", toneDot)} aria-hidden="true" />
+                {statusInfo.title}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={onCopyAmount}
+              aria-label={copiedAmount ? "Amount copied" : "Copy amount"}
+              className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[#20242F] text-[#9298AD] transition-colors hover:text-[#F7F8FC]"
+            >
+              {copiedAmount ? <Check className="h-4 w-4 text-[#25C9A0]" /> : <Copy className="h-4 w-4" />}
+            </button>
+          </div>
+
+          {/* QR — compact, centred */}
+          <div className="flex flex-col items-center gap-2">
+            <div className="rounded-2xl bg-white p-2.5">
+              {qrUrl ? (
+                <img src={qrUrl} alt="Payment QR code" width={180} height={180} className="h-[180px] w-[180px]" />
+              ) : (
+                <div className="flex h-[180px] w-[180px] items-center justify-center text-sm font-semibold text-[#0E1018]">QR unavailable</div>
+              )}
+            </div>
+            <p className="text-[13px] text-[#9298AD]">Scan using any {method.assetName} wallet</p>
+          </div>
+
+          {/* Wallet address — single line + copy */}
+          <div>
+            <p className="mb-1.5 text-[12px] font-semibold text-[#9298AD]">Wallet address</p>
+            <button
+              type="button"
+              onClick={onCopy}
+              title={invoice.pay_address}
+              aria-label={copied ? "Address copied" : "Copy wallet address"}
+              className="flex w-full items-center gap-2 rounded-2xl border border-[#20242F] bg-[#12141C] px-3.5 py-3 text-left transition-colors hover:border-[#7657FF]/50"
+            >
+              <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-[#F7F8FC]">{invoice.pay_address}</span>
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center text-[#9298AD]">
+                {copied ? <Check className="h-4 w-4 text-[#25C9A0]" /> : <Copy className="h-4 w-4" />}
+              </span>
+            </button>
+          </div>
+
+          {/* Invoice details — compact stacked, no table */}
+          <div className="grid grid-cols-2 gap-x-4 gap-y-3.5">
+            <Detail label="Network" value={method.assetName} />
+            <Detail label="Validity" value={`${invoice.duration_days} days`} />
+            <Detail label="Expires in" value={countdown} valueClass="text-[#F2B94B]" />
+            <Detail label="Invoice" value={shortId(invoice.order_id)} mono />
+          </div>
+
+          {/* Automatic detection */}
+          <p className="flex items-center gap-2 text-[12px] text-[#9298AD]">
+            <Check className="h-3.5 w-3.5 shrink-0 text-[#25C9A0]" />
+            Payment detected automatically after blockchain confirmation.
+          </p>
+
+          {/* Actions */}
+          <div className="space-y-2.5 pt-1">
+            <Button className="h-12 w-full rounded-2xl bg-[#7657FF] font-bold hover:bg-[#856BFF]" onClick={onNewInvoice} loading={cancelling}>
+              Generate new invoice
+            </Button>
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={cancelling}
+              className="mx-auto block min-h-9 text-[13px] font-semibold text-[#9298AD] transition-colors hover:text-[#F06472] disabled:opacity-50"
+            >
+              Cancel invoice
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function Detail({ label, value, valueClass, mono }: { label: string; value: string; valueClass?: string; mono?: boolean }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[12px] font-semibold text-[#9298AD]">{label}</p>
+      <p className={cn("mt-0.5 truncate text-[15px] font-bold text-[#F7F8FC]", mono && "font-mono", valueClass)}>{value}</p>
     </div>
   );
 }
