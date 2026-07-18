@@ -4,97 +4,164 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  AlertCircle,
   AlertTriangle,
   ArrowLeft,
-  CalendarDays,
+  ArrowRight,
   Check,
-  CheckCircle,
+  CheckCircle2,
+  ChevronRight,
   Clock,
-  Coins,
   Copy,
   Info,
-  ReceiptText,
   RefreshCw,
+  ShieldAlert,
 } from "lucide-react";
 import toast from "react-hot-toast";
 import Button from "@/components/ui/Button";
+import Modal from "@/components/ui/Modal";
 import { PageSkeleton } from "@/components/ui/Skeleton";
 import portalApi, { getPortalSession } from "@/lib/portal-api";
 import { usePortalBot, useRenewalOptions } from "@/lib/hooks/usePortal";
 import { cn, formatDate, formatUSD } from "@/lib/utils";
 
-// ── Supported crypto assets/networks ────────────────────────────────────────
-// Asset and network are ALWAYS stored separately so display code never has to
-// concatenate codes (which produced strings like "USDTTRC20").
-// Real, CC0 coin logos (cryptocurrency-icons) served from the jsDelivr CDN — no API key.
-const CRYPTO_LOGOS: Record<string, string> = {
-  BTC: "https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/btc.svg",
-  ETH: "https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/eth.svg",
-  SOL: "https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/sol.svg",
-  USDT: "https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/usdt.svg",
-  USDC: "https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/usdc.svg",
-  TRX: "https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/trx.svg",
-  LTC: "https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/ltc.svg",
-  XMR: "https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/xmr.svg",
+// ─────────────────────────────────────────────────────────────────────────────
+// Design tokens — kept identical to the rest of the portal so the checkout feels
+// native to HQAdz (single brand purple, near-black surfaces, subtle borders).
+// ─────────────────────────────────────────────────────────────────────────────
+const C = {
+  accent: "#7657FF",
+  accentHover: "#856BFF",
+  text: "#F7F8FC",
+  text2: "#D9DCEA",
+  sub: "#9298AD",
+  faint: "#52586B",
+  card: "#0E1018",
+  surface: "#11131D",
+  surface2: "#151824",
+  field: "#12141C",
+  border: "#20242F",
+  border2: "#262A3A",
+  success: "#25C9A0",
+  danger: "#F06472",
+  amber: "#F2B94B",
 };
 
-type NetworkOption = { label: string; code: string; name: string };
+// ─────────────────────────────────────────────────────────────────────────────
+// Supported assets & networks.
+//
+// Asset code and network code are ALWAYS stored separately so display code never
+// concatenates them into strings like "USDTTRC20". Network selection is offered
+// ONLY for the two stablecoins (USDT / USDC). Every native coin runs on its own
+// single chain and is a direct-select option with no network dropdown.
+//
+// The set below is the curated superset; the live list is intersected against
+// what the payment provider actually supports (see filterProviderBackedAssets),
+// so an unsupported network can never be shown or paid to.
+// ─────────────────────────────────────────────────────────────────────────────
+type NetworkCode = "TRC20" | "ERC20" | "BEP20" | "SOL" | "ARB" | "MATIC";
+
+const NETWORK_META: Record<NetworkCode, { label: string; full: string }> = {
+  TRC20: { label: "TRC20", full: "TRON network" },
+  ERC20: { label: "ERC20", full: "Ethereum network" },
+  BEP20: { label: "BEP20", full: "BNB Smart Chain" },
+  SOL: { label: "Solana", full: "Solana network" },
+  ARB: { label: "Arbitrum", full: "Arbitrum One" },
+  MATIC: { label: "Polygon", full: "Polygon PoS" },
+};
+
 type CryptoAsset = {
-  code: string;
-  name: string;
-  blurb: string;
-  network: NetworkOption;           // effective network when there is no choice
-  networks: NetworkOption[] | null; // selectable networks (USDT / USDC only); null = single fixed chain
+  code: string; // asset ticker: BTC, ETH, USDT …
+  name: string; // professional full name
+  popular?: boolean;
+  networks: NetworkCode[] | null; // stablecoins only; null = single fixed chain
 };
 
-// Network selection is offered ONLY for USDT and USDC. Every other coin runs on its own chain.
-// USDC intentionally has no TRC20.
 const CRYPTO_ASSETS: CryptoAsset[] = [
-  { code: "BTC", name: "Bitcoin", blurb: "Original cryptocurrency", network: { label: "Bitcoin", code: "Bitcoin", name: "Bitcoin" }, networks: null },
-  { code: "SOL", name: "Solana", blurb: "Fast network", network: { label: "Solana", code: "Solana", name: "Solana" }, networks: null },
-  { code: "ETH", name: "Ethereum", blurb: "Popular network", network: { label: "Ethereum", code: "ERC20", name: "Ethereum" }, networks: null },
-  {
-    code: "USDT", name: "Tether", blurb: "Stablecoin",
-    network: { label: "TRC20", code: "TRC20", name: "TRON" },
-    networks: [
-      { label: "TRC20", code: "TRC20", name: "TRON" },
-      { label: "BEP20", code: "BEP20", name: "BNB Smart Chain" },
-      { label: "ERC20", code: "ERC20", name: "Ethereum" },
-      { label: "Solana", code: "SOL", name: "Solana" },
-    ],
-  },
-  {
-    code: "USDC", name: "USD Coin", blurb: "USD-backed stablecoin",
-    network: { label: "ERC20", code: "ERC20", name: "Ethereum" },
-    networks: [
-      { label: "ERC20", code: "ERC20", name: "Ethereum" },
-      { label: "BEP20", code: "BEP20", name: "BNB Smart Chain" },
-      { label: "Solana", code: "SOL", name: "Solana" },
-      { label: "Arbitrum", code: "ARB", name: "Arbitrum" },
-    ],
-  },
-  { code: "TRX", name: "TRON", blurb: "Tron network token", network: { label: "TRC20", code: "TRC20", name: "TRON" }, networks: null },
-  { code: "LTC", name: "Litecoin", blurb: "Fast payments", network: { label: "Litecoin", code: "Litecoin", name: "Litecoin" }, networks: null },
-  { code: "XMR", name: "Monero", blurb: "Privacy-focused", network: { label: "Monero", code: "Monero", name: "Monero" }, networks: null },
+  { code: "BTC", name: "Bitcoin", popular: true, networks: null },
+  { code: "ETH", name: "Ethereum", popular: true, networks: null },
+  { code: "USDT", name: "Tether", popular: true, networks: ["TRC20", "ERC20", "BEP20", "SOL", "ARB"] },
+  { code: "USDC", name: "USD Coin", popular: true, networks: ["ERC20", "BEP20", "SOL", "MATIC", "ARB"] },
+  { code: "XMR", name: "Monero", networks: null },
+  { code: "LTC", name: "Litecoin", networks: null },
+  { code: "TRX", name: "TRON", networks: null },
+  { code: "BNB", name: "BNB Smart Chain", networks: null },
+  { code: "XRP", name: "XRP Ledger", networks: null },
+  { code: "SOL", name: "Solana", networks: null },
+  { code: "MATIC", name: "Polygon", networks: null },
+  { code: "TON", name: "Toncoin", networks: null },
 ];
 
-type Step = "duration" | "method" | "invoice" | "success";
-type PaymentMethod = {
-  code: string;
-  assetName: string;
-  assetCode: string;
-  networkName: string;
-  networkCode: string;
-  blurb?: string;
+const STABLES = new Set(["USDT", "USDC"]);
+
+// Internal currency code sent to the API for a given asset+network.
+function internalCode(assetCode: string, network?: NetworkCode | null): string {
+  return network ? `${assetCode}_${network}` : assetCode;
+}
+
+// Provider code (from /crypto/currencies) → internal code, so a restored invoice's
+// stored pay_currency resolves back to the exact asset + network for display.
+const PROVIDER_TO_INTERNAL: Record<string, string> = {
+  BTC: "BTC", ETH: "ETH", LTC: "LTC", XMR: "XMR", TRX: "TRX", DOGE: "DOGE",
+  XRP: "XRP", SOL: "SOL", BNBBSC: "BNB", BNB: "BNB", MATIC: "MATIC", ADA: "ADA", TON: "TON",
+  USDTTRC20: "USDT_TRC20", USDTBSC: "USDT_BEP20", USDTBEP20: "USDT_BEP20",
+  USDTERC20: "USDT_ERC20", USDTSOL: "USDT_SOL", USDTARB: "USDT_ARB",
+  USDCBSC: "USDC_BEP20", USDCBEP20: "USDC_BEP20", USDCERC20: "USDC_ERC20",
+  USDCSOL: "USDC_SOL", USDCMATIC: "USDC_MATIC", USDCPOLYGON: "USDC_MATIC", USDCARB: "USDC_ARB",
 };
 
-// Flat asset × network list — resolves a stored invoice's currency code back to a display method.
-const PAYMENT_METHODS: PaymentMethod[] = CRYPTO_ASSETS.flatMap((a) =>
-  a.networks
-    ? a.networks.map((n) => ({ code: `${a.code}_${n.code}`, assetName: a.name, assetCode: a.code, networkName: n.name, networkCode: n.code, blurb: a.blurb }))
-    : [{ code: a.code, assetName: a.name, assetCode: a.code, networkName: a.network.name, networkCode: a.network.code, blurb: a.blurb }]
-);
+type ResolvedMethod = {
+  code: string;        // internal code
+  assetCode: string;   // BTC, USDT …
+  assetName: string;   // Bitcoin, Tether …
+  network: NetworkCode | null;
+};
+
+function assetByCode(code: string): CryptoAsset | undefined {
+  return CRYPTO_ASSETS.find((a) => a.code === code);
+}
+
+function resolveMethod(assetCode: string, network: NetworkCode | null): ResolvedMethod {
+  const asset = assetByCode(assetCode);
+  return {
+    code: internalCode(assetCode, network),
+    assetCode,
+    assetName: asset?.name || assetCode,
+    network,
+  };
+}
+
+// Resolve a stored invoice's pay_currency (provider OR internal form) into a method.
+function methodFromPayCurrency(pay: string, fallback: ResolvedMethod): ResolvedMethod {
+  const upper = String(pay || "").trim().toUpperCase();
+  const compact = upper.replace(/[-_\s]/g, "");
+  let internal = PROVIDER_TO_INTERNAL[compact];
+  if (!internal && upper.includes("_")) internal = upper; // already internal, e.g. USDT_TRC20
+  if (!internal) internal = PROVIDER_TO_INTERNAL[upper] || "";
+  if (!internal) return fallback;
+  const [ac, nc] = internal.split("_");
+  const asset = assetByCode(ac);
+  if (!asset) return fallback;
+  const net = (nc as NetworkCode) || null;
+  return { code: internal, assetCode: ac, assetName: asset.name, network: asset.networks ? net : null };
+}
+
+// ── Display helpers — every stablecoin string carries its network ────────────
+function isStable(m: { assetCode: string }): boolean {
+  return STABLES.has(m.assetCode);
+}
+function networkLabel(net: NetworkCode | null): string {
+  return net ? NETWORK_META[net].label : "";
+}
+// "USDT (TRC20)"  /  "Bitcoin (BTC)"
+function methodLabel(m: ResolvedMethod): string {
+  return isStable(m) ? `${m.assetCode} (${networkLabel(m.network)})` : `${m.assetName} (${m.assetCode})`;
+}
+// Unit used in the "send exactly" sentence: "USDT (TRC20)" for stables, "BTC" for natives.
+function payUnit(m: ResolvedMethod): string {
+  return isStable(m) ? `${m.assetCode} (${networkLabel(m.network)})` : m.assetCode;
+}
+
+type Step = "duration" | "method" | "invoice" | "success";
 
 type Payment = {
   order_id: string;
@@ -110,15 +177,15 @@ type Payment = {
   new_valid_till_preview?: string;
 };
 
-type ProviderCurrency = {
-  code: string;
-  symbol?: string;
-  name?: string;
-  network?: string;
-};
+type ProviderCurrency = { code: string; symbol?: string; name?: string; network?: string };
 
 const TERMINAL_STATUSES = new Set(["completed", "paid", "expired", "cancelled", "failed", "invoice_failed"]);
+// Statuses where cancelling is no longer safe (funds may be inbound / settled).
+const UNCANCELLABLE = new Set(["confirming", "processing", "paid", "completed", "expired", "cancelled", "failed", "invoice_failed"]);
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Page
+// ═════════════════════════════════════════════════════════════════════════════
 export default function RenewalPage() {
   const router = useRouter();
   const session = getPortalSession();
@@ -127,97 +194,67 @@ export default function RenewalPage() {
 
   const [selectedDuration, setSelectedDuration] = useState<"7d" | "30d">("30d");
   const [selectedAsset, setSelectedAsset] = useState("USDT");
-  const [selectedNetwork, setSelectedNetwork] = useState("TRC20");
+  const [selectedNetwork, setSelectedNetwork] = useState<NetworkCode>("TRC20");
   const [step, setStep] = useState<Step>("duration");
   const [invoice, setInvoice] = useState<Payment | null>(null);
   const [invoiceStatus, setInvoiceStatus] = useState("idle");
   const [creating, setCreating] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
-  const [copied, setCopied] = useState(false);
-  const [copiedAmount, setCopiedAmount] = useState(false);
   const [providerCodes, setProviderCodes] = useState<Set<string> | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  // Order id we just cancelled/dismissed, so the "restore active invoice" effect below does not
-  // immediately re-open it from the still-cached renewal-options response (the cancel race).
+  const [netSheetOpen, setNetSheetOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  // Order we just cancelled/dismissed, so the restore effect doesn't re-open it from
+  // the still-cached renewal-options response (the cancel race).
   const dismissedInvoiceRef = useRef<string | null>(null);
 
   const options = data?.options || {};
   const selectedOption = options?.[selectedDuration];
+
   const supportedAssets = useMemo(
     () => filterProviderBackedAssets(CRYPTO_ASSETS, providerCodes),
     [providerCodes]
   );
-  // Resolve the chosen asset + (for USDT/USDC) network into the flat currency code sent to the API.
+  const popularAssets = supportedAssets.filter((a) => a.popular);
+  const otherAssets = supportedAssets.filter((a) => !a.popular);
+
   const asset = supportedAssets.find((a) => a.code === selectedAsset) ?? supportedAssets[0] ?? CRYPTO_ASSETS[0];
-  const activeNetwork = asset.networks
-    ? (asset.networks.find((n) => n.code === selectedNetwork) ?? asset.networks[0])
-    : asset.network;
-  const selectedMethodCode = asset.networks ? `${asset.code}_${activeNetwork.code}` : asset.code;
-  const selectedMethod: PaymentMethod = {
-    code: selectedMethodCode,
-    assetName: asset.name,
-    assetCode: asset.code,
-    networkName: activeNetwork.name,
-    networkCode: activeNetwork.code,
-    blurb: asset.blurb,
-  };
+  const needsNetwork = !!asset.networks;
+  const activeNetwork: NetworkCode | null = needsNetwork
+    ? (asset.networks!.includes(selectedNetwork) ? selectedNetwork : asset.networks![0])
+    : null;
+  const selectedMethod = resolveMethod(asset.code, activeNetwork);
+  // For stablecoins the user MUST have picked a network before continuing.
+  const methodReady = !needsNetwork || !!activeNetwork;
+
   const selectAsset = (code: string) => {
     setSelectedAsset(code);
     const a = supportedAssets.find((x) => x.code === code);
-    if (a?.networks) setSelectedNetwork(a.networks[0].code);
+    if (a?.networks) {
+      setSelectedNetwork(a.networks[0]);
+      setNetSheetOpen(true); // prompt for network immediately
+    }
   };
+
   const status = invoiceStatus.toLowerCase();
   const isTerminal = TERMINAL_STATUSES.has(status);
   const hasOpenInvoice = !!invoice && !isTerminal;
 
   const planName = data?.bot?.plan_name || bot?.plan_name || "Custom";
-  const currentValidTill = data?.bot?.valid_till || bot?.valid_till || "";
-  const currentExpiry = formatDate(currentValidTill);
   const hoursLeft = data?.bot?.hours_left;
   const remaining = hoursLeft != null ? formatRemaining(Number(hoursLeft)) : "";
   const planExpired = hoursLeft != null && Number(hoursLeft) <= 0;
+  const graceHoursLeft = (bot?.grace_hours_left as number | null | undefined) ?? null;
 
-  // Single source of truth for the order summary shown in steps 2 & 3.
-  const summary = useMemo<RenewalSummary>(() => ({
-    planName,
-    durationLabel: selectedOption?.days
-      ? `${selectedOption.days} days`
-      : selectedDuration === "7d" ? "7 days" : "30 days",
-    amountUsd: selectedOption?.price ? formatUSD(Number(selectedOption.price)) : "—",
-    newExpiry: formatDate(
-      selectedOption?.new_valid_till || invoice?.new_valid_till_preview || invoice?.new_valid_till
-    ),
-  }), [planName, selectedDuration, selectedOption?.days, selectedOption?.price, selectedOption?.new_valid_till, invoice?.new_valid_till, invoice?.new_valid_till_preview]);
-
-  const qrValue = invoice?.pay_address || "";
-  const qrUrl = qrValue
-    ? `https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=12&data=${encodeURIComponent(qrValue)}`
-    : "";
-
-  // ── Handlers ───────────────────────────────────────────────────────────────
-  const copyAddress = async () => {
-    if (!invoice?.pay_address) return;
+  // ── Handlers (logic preserved from the original implementation) ────────────
+  const copyText = async (value: string | number | undefined, label: string) => {
+    if (value === undefined || value === null || value === "") return;
     try {
-      await navigator.clipboard.writeText(invoice.pay_address);
-      setCopied(true);
-      toast.success("Address copied");
-      setTimeout(() => setCopied(false), 1800);
+      await navigator.clipboard.writeText(String(value));
+      toast.success(`${label} copied`);
     } catch {
-      toast.error("Could not copy address");
-    }
-  };
-
-  const copyAmount = async () => {
-    const amt = invoice?.pay_amount;
-    if (amt === undefined || amt === null || amt === "") return;
-    try {
-      await navigator.clipboard.writeText(String(amt));
-      setCopiedAmount(true);
-      toast.success("Amount copied");
-      setTimeout(() => setCopiedAmount(false), 1800);
-    } catch {
-      toast.error("Could not copy amount");
+      toast.error(`Couldn't copy the ${label.toLowerCase()}. Select and copy it manually.`);
     }
   };
 
@@ -230,7 +267,7 @@ export default function RenewalPage() {
       );
       const nextStatus = res.data.status || "payment_waiting";
       setInvoiceStatus(nextStatus);
-      setInvoice((previous) => (previous ? { ...previous, ...res.data } : previous));
+      setInvoice((prev) => (prev ? { ...prev, ...res.data } : prev));
       if (nextStatus === "completed" || nextStatus === "paid") {
         setStep("success");
         mutate();
@@ -239,18 +276,18 @@ export default function RenewalPage() {
         toast.success("Status checked");
       }
     } catch (e: any) {
-      if (!silent) setError(e?.response?.data?.detail || "Could not check payment status.");
+      if (!silent) setError(e?.response?.data?.detail || "Couldn't check payment status. Please try again.");
     }
   };
 
   const createInvoice = async () => {
-    if (!session || !selectedOption?.available || hasOpenInvoice || creating) return;
+    if (!session || !selectedOption?.available || hasOpenInvoice || creating || !methodReady) return;
     setCreating(true);
     setError("");
     try {
       const res = await portalApi.post(
         `/api/portal/bot/${encodeURIComponent(session.bot_name)}/renew?telegram_id=${session.telegram_id}`,
-        { duration_days: selectedOption.days, currency: selectedMethodCode }
+        { duration_days: selectedOption.days, currency: selectedMethod.code }
       );
       if (res.data.status === "completed") {
         setInvoiceStatus("completed");
@@ -263,7 +300,7 @@ export default function RenewalPage() {
       setInvoiceStatus(res.data.status || "payment_waiting");
       setStep("invoice");
     } catch (e: any) {
-      setError(e?.response?.data?.detail || "Could not create payment invoice.");
+      setError(e?.response?.data?.detail || "Couldn't create the invoice. Please try again.");
     } finally {
       setCreating(false);
     }
@@ -292,13 +329,13 @@ export default function RenewalPage() {
       mutate();
       toast.success("Invoice cancelled");
     } catch (e: any) {
-      setError(e?.response?.data?.detail || "Could not cancel invoice.");
+      setError(e?.response?.data?.detail || "Couldn't cancel the invoice. Please try again.");
     } finally {
       setCancelling(false);
     }
   };
 
-  // ── Effects ────────────────────────────────────────────────────────────────
+  // ── Effects (unchanged semantics) ──────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
     portalApi.get("/api/portal/crypto/currencies")
@@ -313,22 +350,21 @@ export default function RenewalPage() {
       .catch(() => {
         if (!cancelled) setProviderCodes(null);
       });
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
 
+  // Keep the selected asset/network valid as the provider-backed set resolves.
   useEffect(() => {
     if (!supportedAssets.length) return;
     const current = supportedAssets.find((a) => a.code === selectedAsset);
     if (!current) {
       const next = supportedAssets[0];
       setSelectedAsset(next.code);
-      if (next.networks) setSelectedNetwork(next.networks[0].code);
+      if (next.networks) setSelectedNetwork(next.networks[0]);
       return;
     }
-    if (current.networks && !current.networks.some((n) => n.code === selectedNetwork)) {
-      setSelectedNetwork(current.networks[0].code);
+    if (current.networks && !current.networks.includes(selectedNetwork)) {
+      setSelectedNetwork(current.networks[0]);
     }
   }, [supportedAssets, selectedAsset, selectedNetwork]);
 
@@ -336,8 +372,6 @@ export default function RenewalPage() {
   // duplicate invoices are never created silently.
   useEffect(() => {
     if (!data?.active_invoice || invoice) return;
-    // Don't re-open an invoice the user just cancelled/dismissed (the renewal-options response can
-    // still carry it for a moment before the backend marks it terminal).
     if (data.active_invoice.order_id && data.active_invoice.order_id === dismissedInvoiceRef.current) return;
     const st = (data.active_invoice.status || "").toLowerCase();
     if (TERMINAL_STATUSES.has(st)) return;
@@ -353,7 +387,7 @@ export default function RenewalPage() {
     return () => clearInterval(clock);
   }, [invoice, isTerminal]);
 
-  // Poll payment status; stop once payment/cancellation/expiration is reached.
+  // Poll payment status; stop once terminal.
   useEffect(() => {
     if (!invoice || !session || isTerminal) return;
     const poll = setInterval(() => requestStatus(true), 8000);
@@ -361,214 +395,218 @@ export default function RenewalPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [invoice?.order_id, isTerminal, session?.bot_name, session?.telegram_id]);
 
-  if (isLoading || !bot) return <div className="p-4 sm:p-6"><PageSkeleton /></div>;
+  if (isLoading || !bot) return <div className="mx-auto w-full max-w-[1120px]"><PageSkeleton /></div>;
 
-  // The invoice step is a focused, compact checkout with its own header/progress — rendered outside
-  // the shared duration/method chrome to maximise information density on mobile.
-  if (step === "invoice" && invoice) {
-    return (
-      <div className="pb-24 sm:pb-10">
-        <InvoicePaymentPanel
-          invoice={invoice}
-          status={invoiceStatus}
-          method={methodForInvoice(invoice, selectedMethod)}
-          qrUrl={qrUrl}
-          now={now}
-          copied={copied}
-          onCopy={copyAddress}
-          copiedAmount={copiedAmount}
-          onCopyAmount={copyAmount}
-          onBack={() => setStep("method")}
-          onCancel={() => cancelInvoice("duration")}
-          onNewInvoice={() => cancelInvoice("method")}
-          cancelling={cancelling}
-          planExpired={planExpired}
-          graceHoursLeft={(bot?.grace_hours_left as number | null | undefined) ?? null}
-          error={error}
-        />
-      </div>
-    );
-  }
+  const invoiceMethod = invoice ? methodFromPayCurrency(invoice.pay_currency, selectedMethod) : selectedMethod;
+
+  // Order summary is a single source of truth shared by steps 2 & 3.
+  const summary = {
+    planName,
+    durationDays: selectedOption?.days || (selectedDuration === "7d" ? 7 : 30),
+    amountUsd: selectedOption?.price ? formatUSD(Number(selectedOption.price)) : "—",
+  };
 
   return (
-    <div className="mx-auto w-full max-w-3xl space-y-4 pb-28 sm:pb-0">
+    <div className="mx-auto w-full max-w-[1120px] pb-[calc(6.5rem+env(safe-area-inset-bottom))] lg:pb-4">
+      {/* Compact back control — the page title + notification bell live in the shared header */}
       <Link
         href="/user/billing"
-        className="inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-[#9298AD] transition-colors hover:text-[#F7F8FC] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/50"
+        className="inline-flex min-h-9 items-center gap-1.5 text-[13px] font-semibold text-[color:var(--sub)] transition-colors hover:text-[color:var(--txt)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/50 rounded-md"
+        style={{ ["--sub" as any]: C.sub, ["--txt" as any]: C.text }}
       >
-        <ArrowLeft className="h-4 w-4" /> Back to Billing
+        <ArrowLeft className="h-4 w-4" /> Billing
       </Link>
 
-      <RenewalHeader
-        planName={planName}
-        currentExpiry={currentExpiry}
-        remaining={remaining}
-        hasOpenInvoice={hasOpenInvoice}
-        planExpired={planExpired}
-        graceHoursLeft={(bot?.grace_hours_left as number | null | undefined) ?? null}
+      <div className="mt-3 space-y-5">
+        <PlanStatusSummary planName={planName} planExpired={planExpired} remaining={remaining} graceHoursLeft={graceHoursLeft} />
+        <RenewalStepper step={step} />
+
+        {error && <RenewalError message={error} />}
+
+        {step === "duration" && (
+          <DurationStep
+            options={options}
+            planName={planName}
+            planExpired={planExpired}
+            selectedDuration={selectedDuration}
+            setSelectedDuration={setSelectedDuration}
+            hasOpenInvoice={hasOpenInvoice}
+            onContinue={() => (hasOpenInvoice ? setStep("invoice") : setStep("method"))}
+          />
+        )}
+
+        {step === "method" && (
+          <PaymentStep
+            popular={popularAssets}
+            others={otherAssets}
+            selectedAsset={selectedAsset}
+            onSelectAsset={selectAsset}
+            asset={asset}
+            activeNetwork={activeNetwork}
+            onOpenNetwork={() => setNetSheetOpen(true)}
+            method={selectedMethod}
+            methodReady={methodReady}
+            summary={summary}
+            creating={creating}
+            disabled={!selectedOption?.available || hasOpenInvoice}
+            onBack={() => setStep("duration")}
+            onCreate={createInvoice}
+          />
+        )}
+
+        {step === "invoice" && invoice && (
+          <InvoiceStep
+            invoice={invoice}
+            status={invoiceStatus}
+            method={invoiceMethod}
+            now={now}
+            planName={planName}
+            cancelling={cancelling}
+            cancellable={!UNCANCELLABLE.has(status)}
+            onCopy={copyText}
+            onRequestCancel={() => setCancelOpen(true)}
+            onRestart={() => cancelInvoice("duration")}
+          />
+        )}
+
+        {step === "success" && (
+          <SuccessView invoice={invoice} method={invoiceMethod} planName={planName} onDashboard={() => router.push("/user/dashboard")} />
+        )}
+      </div>
+
+      {/* Network chooser — bottom sheet on mobile, centred modal on desktop */}
+      <NetworkSheet
+        open={netSheetOpen && needsNetwork}
+        assetCode={asset.code}
+        networks={(asset.networks || []) as NetworkCode[]}
+        selected={activeNetwork}
+        onSelect={(n) => { setSelectedNetwork(n); setNetSheetOpen(false); }}
+        onClose={() => setNetSheetOpen(false)}
       />
 
-      <div className="rounded-2xl border border-[#20242F] bg-[#0E1018] px-4 py-3.5 sm:px-5">
-        <RenewalProgress step={step} />
-      </div>
-
-      {error && <RenewalError message={error} />}
-
-      <div className="rounded-2xl border border-[#20242F] bg-[#0E1018] p-4 sm:p-5">
-
-            {step === "duration" && (
-              <DurationSelector
-                options={options}
-                currentExpiry={currentExpiry}
-                planExpired={planExpired}
-                planName={planName}
-                selectedDuration={selectedDuration}
-                setSelectedDuration={setSelectedDuration}
-                hasOpenInvoice={hasOpenInvoice}
-                onContinue={() => (hasOpenInvoice ? setStep("invoice") : setStep("method"))}
-              />
-            )}
-
-            {step === "method" && (
-              <PaymentMethodSelector
-                selectedAsset={selectedAsset}
-                onSelectAsset={selectAsset}
-                assets={supportedAssets}
-                networks={asset.networks}
-                selectedNetwork={selectedNetwork}
-                onSelectNetwork={setSelectedNetwork}
-                summary={summary}
-                onBack={() => setStep("duration")}
-                onCreate={createInvoice}
-                creating={creating}
-                disabled={!selectedOption?.available || hasOpenInvoice}
-              />
-            )}
-
-            {step === "success" && (
-              <RenewalSuccess invoice={invoice} planName={planName} onDashboard={() => router.push("/user/dashboard")} />
-            )}
-      </div>
+      {/* Cancel confirmation */}
+      <CancelDialog
+        open={cancelOpen}
+        loading={cancelling}
+        onKeep={() => setCancelOpen(false)}
+        onConfirm={async () => { await cancelInvoice("duration"); setCancelOpen(false); }}
+      />
     </div>
   );
 }
 
-// ── Header ───────────────────────────────────────────────────────────────────
-function RenewalHeader({ planName, currentExpiry, remaining, hasOpenInvoice, planExpired, graceHoursLeft }: {
+// ═════════════════════════════════════════════════════════════════════════════
+// Plan status summary — compact horizontal strip
+// ═════════════════════════════════════════════════════════════════════════════
+function PlanStatusSummary({ planName, planExpired, remaining, graceHoursLeft }: {
   planName: string;
-  currentExpiry: string;
-  remaining: string;
-  hasOpenInvoice: boolean;
   planExpired: boolean;
+  remaining: string;
   graceHoursLeft: number | null;
 }) {
   const inGrace = planExpired && graceHoursLeft !== null && graceHoursLeft > 0;
+  const windowLabel = inGrace ? `${graceHoursLeft}h` : remaining;
   return (
-    <div className="rounded-2xl border border-[#20242F] bg-[#0E1018] p-4 sm:p-5">
-      <div className="flex items-start gap-3 sm:gap-4">
-        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-[#7657FF]/25 bg-[#7657FF]/10 text-[#B9A7FF]">
+    <div
+      className="flex items-center justify-between gap-3 rounded-2xl border p-3.5 sm:px-5"
+      style={{ borderColor: C.border, background: C.card }}
+    >
+      <div className="flex min-w-0 items-center gap-3">
+        <span
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl sm:h-11 sm:w-11"
+          style={{ background: "rgba(118,87,255,0.10)", border: "1px solid rgba(118,87,255,0.22)", color: "#B9A7FF" }}
+        >
           <RefreshCw className="h-5 w-5" />
         </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-            <h1 className="text-lg font-bold text-[#F7F8FC] sm:text-xl">Renew your {planName} plan</h1>
-            {hasOpenInvoice && (
-              <span className="rounded-full border border-[#F2B94B]/30 bg-[#F2B94B]/10 px-2.5 py-0.5 text-[11px] font-bold text-[#F2B94B]">
-                Active invoice
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-[15px] font-bold" style={{ color: C.text }}>{planName} Plan</span>
+            {planExpired ? (
+              <span className="rounded-full px-2 py-0.5 text-[11px] font-bold" style={{ color: "#F2555A", background: "rgba(242,85,90,0.12)" }}>
+                Expired
+              </span>
+            ) : (
+              <span className="rounded-full px-2 py-0.5 text-[11px] font-bold" style={{ color: C.success, background: "rgba(37,201,160,0.12)" }}>
+                Active
               </span>
             )}
           </div>
-          {planExpired ? (
-            <>
-              <span className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-[#F2555A]/25 bg-[#F2555A]/10 px-2.5 py-1 text-[12px] font-bold text-[#F2555A]">
-                <AlertCircle className="h-3.5 w-3.5" /> Subscription expired
-              </span>
-              <p className="mt-2.5 text-[13px] leading-relaxed text-[#9298AD] sm:text-sm">
-                {inGrace
-                  ? `Renew within ${graceHoursLeft} hours to keep your accounts, campaigns and settings.`
-                  : "Renew now to restore your accounts, campaigns and settings."}
-              </p>
-            </>
-          ) : (
-            <p className="mt-2 text-[13px] text-[#9298AD] sm:text-sm">
-              Active until <span className="text-[#D9DCEA]">{currentExpiry}</span>
-              {remaining ? ` · ${remaining} remaining` : ""}
-            </p>
-          )}
         </div>
       </div>
+      {windowLabel && (
+        <div className="flex shrink-0 items-center gap-2 text-right">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: C.sub }}>Renew within</p>
+            <p className="text-[15px] font-bold tabular-nums" style={{ color: planExpired ? C.amber : C.text }}>{windowLabel}</p>
+          </div>
+          <Clock className="h-4 w-4" style={{ color: planExpired ? C.amber : C.sub }} />
+        </div>
+      )}
     </div>
   );
 }
 
-// ── Progress ─────────────────────────────────────────────────────────────────
-function RenewalProgress({ step }: { step: Step }) {
+// ═════════════════════════════════════════════════════════════════════════════
+// Stepper — shared across all three steps
+// ═════════════════════════════════════════════════════════════════════════════
+function RenewalStepper({ step }: { step: Step }) {
   const steps = [
-    { id: "duration", label: "Duration", icon: CalendarDays },
-    { id: "method", label: "Payment method", icon: Coins },
-    { id: "invoice", label: "Payment invoice", icon: ReceiptText },
+    { id: "duration", label: "Duration" },
+    { id: "method", label: "Payment" },
+    { id: "invoice", label: "Invoice" },
   ] as const;
-  const current = step === "success" ? 3 : steps.findIndex((item) => item.id === step);
-  const activeIndex = Math.min(Math.max(current, 0), 2);
-  const active = steps[activeIndex];
-  const ActiveIcon = active.icon;
+  const currentIndex = step === "success" ? 3 : steps.findIndex((s) => s.id === step);
 
   return (
-    <>
-      {/* Desktop: full horizontal stepper */}
-      <ol className="hidden items-center sm:flex" aria-label="Renewal progress">
-        {steps.map((item, index) => {
-          const done = index < current || step === "success";
-          const isActive = index === current;
+    <nav aria-label="Renewal progress" className="px-1 pb-6">
+      <ol className="flex items-center">
+        {steps.map((s, i) => {
+          const done = i < currentIndex;
+          const active = i === currentIndex;
           return (
-            <li key={item.id} className="flex min-w-0 flex-1 items-center last:flex-none">
-              <span
-                aria-current={isActive ? "step" : undefined}
-                className={cn(
-                  "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold",
-                  isActive && "bg-[#7657FF] text-white",
-                  done && "bg-[#25C9A0]/15 text-[#25C9A0]",
-                  !isActive && !done && "bg-[#151824] text-[#9298AD]"
-                )}
-              >
-                {done ? <Check className="h-4 w-4" /> : index + 1}
-              </span>
-              <span className={cn("ml-2 truncate text-sm font-semibold", isActive ? "text-[#F7F8FC]" : done ? "text-[#D9DCEA]" : "text-[#9298AD]")}>
-                {item.label}
-              </span>
-              {index < steps.length - 1 && <span className={cn("mx-4 h-px flex-1", done ? "bg-[#7657FF]" : "bg-[#262A3A]")} />}
+            <li key={s.id} className={cn("flex items-center", i < steps.length - 1 && "flex-1")}>
+              <div className="relative flex flex-col items-center">
+                <span
+                  aria-current={active ? "step" : undefined}
+                  className="flex h-9 w-9 items-center justify-center rounded-full text-[13px] font-bold transition-colors"
+                  style={{
+                    background: active ? C.accent : done ? "rgba(37,201,160,0.15)" : C.surface2,
+                    color: active ? "#fff" : done ? C.success : C.sub,
+                    border: active ? `1px solid ${C.accent}` : done ? "1px solid rgba(37,201,160,0.35)" : `1px solid ${C.border2}`,
+                  }}
+                >
+                  {done ? <Check className="h-4 w-4" /> : i + 1}
+                </span>
+                <span
+                  className="absolute left-1/2 top-[calc(100%+7px)] -translate-x-1/2 whitespace-nowrap text-[11px] font-semibold sm:text-[13px]"
+                  style={{ color: active ? C.text : done ? C.text2 : C.sub }}
+                >
+                  {s.label}
+                </span>
+              </div>
+              {i < steps.length - 1 && (
+                <span
+                  className="mx-2 h-[2px] flex-1 rounded-full sm:mx-3"
+                  style={{ background: done ? C.accent : C.border2 }}
+                />
+              )}
             </li>
           );
         })}
       </ol>
-
-      {/* Mobile: compact label + thin progress bar */}
-      <div className="sm:hidden">
-        <div className="flex items-center gap-3">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#7657FF] text-white">
-            <ActiveIcon className="h-4 w-4" />
-          </span>
-          <div className="min-w-0">
-            <p className="text-xs font-semibold text-[#9298AD]">Step {activeIndex + 1} of 3</p>
-            <p className="truncate text-sm font-bold text-[#F7F8FC]">{active.label}</p>
-          </div>
-        </div>
-        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#151824]">
-          <div className="h-full rounded-full bg-[#7657FF] transition-[width] duration-200" style={{ width: `${((activeIndex + 1) / 3) * 100}%` }} />
-        </div>
-      </div>
-    </>
+    </nav>
   );
 }
 
-// ── Step 1: Duration ─────────────────────────────────────────────────────────
-function DurationSelector({ options, currentExpiry, planExpired, planName, selectedDuration, setSelectedDuration, hasOpenInvoice, onContinue }: {
+// ═════════════════════════════════════════════════════════════════════════════
+// Step 1 — Duration
+// ═════════════════════════════════════════════════════════════════════════════
+function DurationStep({ options, planName, planExpired, selectedDuration, setSelectedDuration, hasOpenInvoice, onContinue }: {
   options: any;
-  currentExpiry: string;
-  planExpired: boolean;
   planName: string;
+  planExpired: boolean;
   selectedDuration: "7d" | "30d";
-  setSelectedDuration: (duration: "7d" | "30d") => void;
+  setSelectedDuration: (d: "7d" | "30d") => void;
   hasOpenInvoice: boolean;
   onContinue: () => void;
 }) {
@@ -578,10 +616,10 @@ function DurationSelector({ options, currentExpiry, planExpired, planName, selec
   const monthlyBest = weeklyRate > 0 && monthlyRate > 0 && monthlyRate < weeklyRate;
 
   return (
-    <div className="space-y-5">
-      <SectionTitle title="Choose renewal duration" text={`Select how long you want to extend your ${planName} plan.`} />
+    <section className="mx-auto w-full max-w-[680px]">
+      <StepHeading title="Choose renewal duration" text={`Select how long you want to extend your ${planName} plan.`} center />
 
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="mt-6 grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="Renewal duration">
         {(["7d", "30d"] as const).map((key) => {
           const option = options?.[key];
           const active = selectedDuration === key;
@@ -596,510 +634,692 @@ function DurationSelector({ options, currentExpiry, planExpired, planName, selec
               disabled={disabled}
               onClick={() => setSelectedDuration(key)}
               className={cn(
-                "min-h-[132px] rounded-[14px] border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60",
-                active ? "border-[#7657FF] bg-[#7657FF]/10" : "border-[#262A3A] bg-[#11131D] hover:border-[#7657FF]/60",
+                "relative min-h-[120px] rounded-2xl border p-4 text-left transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60",
                 disabled && "cursor-not-allowed opacity-60"
               )}
+              style={{
+                borderColor: active ? C.accent : C.border2,
+                background: active ? "rgba(118,87,255,0.10)" : C.surface,
+              }}
             >
-              <div className="flex items-start justify-between gap-3">
-                <span className={cn("flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-colors", active ? "border-[#7657FF] bg-[#7657FF] text-white" : "border-[#52586B]")}>
+              <div className="flex items-center justify-between">
+                <span
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-colors"
+                  style={{ borderColor: active ? C.accent : C.faint, background: active ? C.accent : "transparent", color: "#fff" }}
+                >
                   {active && <Check className="h-3 w-3" />}
                 </span>
                 {showBest && (
-                  <span className="rounded-full bg-[#7657FF]/15 px-2 py-1 text-[11px] font-bold uppercase tracking-wide text-[#B9A7FF]">
+                  <span className="rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-wide" style={{ color: "#B9A7FF", background: "rgba(118,87,255,0.15)" }}>
                     Best value
                   </span>
                 )}
               </div>
-              <p className="mt-3 text-lg font-bold text-[#F7F8FC]">{option?.days || (key === "7d" ? 7 : 30)} days</p>
-              <p className="mt-0.5 text-[28px] font-black leading-none text-[#F7F8FC]">
-                {option?.available ? formatUSD(Number(option.price)) : "Unavailable"}
+              <p className="mt-3 text-[18px] font-bold" style={{ color: C.text }}>{option?.days || (key === "7d" ? 7 : 30)} days</p>
+              <p className="mt-0.5 text-[30px] font-black leading-none tabular-nums" style={{ color: C.text }}>
+                {option?.available ? formatUSD(Number(option.price)) : "—"}
               </p>
-              <p className="mt-2 text-[13px] text-[#9298AD]">
-                Active through <span className="text-[#D9DCEA]">{formatDate(option?.new_valid_till)}</span>
+              <p className="mt-2 text-[13px]" style={{ color: C.sub }}>
+                {option?.available
+                  ? <>Active through <span style={{ color: C.text2 }}>{formatDate(option?.new_valid_till)}</span></>
+                  : (option?.unavailable_reason || "Unavailable")}
               </p>
             </button>
           );
         })}
       </div>
 
-      <p className="rounded-[14px] border border-[#262A3A] bg-[#151824] p-3 text-sm leading-relaxed text-[#D9DCEA]">
-        {planExpired ? (
-          <>Your renewed subscription will start after payment confirmation.</>
-        ) : (
-          <>Your renewal will begin after your current subscription ends on <span className="font-bold text-[#F7F8FC]">{currentExpiry}</span>.</>
-        )}
-      </p>
+      <InfoNote className="mt-5">
+        {planExpired
+          ? "Your renewed subscription will start immediately after payment confirmation."
+          : "Your renewal is added on top of your current subscription after payment confirmation."}
+      </InfoNote>
 
-      <StepActions primaryLabel="Continue to payment" onPrimary={onContinue} primaryDisabled={!selected?.available} />
-    </div>
+      <StickyActionBar>
+        <span className="hidden lg:block" />
+        <Button
+          className="h-[52px] w-full gap-2 rounded-xl text-[15px] font-bold sm:h-12 lg:h-11 lg:w-auto lg:px-6 lg:text-sm"
+          style={{ background: C.accent }}
+          onClick={onContinue}
+          disabled={!selected?.available}
+        >
+          Continue to payment <ArrowRight className="h-4 w-4" />
+        </Button>
+      </StickyActionBar>
+    </section>
   );
 }
 
-// ── Step 2: Payment method ───────────────────────────────────────────────────
-function PaymentMethodSelector({ selectedAsset, onSelectAsset, assets, networks, selectedNetwork, onSelectNetwork, summary, onBack, onCreate, creating, disabled }: {
+// ═════════════════════════════════════════════════════════════════════════════
+// Step 2 — Payment method
+// ═════════════════════════════════════════════════════════════════════════════
+function PaymentStep({ popular, others, selectedAsset, onSelectAsset, asset, activeNetwork, onOpenNetwork, method, methodReady, summary, creating, disabled, onBack, onCreate }: {
+  popular: CryptoAsset[];
+  others: CryptoAsset[];
   selectedAsset: string;
   onSelectAsset: (code: string) => void;
-  assets: CryptoAsset[];
-  networks: NetworkOption[] | null;
-  selectedNetwork: string;
-  onSelectNetwork: (code: string) => void;
-  summary: RenewalSummary;
-  onBack: () => void;
-  onCreate: () => void;
+  asset: CryptoAsset;
+  activeNetwork: NetworkCode | null;
+  onOpenNetwork: () => void;
+  method: ResolvedMethod;
+  methodReady: boolean;
+  summary: { planName: string; durationDays: number; amountUsd: string };
   creating: boolean;
   disabled: boolean;
-}) {
-  return (
-    <div className="space-y-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <SectionTitle title="Choose payment method" text="Select the cryptocurrency you want to pay with." />
-        <RenewalOrderSummary summary={summary} />
-      </div>
-
-      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4" role="radiogroup" aria-label="Cryptocurrency">
-        {assets.map((a) => (
-          <PaymentMethodCard
-            key={a.code}
-            asset={a}
-            selected={selectedAsset === a.code}
-            onSelect={() => onSelectAsset(a.code)}
-          />
-        ))}
-      </div>
-
-      {networks && (
-        <NetworkSelector assetCode={selectedAsset} networks={networks} selected={selectedNetwork} onSelect={onSelectNetwork} />
-      )}
-
-      <div className="flex items-start gap-2.5 rounded-[14px] border border-[#262A3A] bg-[#151824] p-3.5 text-[13px] text-[#9298AD]">
-        <Info className="mt-0.5 h-4 w-4 shrink-0 text-[#7657FF]" aria-hidden="true" />
-        <p>The exact amount, wallet address and QR code are generated on the next step.</p>
-      </div>
-
-      <StepActions
-        secondaryLabel="Back"
-        onSecondary={onBack}
-        primaryLabel={creating ? "Generating invoice…" : "Generate invoice"}
-        onPrimary={onCreate}
-        primaryDisabled={disabled || creating}
-        primaryLoading={creating}
-      />
-    </div>
-  );
-}
-
-function NetworkSelector({ assetCode, networks, selected, onSelect }: {
-  assetCode: string;
-  networks: NetworkOption[];
-  selected: string;
-  onSelect: (code: string) => void;
-}) {
-  const activeName = networks.find((n) => n.code === selected)?.name || "";
-  return (
-    <div className="rounded-[14px] border border-[#262A3A] bg-[#11131D] p-3.5">
-      <p className="mb-2.5 text-[13px] font-semibold text-[#D9DCEA]">Select {assetCode} network</p>
-      <div className="flex flex-wrap gap-2" role="radiogroup" aria-label={`${assetCode} network`}>
-        {networks.map((n) => {
-          const active = selected === n.code;
-          return (
-            <button
-              key={n.code}
-              type="button"
-              role="radio"
-              aria-checked={active}
-              onClick={() => onSelect(n.code)}
-              className={cn(
-                "inline-flex min-h-[40px] items-center gap-1.5 rounded-full border px-3.5 text-[13px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60",
-                active ? "border-[#7657FF] bg-[#7657FF]/[0.12] text-white" : "border-[#262A3A] bg-[#151824] text-[#9298AD] hover:border-[#7657FF]/50"
-              )}
-            >
-              {active && <Check className="h-3.5 w-3.5" />}
-              {n.label}
-            </button>
-          );
-        })}
-      </div>
-      {activeName && <p className="mt-2 text-[12px] text-[#9298AD]">You&apos;ll pay {assetCode} on the {activeName} network.</p>}
-    </div>
-  );
-}
-
-type RenewalSummary = {
-  planName: string;
-  durationLabel: string;
-  amountUsd: string;
-  newExpiry: string;
-};
-
-function RenewalOrderSummary({ summary }: { summary: RenewalSummary }) {
-  return (
-    <div className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 self-start rounded-full border border-[#262A3A] bg-[#151824] px-3.5 py-1.5 text-[13px]">
-      <span className="font-bold text-[#F7F8FC]">{summary.planName} Plan</span>
-      <span className="text-[#52586B]">•</span>
-      <span className="text-[#D9DCEA]">{summary.durationLabel}</span>
-      <span className="text-[#52586B]">•</span>
-      <span className="font-bold text-[#F7F8FC]">{summary.amountUsd}</span>
-    </div>
-  );
-}
-
-function PaymentMethodCard({ asset, selected, onSelect }: { asset: CryptoAsset; selected: boolean; onSelect: () => void }) {
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      aria-label={`${asset.name} (${asset.code})`}
-      onClick={onSelect}
-      className={cn(
-        // Mobile: a touch-friendly row (icon · name/ticker/blurb · radio).
-        // Desktop (sm+): a centred vertical card with the selection check pinned top-right.
-        "group relative flex min-h-[64px] items-center gap-3 rounded-2xl border p-3.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60 active:scale-[0.99]",
-        "sm:min-h-[150px] sm:flex-col sm:items-center sm:justify-center sm:gap-2 sm:p-4 sm:text-center",
-        selected ? "border-[#7657FF] bg-[#7657FF]/[0.08]" : "border-[#262A3A] bg-[#11131D] hover:border-[#7657FF]/50"
-      )}
-    >
-      <CryptoLogo code={asset.code} size={44} />
-      <div className="min-w-0 flex-1 sm:flex-none">
-        <div className="flex items-baseline gap-1.5 sm:justify-center">
-          <span className="text-[15px] font-bold text-[#F7F8FC]">{asset.name}</span>
-          <span className="text-[12px] font-semibold text-[#9298AD]">{asset.code}</span>
-        </div>
-        <p className="truncate text-[12px] text-[#9298AD] sm:mt-0.5">{asset.blurb}</p>
-      </div>
-      <span
-        className={cn(
-          "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border sm:absolute sm:right-3 sm:top-3",
-          selected ? "border-[#7657FF] bg-[#7657FF] text-white" : "border-[#52586B]"
-        )}
-      >
-        {selected && <Check className="h-3 w-3" />}
-      </span>
-    </button>
-  );
-}
-
-// ── Step 3: Invoice ──────────────────────────────────────────────────────────
-function InvoicePaymentPanel({ invoice, status, method, qrUrl, now, copied, onCopy, copiedAmount, onCopyAmount, onBack, onCancel, onNewInvoice, cancelling, planExpired, graceHoursLeft, error }: {
-  invoice: Payment;
-  status: string;
-  method: PaymentMethod;
-  qrUrl: string;
-  now: number;
-  copied: boolean;
-  onCopy: () => void;
-  copiedAmount: boolean;
-  onCopyAmount: () => void;
   onBack: () => void;
-  onCancel: () => void;
-  onNewInvoice: () => void;
-  cancelling: boolean;
-  planExpired: boolean;
-  graceHoursLeft: number | null;
-  error: string;
+  onCreate: () => void;
 }) {
-  const statusInfo = getStatusInfo(status, invoice, method);
-  const expired = statusInfo.tone === "error";
-  const countdown = formatRemainingTime(invoice.invoice_expires_at, now);
-  const cryptoAmount = formatCryptoAmount(invoice.pay_amount);
-  const inGrace = planExpired && graceHoursLeft !== null && graceHoursLeft > 0;
-  const toneDot = statusInfo.tone === "success" ? "bg-[#25C9A0]" : statusInfo.tone === "error" ? "bg-[#F06472]" : "bg-[#F2B94B]";
-  const toneText = statusInfo.tone === "success" ? "text-[#25C9A0]" : statusInfo.tone === "error" ? "text-[#F06472]" : "text-[#F2B94B]";
+  const continueLabel = creating
+    ? "Creating invoice…"
+    : methodReady ? `Continue with ${methodLabel(method)}` : "Continue to invoice";
 
   return (
-    <div className="mx-auto w-full max-w-[460px] space-y-5">
-      {/* Header */}
-      <button type="button" onClick={onBack} className="-ml-1 inline-flex min-h-9 items-center gap-1.5 text-[15px] font-semibold text-[#9298AD] transition-colors hover:text-[#F7F8FC]">
-        <ArrowLeft className="h-4 w-4" /> Renewal
-      </button>
+    <section>
+      <div className="grid gap-6 lg:grid-cols-[1fr_320px] lg:items-start">
+        {/* Left — selection */}
+        <div>
+          <StepHeading title="Choose payment method" text="Select your preferred cryptocurrency and network." />
 
-      {/* Subscription status — one dominant line, only when expired */}
-      {planExpired && (
-        <div className="flex items-start gap-2">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[#F2B94B]" aria-hidden="true" />
-          <p className="text-[13px] leading-relaxed text-[#D9DCEA]">
-            <span className="font-bold text-[#F2B94B]">Subscription expired.</span>{" "}
-            {inGrace ? `Renew within ${graceHoursLeft} hours to keep your campaigns, settings and accounts.` : "Renew now to restore your bot."}
-          </p>
-        </div>
-      )}
+          <GridLabel>Popular</GridLabel>
+          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4" role="radiogroup" aria-label="Popular cryptocurrencies">
+            {popular.map((a) => (
+              <CryptoTile
+                key={a.code}
+                asset={a}
+                selected={selectedAsset === a.code}
+                networkText={a.networks ? (selectedAsset === a.code && activeNetwork ? networkLabel(activeNetwork) : "Select network") : ""}
+                onSelect={() => onSelectAsset(a.code)}
+                onEditNetwork={a.networks ? onOpenNetwork : undefined}
+              />
+            ))}
+          </div>
 
-      {/* Progress — Step 3/3 + thin bar, no card */}
-      <div>
-        <div className="mb-1.5 flex items-center justify-between text-[12px] font-semibold text-[#9298AD]">
-          <span className="text-[#D9DCEA]">Complete payment</span>
-          <span>Step 3 / 3</span>
-        </div>
-        <div className="h-1 overflow-hidden rounded-full bg-[#20242F]">
-          <div className="h-full rounded-full bg-[#7657FF]" style={{ width: "100%" }} />
-        </div>
-      </div>
+          {others.length > 0 && (
+            <>
+              <GridLabel>Other cryptocurrencies</GridLabel>
+              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4" role="radiogroup" aria-label="Other cryptocurrencies">
+                {others.map((a) => (
+                  <CryptoTile
+                    key={a.code}
+                    asset={a}
+                    compact
+                    selected={selectedAsset === a.code}
+                    networkText=""
+                    onSelect={() => onSelectAsset(a.code)}
+                  />
+                ))}
+              </div>
+            </>
+          )}
 
-      {error && <RenewalError message={error} />}
+          {asset.networks && !activeNetwork && (
+            <p className="mt-3 flex items-center gap-1.5 text-[13px] font-semibold" style={{ color: C.amber }}>
+              <AlertTriangle className="h-4 w-4" /> Select a network to continue.
+            </p>
+          )}
 
-      {expired ? (
-        <div className="space-y-3 pt-1">
-          <p className="text-[17px] font-bold text-[#F7F8FC]">Invoice expired</p>
-          <p className="text-[13px] text-[#9298AD]">No payment was received in time — your plan wasn&apos;t charged.</p>
-          <Button className="h-12 w-full rounded-2xl bg-[#7657FF] font-bold hover:bg-[#856BFF]" onClick={onNewInvoice}>Generate a new invoice</Button>
+          <InfoNote className="mt-5">
+            You&apos;ll review the exact amount and payment details before the invoice is created.
+          </InfoNote>
         </div>
-      ) : (
-        <>
-          {/* Amount — primary focus */}
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="break-all font-mono text-[32px] font-black leading-none text-[#F7F8FC]">
-                {cryptoAmount} <span className="text-[18px] font-bold text-[#9298AD]">{method.assetCode}</span>
-              </p>
-              <p className="mt-1.5 text-[14px] text-[#9298AD]">≈ {formatUSD(Number(invoice.amount_usd))} USD</p>
-              <span className={cn("mt-2 inline-flex items-center gap-1.5 text-[12px] font-semibold", toneText)}>
-                <span className={cn("h-1.5 w-1.5 rounded-full animate-pulse", toneDot)} aria-hidden="true" />
-                {statusInfo.title}
-              </span>
+
+        {/* Right — sticky order summary (desktop only) */}
+        <aside className="hidden lg:block lg:sticky lg:top-24">
+          <div className="rounded-2xl border p-5" style={{ borderColor: C.border, background: C.card }}>
+            <p className="text-[12px] font-semibold uppercase tracking-wide" style={{ color: C.sub }}>Order summary</p>
+            <div className="mt-3 space-y-2.5 text-[14px]">
+              <SummaryRow label="Plan" value={`${summary.planName} Plan`} />
+              <SummaryRow label="Duration" value={`${summary.durationDays} days`} />
+              <SummaryRow label="Pay with" value={methodReady ? methodLabel(method) : "—"} />
             </div>
-            <button
-              type="button"
-              onClick={onCopyAmount}
-              aria-label={copiedAmount ? "Amount copied" : "Copy amount"}
-              className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[#20242F] text-[#9298AD] transition-colors hover:text-[#F7F8FC]"
-            >
-              {copiedAmount ? <Check className="h-4 w-4 text-[#25C9A0]" /> : <Copy className="h-4 w-4" />}
-            </button>
-          </div>
-
-          {/* QR — compact, centred */}
-          <div className="flex flex-col items-center gap-2">
-            <div className="rounded-2xl bg-white p-2.5">
-              {qrUrl ? (
-                <img src={qrUrl} alt="Payment QR code" width={180} height={180} className="h-[180px] w-[180px]" />
-              ) : (
-                <div className="flex h-[180px] w-[180px] items-center justify-center text-sm font-semibold text-[#0E1018]">QR unavailable</div>
-              )}
+            <div className="my-4 h-px" style={{ background: C.border }} />
+            <div className="flex items-baseline justify-between">
+              <span className="text-[13px] font-semibold" style={{ color: C.sub }}>Total</span>
+              <span className="text-[26px] font-black tabular-nums" style={{ color: C.text }}>{summary.amountUsd}</span>
             </div>
-            <p className="text-[13px] text-[#9298AD]">Scan using any {method.assetName} wallet</p>
-          </div>
-
-          {/* Wallet address — single line + copy */}
-          <div>
-            <p className="mb-1.5 text-[12px] font-semibold text-[#9298AD]">Wallet address</p>
-            <button
-              type="button"
-              onClick={onCopy}
-              title={invoice.pay_address}
-              aria-label={copied ? "Address copied" : "Copy wallet address"}
-              className="flex w-full items-center gap-2 rounded-2xl border border-[#20242F] bg-[#12141C] px-3.5 py-3 text-left transition-colors hover:border-[#7657FF]/50"
+            <Button
+              className="mt-4 h-12 w-full gap-2 rounded-xl text-[15px] font-bold"
+              style={{ background: C.accent }}
+              onClick={onCreate}
+              disabled={disabled || creating || !methodReady}
+              loading={creating}
             >
-              <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-[#F7F8FC]">{invoice.pay_address}</span>
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center text-[#9298AD]">
-                {copied ? <Check className="h-4 w-4 text-[#25C9A0]" /> : <Copy className="h-4 w-4" />}
-              </span>
-            </button>
-          </div>
-
-          {/* Invoice details — compact stacked, no table */}
-          <div className="grid grid-cols-2 gap-x-4 gap-y-3.5">
-            <Detail label="Network" value={method.assetName} />
-            <Detail label="Validity" value={`${invoice.duration_days} days`} />
-            <Detail label="Expires in" value={countdown} valueClass="text-[#F2B94B]" />
-            <Detail label="Invoice" value={shortId(invoice.order_id)} mono />
-          </div>
-
-          {/* Automatic detection */}
-          <p className="flex items-center gap-2 text-[12px] text-[#9298AD]">
-            <Check className="h-3.5 w-3.5 shrink-0 text-[#25C9A0]" />
-            Payment detected automatically after blockchain confirmation.
-          </p>
-
-          {/* Actions */}
-          <div className="space-y-2.5 pt-1">
-            <Button className="h-12 w-full rounded-2xl bg-[#7657FF] font-bold hover:bg-[#856BFF]" onClick={onNewInvoice} loading={cancelling}>
-              Generate new invoice
+              {continueLabel} {!creating && <ArrowRight className="h-4 w-4" />}
             </Button>
             <button
               type="button"
-              onClick={onCancel}
+              onClick={onBack}
+              className="mt-2 block w-full text-center text-[13px] font-semibold transition-colors hover:text-[color:var(--t)]"
+              style={{ color: C.sub, ["--t" as any]: C.text }}
+            >
+              Back to duration
+            </button>
+          </div>
+        </aside>
+      </div>
+
+      {/* Mobile sticky bar */}
+      <StickyActionBar>
+        <Button variant="secondary" className="h-11 rounded-xl px-5 lg:hidden" onClick={onBack}>Back</Button>
+        <Button
+          className="h-[52px] w-full gap-2 rounded-xl text-[15px] font-bold lg:hidden"
+          style={{ background: C.accent }}
+          onClick={onCreate}
+          disabled={disabled || creating || !methodReady}
+          loading={creating}
+        >
+          {continueLabel}
+        </Button>
+      </StickyActionBar>
+    </section>
+  );
+}
+
+function SummaryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span style={{ color: C.sub }}>{label}</span>
+      <span className="truncate text-right font-semibold" style={{ color: C.text }}>{value}</span>
+    </div>
+  );
+}
+
+function CryptoTile({ asset, selected, networkText, compact, onSelect, onEditNetwork }: {
+  asset: CryptoAsset;
+  selected: boolean;
+  networkText: string;
+  compact?: boolean;
+  onSelect: () => void;
+  onEditNetwork?: () => void;
+}) {
+  return (
+    <div
+      role="radio"
+      aria-checked={selected}
+      aria-label={`${asset.name} (${asset.code})`}
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(); } }}
+      className={cn(
+        "group relative flex cursor-pointer flex-col rounded-2xl border p-3 text-left transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60",
+        compact ? "min-h-[76px] flex-row items-center gap-3" : "min-h-[104px] gap-2"
+      )}
+      style={{
+        borderColor: selected ? C.accent : C.border2,
+        background: selected ? "rgba(118,87,255,0.08)" : C.surface,
+      }}
+    >
+      <div className={cn("flex items-center", compact ? "gap-3" : "justify-between")}>
+        <CoinLogo code={asset.code} size={compact ? 32 : 36} />
+        {!compact && (
+          <span
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border"
+            style={{ borderColor: selected ? C.accent : C.faint, background: selected ? C.accent : "transparent", color: "#fff" }}
+          >
+            {selected && <Check className="h-3 w-3" />}
+          </span>
+        )}
+        {compact && (
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[14px] font-bold" style={{ color: C.text }}>{asset.code}</p>
+            <p className="truncate text-[12px]" style={{ color: C.sub }}>{asset.name}</p>
+          </div>
+        )}
+        {compact && selected && <Check className="h-4 w-4 shrink-0" style={{ color: C.accent }} />}
+      </div>
+
+      {!compact && (
+        <div className="min-w-0">
+          <p className="truncate text-[14px] font-bold" style={{ color: C.text }}>{asset.code}</p>
+          <p className="truncate text-[12px]" style={{ color: C.sub }}>{asset.name}</p>
+        </div>
+      )}
+
+      {!compact && networkText && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onEditNetwork?.(); }}
+          className="mt-auto inline-flex items-center justify-between gap-1 rounded-lg border px-2.5 py-1.5 text-[12px] font-semibold transition-colors"
+          style={{
+            borderColor: selected ? "rgba(118,87,255,0.5)" : C.border2,
+            background: C.surface2,
+            color: selected ? "#B9A7FF" : C.sub,
+          }}
+        >
+          <span className="truncate">{networkText}</span>
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 rotate-90" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function GridLabel({ children }: { children: React.ReactNode }) {
+  return <p className="mb-2.5 mt-5 text-[12px] font-bold uppercase tracking-wide first:mt-0" style={{ color: C.sub }}>{children}</p>;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Network selector — bottom sheet (mobile) / modal (desktop)
+// ═════════════════════════════════════════════════════════════════════════════
+function NetworkSheet({ open, assetCode, networks, selected, onSelect, onClose }: {
+  open: boolean;
+  assetCode: string;
+  networks: NetworkCode[];
+  selected: NetworkCode | null;
+  onSelect: (n: NetworkCode) => void;
+  onClose: () => void;
+}) {
+  return (
+    <Modal open={open} onClose={onClose} title={`Select ${assetCode} network`} size="sm">
+      <div role="radiogroup" aria-label={`${assetCode} network`} className="space-y-2">
+        {networks.map((n) => {
+          const meta = NETWORK_META[n];
+          const active = selected === n;
+          return (
+            <button
+              key={n}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              onClick={() => onSelect(n)}
+              className="flex w-full items-center gap-3 rounded-xl border p-3.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60"
+              style={{ borderColor: active ? C.accent : C.border2, background: active ? "rgba(118,87,255,0.10)" : C.surface }}
+            >
+              <span
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border"
+                style={{ borderColor: active ? C.accent : C.faint, background: active ? C.accent : "transparent", color: "#fff" }}
+              >
+                {active && <Check className="h-3 w-3" />}
+              </span>
+              <div className="min-w-0">
+                <p className="text-[15px] font-bold" style={{ color: C.text }}>{assetCode} ({meta.label})</p>
+                <p className="text-[13px]" style={{ color: C.sub }}>{meta.full}</p>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      <p className="mt-4 flex items-start gap-2 text-[12px]" style={{ color: C.sub }}>
+        <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" style={{ color: C.amber }} />
+        Send {assetCode} only on the network you select here — using a different network can permanently lose the funds.
+      </p>
+    </Modal>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Step 3 — Invoice
+// ═════════════════════════════════════════════════════════════════════════════
+function InvoiceStep({ invoice, status, method, now, planName, cancelling, cancellable, onCopy, onRequestCancel, onRestart }: {
+  invoice: Payment;
+  status: string;
+  method: ResolvedMethod;
+  now: number;
+  planName: string;
+  cancelling: boolean;
+  cancellable: boolean;
+  onCopy: (v: string | number | undefined, label: string) => void;
+  onRequestCancel: () => void;
+  onRestart: () => void;
+}) {
+  const s = status.toLowerCase();
+  const expired = s === "expired" || s === "cancelled" || s === "failed" || s === "invoice_failed";
+  const payAmount = Number(invoice.pay_amount || 0);
+  const received = Number(invoice.amount_received || 0);
+  const underpaid = received > 0 && payAmount > 0 && received < payAmount;
+  const detected = s === "confirming" || s === "processing";
+  const countdown = formatRemainingTime(invoice.invoice_expires_at, now);
+  const cryptoAmount = String(invoice.pay_amount ?? "").trim();
+  const stable = isStable(method);
+  const unit = payUnit(method);
+
+  if (expired) {
+    return (
+      <section className="mx-auto w-full max-w-[560px] text-center">
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl" style={{ background: "rgba(240,100,114,0.12)", color: C.danger }}>
+          <Clock className="h-6 w-6" />
+        </div>
+        <h2 className="mt-4 text-[22px] font-bold" style={{ color: C.text }}>Invoice {s === "cancelled" ? "cancelled" : "expired"}</h2>
+        <p className="mt-2 text-[14px]" style={{ color: C.sub }}>
+          This invoice can no longer accept payment. Your plan wasn&apos;t charged.
+        </p>
+        <Button className="mx-auto mt-6 h-12 w-full max-w-xs gap-2 rounded-xl font-bold" style={{ background: C.accent }} onClick={onRestart}>
+          Create a new invoice
+        </Button>
+      </section>
+    );
+  }
+
+  return (
+    <section className="grid gap-6 lg:grid-cols-[1.05fr_0.95fr] lg:items-start">
+      {/* Left — amount, address, instructions */}
+      <div className="space-y-5">
+        {/* Amount */}
+        <div>
+          <p className="text-[13px] font-semibold uppercase tracking-wide" style={{ color: C.sub }}>Amount to pay</p>
+          <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+            <span className="break-all font-mono text-[clamp(28px,7vw,36px)] font-black leading-none tabular-nums" style={{ color: C.text }}>
+              {cryptoAmount}
+            </span>
+            <span className="text-[18px] font-bold" style={{ color: C.sub }}>{method.assetCode}</span>
+            {stable && (
+              <span className="rounded-md px-2 py-0.5 text-[12px] font-bold" style={{ color: "#B9A7FF", background: "rgba(118,87,255,0.14)" }}>
+                {networkLabel(method.network)}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => onCopy(invoice.pay_amount, "Amount")}
+              aria-label="Copy amount"
+              className="ml-auto flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border transition-colors hover:text-[color:var(--t)]"
+              style={{ borderColor: C.border, color: C.sub, ["--t" as any]: C.text }}
+            >
+              <Copy className="h-4 w-4" />
+            </button>
+          </div>
+          <p className="mt-1.5 text-[14px]" style={{ color: C.sub }}>≈ {formatUSD(Number(invoice.amount_usd))} USD</p>
+
+          {/* Subtle status line — never a dominant badge */}
+          <div className="mt-2.5" aria-live="polite">
+            {underpaid ? (
+              <StatusLine tone="amber" text={`Partial payment received — ${trimNum(received)} of ${trimNum(payAmount)} ${method.assetCode}. Send the remaining ${trimNum(payAmount - received)}.`} />
+            ) : detected ? (
+              <StatusLine tone="accent" text="Payment detected — waiting for blockchain confirmation." />
+            ) : (
+              <StatusLine tone="sub" text="Awaiting payment · detected automatically on-chain." />
+            )}
+          </div>
+        </div>
+
+        {/* Exact-payment instruction */}
+        <p className="text-[14px] leading-relaxed" style={{ color: C.text2 }}>
+          Send exactly <span className="font-bold" style={{ color: C.text }}>{cryptoAmount} {unit}</span> to the address below.
+        </p>
+
+        {/* Wallet address */}
+        <CopyField
+          label="Wallet address"
+          value={invoice.pay_address}
+          onCopy={() => onCopy(invoice.pay_address, "Wallet address")}
+        />
+
+        {/* Important instructions */}
+        <PaymentInstructions method={method} planName={planName} stable={stable} unit={unit} />
+
+        {/* Cancel — low emphasis */}
+        {cancellable ? (
+          <div className="pt-1">
+            <button
+              type="button"
+              onClick={onRequestCancel}
               disabled={cancelling}
-              className="mx-auto block min-h-9 text-[13px] font-semibold text-[#9298AD] transition-colors hover:text-[#F06472] disabled:opacity-50"
+              className="text-[13px] font-semibold transition-colors hover:text-[color:var(--d)] disabled:opacity-50"
+              style={{ color: C.sub, ["--d" as any]: C.danger }}
             >
               Cancel invoice
             </button>
           </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function Detail({ label, value, valueClass, mono }: { label: string; value: string; valueClass?: string; mono?: boolean }) {
-  return (
-    <div className="min-w-0">
-      <p className="text-[12px] font-semibold text-[#9298AD]">{label}</p>
-      <p className={cn("mt-0.5 truncate text-[15px] font-bold text-[#F7F8FC]", mono && "font-mono", valueClass)}>{value}</p>
-    </div>
-  );
-}
-
-// ── Success ──────────────────────────────────────────────────────────────────
-function RenewalSuccess({ invoice, planName, onDashboard }: { invoice: Payment | null; planName: string; onDashboard: () => void }) {
-  const through = formatDate(invoice?.new_valid_till || invoice?.new_valid_till_preview);
-  return (
-    <div className="mx-auto max-w-md py-6 text-center">
-      <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-[#25C9A0]/25 bg-[#25C9A0]/15 text-[#25C9A0]">
-        <CheckCircle className="h-6 w-6" />
+        ) : (
+          <p className="pt-1 text-[12px]" style={{ color: C.sub }}>
+            This invoice can no longer be cancelled — a payment is being processed.
+          </p>
+        )}
       </div>
-      <h2 className="mt-4 text-2xl font-bold text-[#F7F8FC]">Payment confirmed</h2>
-      <p className="mt-2 text-sm text-[#9298AD]">
-        Your {planName} plan has been extended through {through}.
-      </p>
-      <Button className="mt-5 h-12 w-full rounded-[12px] bg-[#7657FF] font-bold hover:bg-[#856BFF]" onClick={onDashboard}>
-        Go to Dashboard
-      </Button>
-    </div>
+
+      {/* Right — QR + metadata */}
+      <div className="rounded-2xl border p-4 sm:p-5" style={{ borderColor: C.border, background: C.card }}>
+        <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-center lg:flex-col">
+          <QrCode value={invoice.pay_address} />
+          <dl className="w-full flex-1 space-y-3">
+            <MetaRow label="Payment method" value={methodLabel(method)} />
+            <MetaRow label="Plan duration" value={`${invoice.duration_days} days`} />
+            <MetaRow label="Invoice expires in" value={countdown} valueStyle={{ color: C.amber }} mono />
+            <MetaRow
+              label="Invoice ID"
+              value={shortId(invoice.order_id)}
+              mono
+              onCopy={() => onCopy(invoice.order_id, "Invoice ID")}
+            />
+          </dl>
+        </div>
+      </div>
+    </section>
   );
 }
 
-// ── Shared primitives ────────────────────────────────────────────────────────
-function SectionTitle({ title, text }: { title: string; text: string }) {
+function StatusLine({ tone, text }: { tone: "amber" | "accent" | "sub"; text: string }) {
+  const color = tone === "amber" ? C.amber : tone === "accent" ? "#B9A7FF" : C.sub;
+  return (
+    <span className="inline-flex items-center gap-2 text-[12px] font-semibold" style={{ color }}>
+      <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} aria-hidden />
+      {text}
+    </span>
+  );
+}
+
+function CopyField({ label, value, onCopy }: { label: string; value: string; onCopy: () => void }) {
   return (
     <div>
-      <h2 className="text-lg font-bold text-[#F7F8FC] sm:text-xl">{title}</h2>
-      <p className="mt-1 text-[13px] text-[#9298AD] sm:text-sm">{text}</p>
+      <p className="mb-1.5 text-[12px] font-semibold" style={{ color: C.sub }}>{label}</p>
+      <button
+        type="button"
+        onClick={onCopy}
+        title={value}
+        aria-label={`Copy ${label.toLowerCase()}`}
+        className="flex w-full items-center gap-2 rounded-xl border px-3.5 py-3 text-left transition-colors hover:border-[#7657FF]/50"
+        style={{ borderColor: C.border, background: C.field }}
+      >
+        <span className="min-w-0 flex-1 truncate font-mono text-[13px]" style={{ color: C.text }}>{value}</span>
+        <Copy className="h-4 w-4 shrink-0" style={{ color: C.sub }} />
+      </button>
     </div>
   );
 }
 
-function StepActions({ primaryLabel, onPrimary, primaryDisabled, primaryLoading, secondaryLabel, onSecondary }: {
-  primaryLabel: string;
-  onPrimary: () => void;
-  primaryDisabled?: boolean;
-  primaryLoading?: boolean;
-  secondaryLabel?: string;
-  onSecondary?: () => void;
+function MetaRow({ label, value, valueStyle, mono, onCopy }: {
+  label: string;
+  value: string;
+  valueStyle?: React.CSSProperties;
+  mono?: boolean;
+  onCopy?: () => void;
 }) {
   return (
-    // Mobile: sticky action bar flush to the safe-area bottom edge (native-checkout feel).
-    // Desktop (sm+): reverts to an inline right-aligned row inside the step card.
-    <div className="fixed inset-x-0 bottom-0 z-40 flex flex-col-reverse gap-2 border-t border-[#20242F] bg-[#0B0C12]/95 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur-md sm:static sm:z-auto sm:mt-1 sm:flex-row sm:items-center sm:justify-between sm:border-0 sm:bg-transparent sm:p-0 sm:pt-1 sm:backdrop-blur-none">
-      {secondaryLabel && onSecondary ? (
-        <Button variant="secondary" className="h-11 rounded-xl px-5" onClick={onSecondary}>
-          {secondaryLabel}
-        </Button>
+    <div className="flex items-center justify-between gap-3 border-b pb-3 last:border-0 last:pb-0" style={{ borderColor: C.border }}>
+      <dt className="text-[13px]" style={{ color: C.sub }}>{label}</dt>
+      <dd className="flex items-center gap-1.5 text-right">
+        <span className={cn("text-[14px] font-bold tabular-nums", mono && "font-mono")} style={{ color: C.text, ...valueStyle }}>{value}</span>
+        {onCopy && (
+          <button type="button" onClick={onCopy} aria-label={`Copy ${label.toLowerCase()}`} className="text-[color:var(--s)] transition-colors hover:text-[color:var(--t)]" style={{ ["--s" as any]: C.sub, ["--t" as any]: C.text }}>
+            <Copy className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </dd>
+    </div>
+  );
+}
+
+function QrCode({ value }: { value: string }) {
+  const url = value
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=440x440&margin=0&qzone=1&data=${encodeURIComponent(value)}`
+    : "";
+  return (
+    <div className="shrink-0 rounded-2xl bg-white p-3">
+      {url ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={url}
+          alt="Payment QR code"
+          width={200}
+          height={200}
+          className="h-[168px] w-[168px] lg:h-[200px] lg:w-[200px]"
+          style={{ imageRendering: "pixelated" }}
+        />
       ) : (
-        <span className="hidden sm:block" />
+        <div className="flex h-[168px] w-[168px] items-center justify-center text-sm font-semibold lg:h-[200px] lg:w-[200px]" style={{ color: "#0E1018" }}>
+          QR unavailable
+        </div>
       )}
-      <Button
-        className="h-[52px] w-full rounded-xl bg-[#7657FF] px-5 text-[15px] font-bold hover:bg-[#856BFF] sm:h-11 sm:w-auto sm:text-sm"
-        onClick={onPrimary}
-        disabled={primaryDisabled}
-        loading={primaryLoading}
-      >
-        {primaryLabel}
+    </div>
+  );
+}
+
+function PaymentInstructions({ method, planName, stable, unit }: { method: ResolvedMethod; planName: string; stable: boolean; unit: string }) {
+  const netFull = method.network ? NETWORK_META[method.network].full : "";
+  return (
+    <div className="rounded-xl border p-3.5" style={{ borderColor: C.border2, background: C.surface2 }}>
+      <div className="flex items-center gap-2">
+        <Info className="h-4 w-4 shrink-0" style={{ color: C.accent }} />
+        <p className="text-[13px] font-bold" style={{ color: C.text }}>Important</p>
+      </div>
+      <ul className="mt-2 space-y-1.5 text-[12.5px] leading-relaxed" style={{ color: C.sub }}>
+        <li>Send only {stable ? `${method.assetCode} on the ${networkLabel(method.network)} network` : method.assetName} to the address above.</li>
+        <li>Send the exact amount shown above — no less, no more.</li>
+        <li>Payments are detected automatically after blockchain confirmation.</li>
+        <li>Your {planName} plan renews once the payment is confirmed.</li>
+      </ul>
+      {stable && (
+        <p className="mt-2.5 flex items-start gap-1.5 text-[12px] font-semibold" style={{ color: C.amber }}>
+          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          Using a different token or the wrong network ({netFull ? `not ${netFull}` : "wrong chain"}) may permanently lose the funds.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Success
+// ═════════════════════════════════════════════════════════════════════════════
+function SuccessView({ invoice, method, planName, onDashboard }: {
+  invoice: Payment | null;
+  method: ResolvedMethod;
+  planName: string;
+  onDashboard: () => void;
+}) {
+  const through = formatDate(invoice?.new_valid_till || invoice?.new_valid_till_preview);
+  const days = invoice?.duration_days;
+  return (
+    <section className="mx-auto w-full max-w-[520px] text-center">
+      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl" style={{ background: "rgba(37,201,160,0.15)", border: "1px solid rgba(37,201,160,0.3)", color: C.success }}>
+        <CheckCircle2 className="h-7 w-7" />
+      </div>
+      <h2 className="mt-4 text-[24px] font-bold" style={{ color: C.text }}>Payment confirmed</h2>
+      <p className="mt-2 text-[14px]" style={{ color: C.sub }}>
+        Your {planName} plan has been renewed{days ? ` for ${days} days` : ""}.
+      </p>
+
+      <div className="mt-6 rounded-2xl border p-4 text-left" style={{ borderColor: C.border, background: C.card }}>
+        <dl className="space-y-3">
+          <MetaRow label="Active through" value={through} />
+          <MetaRow label="Payment method" value={methodLabel(method)} />
+          {invoice?.order_id && <MetaRow label="Invoice ID" value={shortId(invoice.order_id)} mono />}
+        </dl>
+      </div>
+
+      <Button className="mt-6 h-12 w-full gap-2 rounded-xl font-bold" style={{ background: C.accent }} onClick={onDashboard}>
+        Go to Dashboard
       </Button>
+    </section>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Cancel confirmation
+// ═════════════════════════════════════════════════════════════════════════════
+function CancelDialog({ open, loading, onKeep, onConfirm }: {
+  open: boolean;
+  loading: boolean;
+  onKeep: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal open={open} onClose={onKeep} size="sm">
+      <div className="flex flex-col items-center gap-4 text-center">
+        <div className="flex h-12 w-12 items-center justify-center rounded-full" style={{ background: "rgba(240,100,114,0.12)" }}>
+          <AlertTriangle className="h-6 w-6" style={{ color: C.danger }} />
+        </div>
+        <h3 className="text-[18px] font-bold" style={{ color: C.text }}>Cancel this invoice?</h3>
+        <p className="text-[14px]" style={{ color: C.sub }}>
+          This payment address will no longer be valid for this renewal. You can create another invoice by restarting the renewal process.
+        </p>
+        <div className="flex w-full gap-3 pt-1">
+          <Button variant="secondary" className="h-11 flex-1 rounded-xl" onClick={onKeep} disabled={loading}>Keep invoice</Button>
+          <Button variant="danger" className="h-11 flex-1 rounded-xl" onClick={onConfirm} loading={loading}>Cancel invoice</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Shared primitives
+// ═════════════════════════════════════════════════════════════════════════════
+function StepHeading({ title, text, center }: { title: string; text: string; center?: boolean }) {
+  return (
+    <div className={center ? "text-center" : ""}>
+      <h2 className="text-[clamp(20px,4.5vw,26px)] font-bold" style={{ color: C.text }}>{title}</h2>
+      <p className="mt-1 text-[14px]" style={{ color: C.sub }}>{text}</p>
+    </div>
+  );
+}
+
+function InfoNote({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={cn("flex items-start gap-2.5 rounded-xl border p-3.5 text-[13px] leading-relaxed", className)} style={{ borderColor: C.border2, background: C.surface2, color: C.sub }}>
+      <Info className="mt-0.5 h-4 w-4 shrink-0" style={{ color: C.accent }} aria-hidden />
+      <p>{children}</p>
     </div>
   );
 }
 
 function RenewalError({ message }: { message: string }) {
   return (
-    <div role="alert" className="mb-4 rounded-[12px] border border-[#F06472]/30 bg-[#F06472]/10 p-3 text-sm font-semibold text-[#F06472]">
+    <div role="alert" className="rounded-xl border p-3 text-[14px] font-semibold" style={{ borderColor: "rgba(240,100,114,0.3)", background: "rgba(240,100,114,0.1)", color: C.danger }}>
       {message}
     </div>
   );
 }
 
-function PaymentWarning({ children }: { children: React.ReactNode }) {
+// Sticky action bar: fixed to the safe-area bottom on mobile, inline (right-aligned) on desktop.
+function StickyActionBar({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex items-start gap-2 rounded-[12px] border border-[#F2B94B]/25 bg-[#F2B94B]/10 p-3">
-      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[#F2B94B]" aria-hidden="true" />
-      <p className="text-[13px] leading-5 text-[#F2B94B]">{children}</p>
+    <div
+      className="fixed inset-x-0 bottom-0 z-40 flex items-center gap-3 border-t px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur-md lg:static lg:z-auto lg:mt-6 lg:justify-end lg:border-0 lg:bg-transparent lg:p-0 lg:backdrop-blur-none"
+      style={{ borderColor: C.border, background: "rgba(11,12,18,0.95)" }}
+    >
+      {children}
     </div>
   );
 }
 
-function CryptoLogo({ code, size = 40 }: { code: string; size?: number }) {
-  const base = code.split("_")[0];
-  const src = CRYPTO_LOGOS[base];
-  return src ? (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img src={src} alt={`${base} logo`} loading="lazy" className="shrink-0 rounded-full" style={{ width: size, height: size }} />
-  ) : (
-    <span
-      className="flex shrink-0 items-center justify-center rounded-full bg-[#1B1E2B] text-[11px] font-black text-[#D9DCEA]"
-      style={{ width: size, height: size }}
-    >
-      {base.slice(0, 2)}
-    </span>
-  );
+function CoinLogo({ code, size = 36 }: { code: string; size?: number }) {
+  const [failed, setFailed] = useState(false);
+  const src = `https://cdn.jsdelivr.net/gh/atomiclabs/cryptocurrency-icons@1a63530be6e374711a8554f31b17e4cb92c25fa5/128/color/${code.toLowerCase()}.png`;
+  const colors: Record<string, string> = {
+    BTC: "#F7931A", ETH: "#627EEA", XMR: "#FF6600", LTC: "#345D9D", SOL: "#9945FF",
+    USDT: "#26A17B", USDC: "#2775CA", TRX: "#EF0027", BNB: "#F3BA2F", XRP: "#23A9E0",
+    MATIC: "#8247E5", TON: "#0098EA",
+  };
+  if (failed) {
+    const color = colors[code] || C.accent;
+    return (
+      <span className="flex shrink-0 items-center justify-center rounded-full text-[10px] font-black" style={{ width: size, height: size, background: `${color}22`, color }}>
+        {code.slice(0, 3)}
+      </span>
+    );
+  }
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={src} alt={`${code} logo`} width={size} height={size} loading="lazy" onError={() => setFailed(true)} className="shrink-0 rounded-full" style={{ width: size, height: size }} />;
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-type StatusTone = "warning" | "success" | "error" | "accent";
-type StatusInfo = { title: string; description: string; tone: StatusTone };
-
-function formatNetworkLabel(method: PaymentMethod): string {
-  if (method.networkCode === "SOL") return "Solana";
-  if (method.networkCode === "ARB") return "Arbitrum";
-  return method.networkCode || method.networkName || "";
-}
-
-function internalCurrencyCode(asset: CryptoAsset, network?: NetworkOption): string {
-  return asset.networks && network ? `${asset.code}_${network.code}` : asset.code;
-}
-
+// ── Utility helpers ──────────────────────────────────────────────────────────
 function filterProviderBackedAssets(assets: CryptoAsset[], providerCodes: Set<string> | null): CryptoAsset[] {
   if (!providerCodes || providerCodes.size === 0) return assets;
   return assets.flatMap((asset) => {
-    if (!asset.networks) {
-      return providerCodes.has(asset.code) ? [asset] : [];
-    }
-    const networks = asset.networks.filter((network) => providerCodes.has(internalCurrencyCode(asset, network)));
-    return networks.length ? [{ ...asset, network: networks[0], networks }] : [];
+    if (!asset.networks) return providerCodes.has(asset.code) ? [asset] : [];
+    const networks = asset.networks.filter((n) => providerCodes.has(internalCode(asset.code, n)));
+    return networks.length ? [{ ...asset, networks }] : [];
   });
-}
-
-function methodForInvoice(invoice: Payment, fallback: PaymentMethod): PaymentMethod {
-  const pay = String(invoice.pay_currency || "").toUpperCase();
-  const normalized = normalizeCurrencyCode(pay);
-  const exact = PAYMENT_METHODS.find((method) => method.code === normalized || method.code === pay);
-  if (exact) return exact;
-  const asset = assetFromPayCurrency(normalized || pay, fallback.assetCode);
-  const network = networkFromPayCurrency(normalized || pay || fallback.code);
-  return (
-    PAYMENT_METHODS.find((method) => method.assetCode === asset && method.networkCode === network) || {
-      code: pay || fallback.code,
-      assetName: asset,
-      assetCode: asset,
-      networkName: network,
-      networkCode: network,
-    }
-  );
-}
-
-function getStatusInfo(status: string, invoice: Payment, method: PaymentMethod): StatusInfo {
-  const s = status.toLowerCase();
-  const payAmount = Number(invoice.pay_amount || 0);
-  const received = Number(invoice.amount_received || 0);
-  if (s === "completed" || s === "paid") {
-    return { tone: "success", title: "Payment confirmed", description: "Your renewal was confirmed by the backend." };
-  }
-  if (s === "confirming" || s === "processing") {
-    return { tone: "accent", title: "Payment detected", description: "Waiting for network confirmation." };
-  }
-  if (s === "expired") {
-    return { tone: "error", title: "Invoice expired", description: "Create a new invoice to continue." };
-  }
-  if (s === "cancelled" || s === "failed" || s === "invoice_failed") {
-    return { tone: "error", title: "Payment failed", description: "This invoice can no longer be paid." };
-  }
-  if (received > 0 && payAmount > 0 && received < payAmount) {
-    return {
-      tone: "warning",
-      title: "Partial payment received",
-      description: `Received ${formatCryptoAmount(received)} of ${formatCryptoAmount(payAmount)} ${method.assetCode}.`,
-    };
-  }
-  return { tone: "warning", title: "Waiting for payment", description: "We are checking the blockchain automatically." };
 }
 
 function formatRemaining(hours: number): string {
@@ -1123,68 +1343,20 @@ function formatRemainingTime(value: string | undefined, now: number): string {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-function formatExpiryExact(value: string | undefined): string {
-  const date = parseInvoiceDate(value);
-  if (!date) return "";
-  const day = date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-  const time = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-  return `${day} at ${time}`;
-}
-
-// Backend stores invoice_expires_at as a naive UTC ISO string (no timezone
-// suffix). `new Date("2026-07-18T09:00:00")` would parse that as LOCAL time and
-// skew the countdown, so append `Z` to force UTC when no offset is present.
+// Backend stores invoice_expires_at as naive UTC (no tz) — append Z so it isn't
+// parsed as local time and skew the countdown.
 function parseInvoiceDate(value: string | undefined): Date | null {
   if (!value) return null;
   let raw = value.trim();
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(raw)) {
-    raw = `${raw}Z`;
-  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(raw)) raw = `${raw}Z`;
   const date = new Date(raw);
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-// Preserve backend-provided precision exactly — never re-round crypto amounts.
-function formatCryptoAmount(value: string | number): string {
-  return String(value ?? "").trim();
-}
-
-function assetFromPayCurrency(currency: string, fallback: string): string {
-  const upper = normalizeCurrencyCode(currency);
-  if (upper.startsWith("USDT")) return "USDT";
-  if (upper.startsWith("USDC")) return "USDC";
-  if (upper.includes("_")) return upper.split("_")[0];
-  return upper || fallback;
-}
-
-function networkFromPayCurrency(currency: string): string {
-  const upper = normalizeCurrencyCode(currency);
-  if (upper.includes("TRC20") || upper === "TRX") return "TRC20";
-  if (upper.includes("BEP20") || upper.includes("BSC") || upper === "BNB") return "BEP20";
-  if (upper.includes("ERC20") || upper === "ETH") return "ERC20";
-  if (upper.includes("SOL")) return "SOL";
-  if (upper.includes("ARB")) return "ARB";
-  if (upper === "BTC") return "Bitcoin";
-  if (upper === "LTC") return "Litecoin";
-  return upper;
-}
-
-function normalizeCurrencyCode(currency: string): string {
-  const upper = String(currency || "").trim().toUpperCase().replace(/[-\s]/g, "_");
-  const providerMap: Record<string, string> = {
-    USDTTRC20: "USDT_TRC20",
-    USDTBSC: "USDT_BEP20",
-    USDTBEP20: "USDT_BEP20",
-    USDTERC20: "USDT_ERC20",
-    USDTSOL: "USDT_SOL",
-    USDTARB: "USDT_ARB",
-    USDCBSC: "USDC_BEP20",
-    USDCBEP20: "USDC_BEP20",
-    USDCERC20: "USDC_ERC20",
-    USDCSOL: "USDC_SOL",
-    USDCARB: "USDC_ARB",
-  };
-  return providerMap[upper] || upper;
+// Trim a numeric crypto amount for display without re-rounding backend precision.
+function trimNum(n: number): string {
+  if (!isFinite(n)) return "0";
+  return String(Number(n.toFixed(8)));
 }
 
 function shortId(id: string): string {
