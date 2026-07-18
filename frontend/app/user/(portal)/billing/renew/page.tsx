@@ -431,6 +431,7 @@ export default function RenewalPage() {
                 copiedAmount={copiedAmount}
                 onCopyAmount={copyAmount}
                 onCancel={() => cancelInvoice("duration")}
+                onNewInvoice={() => cancelInvoice("method")}
                 cancelling={cancelling}
               />
             )}
@@ -771,7 +772,7 @@ function PaymentMethodCard({ asset, selected, onSelect }: { asset: CryptoAsset; 
 }
 
 // ── Step 3: Invoice ──────────────────────────────────────────────────────────
-function InvoicePaymentPanel({ invoice, status, method, summary, qrUrl, now, copied, onCopy, copiedAmount, onCopyAmount, onCancel, cancelling }: {
+function InvoicePaymentPanel({ invoice, status, method, summary, qrUrl, now, copied, onCopy, copiedAmount, onCopyAmount, onCancel, onNewInvoice, cancelling }: {
   invoice: Payment;
   status: string;
   method: PaymentMethod;
@@ -783,148 +784,114 @@ function InvoicePaymentPanel({ invoice, status, method, summary, qrUrl, now, cop
   copiedAmount: boolean;
   onCopyAmount: () => void;
   onCancel: () => void;
+  onNewInvoice: () => void;
   cancelling: boolean;
 }) {
   const statusInfo = getStatusInfo(status, invoice, method);
   const expired = statusInfo.tone === "error";
   const countdown = formatRemainingTime(invoice.invoice_expires_at, now);
-  const expiryExact = formatExpiryExact(invoice.invoice_expires_at);
   const cryptoAmount = formatCryptoAmount(invoice.pay_amount);
   const networkLabel = formatNetworkLabel(method);
   const renewsThrough = formatDate(invoice.new_valid_till || invoice.new_valid_till_preview || summary.newExpiry);
 
-  // Reusable blocks — arranged differently per breakpoint below.
-  const statusBlock = (
-    <InvoiceStatus statusInfo={statusInfo} countdown={countdown} expiryExact={expiryExact} expired={expired} />
-  );
+  if (expired) {
+    return (
+      <div className="space-y-4">
+        <SectionTitle title="Invoice expired" text="No payment was received in time — your plan has not been charged." />
+        <Button className="h-12 w-full rounded-[12px] bg-[#7657FF] font-bold hover:bg-[#856BFF] sm:w-auto sm:px-6" onClick={onNewInvoice}>
+          Generate a new invoice
+        </Button>
+      </div>
+    );
+  }
+
   const amountBlock = (
-    <PaymentAmounts amountUsd={formatUSD(Number(invoice.amount_usd))} cryptoAmount={cryptoAmount} assetCode={method.assetCode} networkLabel={networkLabel} copiedAmount={copiedAmount} onCopyAmount={onCopyAmount} />
-  );
-  const metaBlock = (
-    <MetaList networkLabel={networkLabel} invoiceId={shortId(invoice.order_id)} renewsThrough={renewsThrough} />
-  );
-  const qrBlock = <PaymentQRCode qrUrl={qrUrl} assetCode={method.assetCode} networkLabel={networkLabel} />;
-  const addressBlock = <WalletAddress address={invoice.pay_address} network={networkLabel} copied={copied} onCopy={onCopy} />;
-  const warningBlock = (
-    <PaymentWarning>
-      Send only {method.assetCode} using the {networkLabel} network. Sending another asset or using another network may permanently lose your funds.
-    </PaymentWarning>
-  );
-  const actionsBlock = (
-    <PaymentActions
-      onCancel={onCancel}
-      cancelling={cancelling}
-    />
-  );
-
-  return (
-    <div className="space-y-5">
-      <SectionTitle title="Complete payment" text="Send the exact amount using the selected currency and network." />
-
-      {/* Desktop: two columns (QR + address | status, amounts, actions) */}
-      <div className="hidden gap-5 md:grid md:grid-cols-[46%_minmax(0,1fr)]">
-        <div className="space-y-4">
-          {qrBlock}
-          {addressBlock}
-        </div>
-        <div className="space-y-4">
-          {statusBlock}
-          {amountBlock}
-          {metaBlock}
-          {warningBlock}
-          {actionsBlock}
-        </div>
+    <div className="flex items-end justify-between gap-3 rounded-[14px] border border-[#262A3A] bg-[#151824] p-4">
+      <div className="min-w-0">
+        <p className="text-xs font-semibold uppercase tracking-wide text-[#9298AD]">Amount to pay</p>
+        <p className="mt-1 break-all font-mono text-[26px] font-black leading-none text-[#F7F8FC] sm:text-[30px]">
+          {cryptoAmount} <span className="text-lg font-bold text-[#9298AD]">{method.assetCode}</span>
+        </p>
+        <p className="mt-1.5 text-[13px] text-[#9298AD]">≈ {formatUSD(Number(invoice.amount_usd))} USD</p>
       </div>
-
-      {/* Mobile: single-column checkout order */}
-      <div className="space-y-4 md:hidden">
-        {statusBlock}
-        {amountBlock}
-        {qrBlock}
-        {addressBlock}
-        {warningBlock}
-        {actionsBlock}
-        {metaBlock}
-      </div>
+      <CopyPill copied={copiedAmount} onClick={onCopyAmount} label="amount" />
     </div>
   );
-}
 
-function InvoiceStatus({ statusInfo, countdown, expiryExact, expired }: {
-  statusInfo: StatusInfo;
-  countdown: string;
-  expiryExact: string;
-  expired: boolean;
-}) {
-  const toneText = statusInfo.tone === "success" ? "text-[#25C9A0]"
-    : statusInfo.tone === "error" ? "text-[#F06472]"
-    : statusInfo.tone === "accent" ? "text-[#856BFF]"
-    : "text-[#F2B94B]";
-  const dot = statusInfo.tone === "success" ? "bg-[#25C9A0]"
-    : statusInfo.tone === "error" ? "bg-[#F06472]"
-    : statusInfo.tone === "accent" ? "bg-[#856BFF]"
-    : "bg-[#F2B94B]";
-  return (
-    <div className="rounded-[14px] border border-[#262A3A] bg-[#151824] p-4">
-      <div className="flex items-start gap-3">
-        <div className="min-w-0">
-          <p className={cn("flex items-center gap-2 text-sm font-bold", toneText)}>
-            <span className={cn("h-2 w-2 shrink-0 rounded-full", dot, !expired && "animate-pulse")} aria-hidden="true" />
-            {statusInfo.title}
-          </p>
-          <p className="mt-1 text-[13px] text-[#9298AD]">{statusInfo.description}</p>
-        </div>
-      </div>
-      {!expired && (
-        <div className="mt-3 rounded-[10px] bg-[#11131D] p-3">
-          <p className="text-sm font-bold text-[#F7F8FC]">Invoice expires in {countdown}</p>
-          {expiryExact && <p className="mt-0.5 text-[13px] text-[#9298AD]">{expiryExact}</p>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function PaymentAmounts({ amountUsd, cryptoAmount, assetCode, networkLabel, copiedAmount, onCopyAmount }: {
-  amountUsd: string;
-  cryptoAmount: string;
-  assetCode: string;
-  networkLabel: string;
-  copiedAmount: boolean;
-  onCopyAmount: () => void;
-}) {
-  return (
-    <div className="rounded-[14px] border border-[#262A3A] bg-[#151824] p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-wide text-[#9298AD]">Send exactly</p>
-          <p className="mt-1 break-all font-mono text-[26px] font-black leading-none text-[#F7F8FC] sm:text-[30px]">
-            {cryptoAmount} <span className="text-lg font-bold text-[#9298AD]">{assetCode}</span>
-          </p>
-          <p className="mt-1.5 text-[13px] text-[#9298AD]">≈ {amountUsd} USD · via the {networkLabel} network</p>
-        </div>
-        <button
-          type="button"
-          onClick={onCopyAmount}
-          aria-label={copiedAmount ? "Amount copied" : "Copy amount"}
-          className="inline-flex min-h-9 shrink-0 items-center gap-2 rounded-[10px] border border-[#262A3A] px-3 text-[13px] font-bold text-[#D9DCEA] transition-colors hover:border-[#7657FF]/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60"
-        >
-          {copiedAmount ? <Check className="h-4 w-4 text-[#25C9A0]" /> : <Copy className="h-4 w-4" />}
-          {copiedAmount ? "Copied" : "Copy"}
-        </button>
-      </div>
-      <p className="mt-3 border-t border-[#262A3A] pt-3 text-[13px] text-[#9298AD]">The crypto amount is locked until the invoice expires.</p>
-    </div>
-  );
-}
-
-function MetaList({ networkLabel, invoiceId, renewsThrough }: { networkLabel: string; invoiceId: string; renewsThrough: string }) {
-  return (
+  const detailsBlock = (
     <div className="rounded-[14px] border border-[#262A3A] bg-[#151824]">
       <MetaRow label="Network" value={networkLabel} />
-      <MetaRow label="Invoice ID" value={invoiceId} mono />
-      <MetaRow label="Renews through" value={renewsThrough} />
+      <MetaRow label="You'll get" value={`${invoice.duration_days} days · until ${renewsThrough}`} />
+      <MetaRow label="Invoice expires in" value={countdown} />
+      <MetaRow label="Invoice ID" value={shortId(invoice.order_id)} mono />
     </div>
+  );
+
+  const qrBlock = (
+    <div className="flex flex-col items-center rounded-[14px] border border-[#262A3A] bg-[#151824] p-4">
+      <div className="flex aspect-square w-full max-w-[220px] items-center justify-center rounded-[12px] bg-white p-3">
+        {qrUrl ? (
+          <img src={qrUrl} alt="Payment QR code" className="h-full w-full object-contain" />
+        ) : (
+          <span className="text-sm font-semibold text-[#0E1018]">QR unavailable</span>
+        )}
+      </div>
+      <p className="mt-3 text-[13px] font-semibold text-[#D9DCEA]">Scan to pay</p>
+    </div>
+  );
+
+  const addressBlock = <WalletAddress address={invoice.pay_address} network={networkLabel} copied={copied} onCopy={onCopy} />;
+  const autoNote = (
+    <p className="text-center text-[12px] text-[#9298AD]">Payment is detected automatically after blockchain confirmation.</p>
+  );
+  const cancelBlock = (
+    <button
+      type="button"
+      onClick={onCancel}
+      disabled={cancelling}
+      className="mx-auto block min-h-10 px-5 text-[13px] font-bold text-[#9298AD] transition-colors hover:text-[#F06472] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F06472]/40 disabled:opacity-50"
+    >
+      {cancelling ? "Cancelling…" : "Cancel invoice"}
+    </button>
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start justify-between gap-3">
+        <SectionTitle title="Complete payment" text={`Scan the QR or copy the details to renew your ${summary.planName} plan.`} />
+        <StatusPill statusInfo={statusInfo} />
+      </div>
+
+      {/* Desktop: QR left, details right */}
+      <div className="hidden gap-5 md:grid md:grid-cols-[260px_minmax(0,1fr)]">
+        <div className="space-y-3">{qrBlock}{autoNote}</div>
+        <div className="space-y-3">{amountBlock}{detailsBlock}{addressBlock}</div>
+      </div>
+
+      {/* Mobile: stacked, QR near the top */}
+      <div className="space-y-3 md:hidden">
+        {amountBlock}
+        {qrBlock}
+        {detailsBlock}
+        {addressBlock}
+        {autoNote}
+      </div>
+
+      {cancelBlock}
+    </div>
+  );
+}
+
+function StatusPill({ statusInfo }: { statusInfo: StatusInfo }) {
+  const tone = statusInfo.tone === "success" ? { text: "text-[#25C9A0]", ring: "border-[#25C9A0]/25 bg-[#25C9A0]/10", dot: "bg-[#25C9A0]" }
+    : statusInfo.tone === "error" ? { text: "text-[#F06472]", ring: "border-[#F06472]/25 bg-[#F06472]/10", dot: "bg-[#F06472]" }
+    : statusInfo.tone === "accent" ? { text: "text-[#856BFF]", ring: "border-[#856BFF]/25 bg-[#856BFF]/10", dot: "bg-[#856BFF]" }
+    : { text: "text-[#F2B94B]", ring: "border-[#F2B94B]/25 bg-[#F2B94B]/10", dot: "bg-[#F2B94B]" };
+  return (
+    <span className={cn("inline-flex shrink-0 items-center gap-2 self-start rounded-full border px-3 py-1.5 text-[13px] font-bold", tone.text, tone.ring)}>
+      <span className={cn("h-2 w-2 rounded-full", tone.dot, statusInfo.tone !== "error" && "animate-pulse")} aria-hidden="true" />
+      {statusInfo.title}
+    </span>
   );
 }
 
@@ -937,20 +904,17 @@ function MetaRow({ label, value, mono }: { label: string; value: string; mono?: 
   );
 }
 
-function PaymentQRCode({ qrUrl, assetCode, networkLabel }: { qrUrl: string; assetCode: string; networkLabel: string }) {
+function CopyPill({ copied, onClick, label }: { copied: boolean; onClick: () => void; label: string }) {
   return (
-    <div className="rounded-[14px] border border-[#262A3A] bg-[#151824] p-4">
-      <div className="mx-auto flex aspect-square w-full max-w-[240px] items-center justify-center rounded-[12px] bg-white p-3">
-        {qrUrl ? (
-          <img src={qrUrl} alt={`QR code to pay with ${assetCode} on ${networkLabel}`} className="h-full w-full object-contain" />
-        ) : (
-          <span className="text-sm font-semibold text-[#0E1018]">QR unavailable</span>
-        )}
-      </div>
-      <p className="mt-3 text-center text-[13px] font-semibold text-[#D9DCEA]">
-        Scan to pay with {assetCode} on {networkLabel}
-      </p>
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={copied ? `${label} copied` : `Copy ${label}`}
+      className="inline-flex min-h-9 shrink-0 items-center gap-2 rounded-[10px] border border-[#262A3A] px-3 text-[13px] font-bold text-[#D9DCEA] transition-colors hover:border-[#7657FF]/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60"
+    >
+      {copied ? <Check className="h-4 w-4 text-[#25C9A0]" /> : <Copy className="h-4 w-4" />}
+      {copied ? "Copied" : "Copy"}
+    </button>
   );
 }
 
@@ -967,15 +931,7 @@ function WalletAddress({ address, network, copied, onCopy }: {
           <p className="text-sm font-bold text-[#F7F8FC]">Wallet address</p>
           <p className="truncate text-[13px] text-[#9298AD]">{network} network</p>
         </div>
-        <button
-          type="button"
-          onClick={onCopy}
-          className="inline-flex min-h-9 shrink-0 items-center gap-2 rounded-[10px] border border-[#262A3A] px-3 text-[13px] font-bold text-[#D9DCEA] transition-colors hover:border-[#7657FF]/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7657FF]/60"
-          aria-label={copied ? "Address copied" : "Copy wallet address"}
-        >
-          {copied ? <Check className="h-4 w-4 text-[#25C9A0]" /> : <Copy className="h-4 w-4" />}
-          {copied ? "Copied" : "Copy"}
-        </button>
+        <CopyPill copied={copied} onClick={onCopy} label="address" />
       </div>
       <button
         type="button"
@@ -987,22 +943,6 @@ function WalletAddress({ address, network, copied, onCopy }: {
         {address}
       </button>
     </div>
-  );
-}
-
-function PaymentActions({ onCancel, cancelling }: {
-  onCancel: () => void;
-  cancelling: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onCancel}
-      disabled={cancelling}
-      className="min-h-11 w-full rounded-[12px] border border-[#F06472]/35 px-4 text-[14px] font-bold text-[#F06472] transition-colors hover:bg-[#F06472]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F06472]/50 disabled:opacity-50"
-    >
-      {cancelling ? "Cancelling..." : "Cancel invoice"}
-    </button>
   );
 }
 
