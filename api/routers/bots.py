@@ -744,6 +744,177 @@ async def set_bot_mode(name: str, body: SetModeRequest):
     }
 
 
+class ChangePlanRequest(BaseModel):
+    plan_id: str
+    mode: str                        # "starter" | "enterprise"
+    session_strategy: str = "keep"   # "keep" (top up / trim current) | "fresh" (release pool accounts, re-pull)
+
+
+@router.post("/{name}/plan")
+async def change_bot_plan(name: str, body: ChangePlanRequest):
+    """Move a bot to a different plan tier (upgrade or downgrade, any mode). Applies the plan's
+    cycle/gap/mode and reconciles the account count against the free pool. All account moves are
+    reversible — removed accounts are returned to the pool (never deleted) via the locked pool
+    helpers, so an account can never bind to two bots. Returns a step log for the UI progress view."""
+    from code.utils import claim_free_session, move_session_to_bucket
+    from code.chatlist import default_group_file_for_mode
+    from code import config as app_config
+
+    mode = (body.mode or "").strip().lower()
+    if mode not in ("starter", "enterprise"):
+        raise HTTPException(400, "mode must be 'starter' or 'enterprise'")
+    strategy = (body.session_strategy or "keep").strip().lower()
+    if strategy not in ("keep", "fresh"):
+        raise HTTPException(400, "session_strategy must be 'keep' or 'fresh'")
+
+    plans = await wrappers.load_plans()
+    target = next(
+        (p for p in (plans.get(mode) or []) if str(p.get("id", "")).strip().lower() == body.plan_id.strip().lower()),
+        None,
+    )
+    if not target:
+        raise HTTPException(404, f"Plan '{body.plan_id}' not found in {mode}")
+
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    target_sessions = int(target.get("sessions") or 0)
+    if target_sessions < 1:
+        raise HTTPException(400, "That plan has no account count configured.")
+
+    steps: list[dict] = []
+    def step(s: str, detail: str = "", ok: bool = True) -> None:
+        steps.append({"step": s, "detail": detail, "ok": ok})
+
+    title = mode.capitalize()
+    new_cycle = int(target.get("cycle") or cfg.get("cycle") or 300)
+    new_gap = int(target.get("gap") if target.get("gap") is not None else cfg.get("gap", 5))
+
+    # 1. Apply plan config (renewal price then follows the new plan automatically).
+    cfg["plan_name"] = target.get("id", "")
+    cfg["plan"] = {**target, "mode": title, "name": target.get("id", "")}
+    cfg["mode"] = title
+    cfg["plan_mode"] = title
+    cfg["cycle"] = new_cycle
+    cfg["gap"] = new_gap
+    step("Applied plan", f"{target.get('id')} · {title} · cycle {new_cycle}s · gap {new_gap}s")
+
+    # 2. Group file — swap only when on a mode default (custom chatlist preserved).
+    current_gf = (cfg.get("group_file") or "").strip()
+    defaults = {app_config.DEFAULT_GROUP_FILE_STARTER, app_config.DEFAULT_GROUP_FILE_ENTERPRISE}
+    if (current_gf in defaults) or not current_gf:
+        new_gf = default_group_file_for_mode(title)
+        if new_gf != current_gf:
+            cfg["group_file"] = new_gf
+            step("Group file", f"Switched to {new_gf}")
+        else:
+            step("Group file", f"{new_gf}")
+    else:
+        step("Group file", "Kept custom group list")
+
+    def is_uploaded(fn: str) -> bool:
+        return str(fn or "").startswith("users/")
+
+    sessions = cfg.get("sessions") or []
+
+    # 3a. "fresh": release admin-pool accounts back to the pool; keep user-uploaded ones.
+    if strategy == "fresh":
+        released = 0
+        kept = []
+        for s in sessions:
+            fn = s.get("file")
+            if fn and not is_uploaded(fn):
+                await asyncio.to_thread(move_session_to_bucket, fn, "free_sessions")
+                released += 1
+            else:
+                kept.append(s)
+        sessions = kept
+        cfg["sessions"] = sessions
+        if released:
+            step("Released accounts", f"{released} returned to the pool for a fresh set")
+
+    # 3b. Reconcile count against the pool.
+    current = len(sessions)
+    disabled = set(cfg.get("disabled_sessions") or [])
+
+    if target_sessions > current:
+        need = target_sessions - current
+        added = 0
+        for _ in range(need):
+            fn = await asyncio.to_thread(claim_free_session)
+            if not fn:
+                step("Pool empty", f"Added {added} of {need} — no more free accounts in the pool.", ok=False)
+                break
+            entry = {"file": fn, "real_name": "", "user_id": 0, "index": len(sessions) + 1}
+            client, _err = await _connect_session(fn)
+            if client:
+                try:
+                    me = await client.get_me()
+                    if me:
+                        entry["real_name"] = f"{me.first_name or ''} {me.last_name or ''}".strip()
+                        entry["user_id"] = me.id
+                except Exception:
+                    pass
+                finally:
+                    await client.disconnect()
+            sessions.append(entry)
+            added += 1
+        cfg["sessions"] = sessions
+        if added:
+            step("Added accounts", f"{added} pulled from the pool")
+    elif target_sessions < current:
+        remove_n = current - target_sessions
+        to_remove: list[dict] = []
+        # Disabled accounts first, then the highest-index accounts.
+        for s in sessions:
+            if len(to_remove) >= remove_n:
+                break
+            if s.get("file") in disabled:
+                to_remove.append(s)
+        for s in sorted((s for s in sessions if s not in to_remove), key=lambda s: s.get("index") or 0, reverse=True):
+            if len(to_remove) >= remove_n:
+                break
+            to_remove.append(s)
+        remove_files = {s.get("file") for s in to_remove}
+        for s in to_remove:
+            fn = s.get("file")
+            if fn and not is_uploaded(fn):
+                await asyncio.to_thread(move_session_to_bucket, fn, "free_sessions")
+        cfg["sessions"] = [s for s in sessions if s.get("file") not in remove_files]
+        cfg["disabled_sessions"] = [f for f in (cfg.get("disabled_sessions") or []) if f not in remove_files]
+        step("Removed accounts", f"{len(to_remove)} trimmed to match the plan (returned to the pool)")
+    else:
+        step("Accounts", f"Already at {target_sessions} — no change")
+
+    # Re-index so accounts are 1..N contiguous.
+    for i, s in enumerate(cfg.get("sessions") or [], start=1):
+        s["index"] = i
+
+    await wrappers.save_user_data(name, cfg)
+
+    # A live bot must re-read plan/mode/accounts — cycle-preserving restart.
+    applied = "on_next_start"
+    if _bot_is_live(cfg):
+        token = await wrappers.get_token_by_name(name)
+        if token:
+            from code.admin_ptb import submit_main_loop_job
+            submit_main_loop_job("restart_bot_preserve", (token,))
+            applied = "live"
+    step("Restart", "Cycle-preserving restart queued" if applied == "live" else "Applies on next start")
+
+    await wrappers.log_admin_action("web_admin", "change_plan", target=f"{name} → {mode}/{target.get('id')}")
+    return {
+        "status": "updated",
+        "mode": title,
+        "plan_name": cfg.get("plan_name", ""),
+        "sessions_count": len(cfg.get("sessions") or []),
+        "applied": applied,
+        "steps": steps,
+        "message": f"Moved to {target.get('id')} ({title}).",
+    }
+
+
 @router.get("/{name}/stats")
 async def get_bot_stats(name: str):
     token = await wrappers.get_token_by_name(name)

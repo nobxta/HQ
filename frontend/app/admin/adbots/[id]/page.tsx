@@ -3165,6 +3165,7 @@ function PlanTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: ()
     },
   });
   const [saving, setSaving] = useState(false);
+  const [planModal, setPlanModal] = useState(false);
 
   const onSubmit = async (data: any) => {
     setSaving(true);
@@ -3184,7 +3185,7 @@ function PlanTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: ()
     <div className="space-y-5">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <HqCard className="p-5">
-          <HqTitle>Current Plan</HqTitle>
+          <HqTitle right={<HqBtn tone="secondary" icon={ArrowRightLeft} onClick={() => setPlanModal(true)} className="!py-1.5 !text-[12px]">Change plan</HqBtn>}>Current Plan</HqTitle>
           <div className="divide-y divide-hq-border/60">
             {([
               ["Plan Name", bot.plan_name || "—"],
@@ -3217,6 +3218,8 @@ function PlanTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: ()
           </div>
         </HqCard>
       )}
+
+      {planModal && <ChangePlanModal name={name} bot={bot} onClose={() => setPlanModal(false)} onDone={onUpdate} />}
     </div>
   );
 }
@@ -3299,6 +3302,148 @@ function RenewalPricingCard({ name, bot, onUpdate }: { name: string; bot: any; o
         <HqBtn onClick={save} loading={saving} disabled={!dirty} icon={Save}>Save pricing</HqBtn>
       </div>
     </HqCard>
+  );
+}
+
+/* Upgrade / downgrade a bot to another plan tier. Picks a plan from the catalog, chooses how to
+   reconcile accounts, then shows the backend's step log as a live progress checklist. */
+function ChangePlanModal({ name, bot, onClose, onDone }: { name: string; bot: any; onClose: () => void; onDone: () => void }) {
+  const [catalog, setCatalog] = useState<Record<string, any[]> | null>(null);
+  const [mode, setMode] = useState<"starter" | "enterprise">(
+    ((bot.plan?.mode || bot.mode || "starter").toString().toLowerCase() === "enterprise") ? "enterprise" : "starter"
+  );
+  const [planId, setPlanId] = useState<string>("");
+  const [strategy, setStrategy] = useState<"keep" | "fresh">("keep");
+  const [phase, setPhase] = useState<"select" | "running" | "done">("select");
+  const [steps, setSteps] = useState<any[]>([]);
+
+  const currentSessions = bot.sessions_count ?? (bot.sessions?.length ?? bot.plan?.sessions ?? 0);
+  const currentPlanId = (bot.plan_name || "").toString().toLowerCase();
+
+  useEffect(() => {
+    api.get("/api/system/plans").then((r) => setCatalog(r.data)).catch(() => setCatalog({}));
+  }, []);
+
+  const plans = (catalog?.[mode] || []);
+  const selected = plans.find((p) => String(p.id) === planId);
+  const targetSessions = selected ? Number(selected.sessions || 0) : null;
+  const diff = targetSessions != null ? targetSessions - currentSessions : 0;
+
+  const submit = async () => {
+    if (!selected) { toast.error("Pick a plan"); return; }
+    setPhase("running");
+    setSteps([]);
+    try {
+      const { data } = await api.post(`/api/bots/${encodeURIComponent(name)}/plan`,
+        { plan_id: selected.id, mode, session_strategy: strategy }, { timeout: 180000 });
+      setSteps(data.steps || []);
+      setPhase("done");
+      toast.success(data.message || "Plan changed");
+      onDone();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Plan change failed");
+      setPhase("select");
+    }
+  };
+
+  return (
+    <Modal open onClose={phase === "running" ? () => {} : onClose} title="Change plan" size="lg">
+      {phase === "done" ? (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 text-hq-success">
+            <CheckCircle2 className="h-5 w-5" />
+            <span className="text-[14px] font-semibold text-hq-text">Plan updated</span>
+          </div>
+          <div className="rounded-[12px] border border-hq-border bg-hq-bg divide-y divide-hq-border/50">
+            {steps.map((s, i) => (
+              <div key={i} className="flex items-start gap-2.5 px-3.5 py-2.5">
+                {s.ok === false
+                  ? <AlertTriangle className="h-4 w-4 text-hq-warning shrink-0 mt-0.5" />
+                  : <CheckCircle2 className="h-4 w-4 text-hq-success shrink-0 mt-0.5" />}
+                <div className="min-w-0">
+                  <p className="text-[13px] text-hq-text">{s.step}</p>
+                  {s.detail && <p className="text-[12px] text-hq-muted">{s.detail}</p>}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="flex justify-end"><HqBtn onClick={onClose}>Done</HqBtn></div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {/* Mode toggle */}
+          <div className="flex items-center gap-1 p-1 rounded-[12px] border border-hq-border bg-hq-bg w-fit">
+            {(["starter", "enterprise"] as const).map((m) => (
+              <button key={m} onClick={() => { setMode(m); setPlanId(""); }} disabled={phase === "running"}
+                className={`px-3.5 py-1.5 text-[13px] font-medium rounded-[9px] transition-colors capitalize ${mode === m ? "bg-hq-accent text-white" : "text-hq-muted hover:text-hq-text"}`}>
+                {m}
+              </button>
+            ))}
+          </div>
+
+          {/* Plan cards */}
+          {catalog === null ? (
+            <div className="flex items-center gap-2 py-8 justify-center text-hq-muted text-[13px]"><Loader2 className="h-5 w-5 animate-spin" /> Loading plans…</div>
+          ) : plans.length === 0 ? (
+            <p className="text-[13px] text-hq-muted py-6 text-center">No {mode} plans configured.</p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              {plans.map((p) => {
+                const active = String(p.id) === planId;
+                const isCurrent = String(p.id).toLowerCase() === currentPlanId && mode === ((bot.plan?.mode || bot.mode || "starter").toString().toLowerCase());
+                return (
+                  <button key={p.id} onClick={() => setPlanId(String(p.id))} disabled={phase === "running"}
+                    className={`text-left rounded-[14px] border p-3.5 transition-all ${active ? "border-hq-accent/60 bg-hq-accent/[0.08]" : "border-hq-border bg-hq-bg hover:border-white/15"}`}>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[13px] font-semibold text-hq-text capitalize">{p.id}</span>
+                      {isCurrent && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-hq-success/15 text-hq-success">Current</span>}
+                      {p.price_month != null && <span className="ml-auto text-[13px] text-hq-text tabular-nums">{formatUSD(Number(p.price_month))}<span className="text-[11px] text-hq-muted">/mo</span></span>}
+                    </div>
+                    <p className="text-[11px] text-hq-muted mt-1.5">
+                      {p.sessions} account{p.sessions === 1 ? "" : "s"} · cycle {p.cycle || bot.cycle}s · gap {p.gap ?? bot.gap}s
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Account reconciliation */}
+          {selected && (
+            <div className="space-y-2.5">
+              <p className="text-[12px] font-medium text-hq-sub">Accounts</p>
+              <div className="rounded-[12px] border border-hq-border bg-hq-bg px-3.5 py-3 text-[12px] text-hq-muted">
+                This bot has <span className="text-hq-text font-medium">{currentSessions}</span> account{currentSessions === 1 ? "" : "s"};
+                the plan needs <span className="text-hq-text font-medium">{targetSessions}</span>.{" "}
+                {diff > 0 ? <span className="text-hq-success">{diff} will be pulled from the pool.</span>
+                  : diff < 0 ? <span className="text-hq-warning">{-diff} will be returned to the pool.</span>
+                  : <span>No account change.</span>}
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {([
+                  { id: "keep" as const, label: "Keep current accounts", desc: "Top up or trim to match the plan." },
+                  { id: "fresh" as const, label: "Bring fresh accounts", desc: "Return pool accounts, pull a new set." },
+                ]).map((o) => (
+                  <button key={o.id} onClick={() => setStrategy(o.id)} disabled={phase === "running"}
+                    className={`text-left rounded-[12px] border p-3 transition-all ${strategy === o.id ? "border-hq-accent/60 bg-hq-accent/[0.08]" : "border-hq-border bg-hq-bg hover:border-white/15"}`}>
+                    <span className={`text-[12px] font-semibold ${strategy === o.id ? "text-hq-text" : "text-hq-sub"}`}>{o.label}</span>
+                    <p className="text-[11px] text-hq-muted mt-0.5">{o.desc}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between gap-2 pt-2 border-t border-hq-border">
+            <p className="text-[11px] text-hq-muted">No charge · validity unchanged · removed accounts return to the pool.</p>
+            <div className="flex items-center gap-2">
+              <HqBtn tone="ghost" onClick={onClose} disabled={phase === "running"}>Cancel</HqBtn>
+              <HqBtn onClick={submit} loading={phase === "running"} disabled={!selected} icon={ArrowRightLeft}>Apply plan</HqBtn>
+            </div>
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }
 
