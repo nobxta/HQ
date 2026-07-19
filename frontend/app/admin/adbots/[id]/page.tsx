@@ -755,16 +755,74 @@ function AccessTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: 
   );
 }
 
-/* ─── PAYMENTS (plan, pricing, renewal history) ─── */
+/* ─── PAYMENTS (real orders + subscription state) ─── */
+/* Order status → Badge tone (mirrors the global /admin/payments page). */
+function OrderStatusChip({ status }: { status: string }) {
+  const map: Record<string, [string, string]> = {
+    completed: ["#22C55E", "Completed"],
+    paid: ["#22C55E", "Paid"],
+    payment_waiting: ["#F59E0B", "Awaiting payment"],
+    confirming: ["#38BDF8", "Confirming"],
+    pending_creation: ["#7C5CFF", "Pending build"],
+    creating: ["#7C5CFF", "Building"],
+    expired: ["#64748B", "Expired"],
+    cancelled: ["#EF4444", "Cancelled"],
+    failed: ["#EF4444", "Failed"],
+  };
+  const [c, label] = map[status] || ["#64748B", status || "Unknown"];
+  return (
+    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold shrink-0"
+      style={{ color: c, backgroundColor: `${c}1f` }}>
+      <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: c }} />
+      {label}
+    </span>
+  );
+}
+
+const PENDING_PAY_STATES = ["payment_waiting", "confirming"];
+const PENDING_BUILD_STATES = ["pending_creation", "creating"];
+
 function PaymentsTab({ name, bot }: { name: string; bot: any }) {
   const plan = bot.plan || {};
   const daysLeft = daysUntil(bot.valid_till);
   const expired = daysLeft !== null && daysLeft < 0;
   const price = plan.price_month ?? plan.price_week ?? null;
 
-  // history may be a dict { renewals: [...] } or absent
-  const renewals: any[] = Array.isArray(bot.history?.renewals) ? bot.history.renewals
-    : Array.isArray(bot.renewal_history) ? bot.renewal_history : [];
+  const [orders, setOrders] = useState<any[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState<string>("");
+  const [confirmCancel, setConfirmCancel] = useState<string>("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.get(`/api/orders?bot_name=${encodeURIComponent(name)}&per_page=100`);
+      setOrders(data.items || []);
+    } catch {
+      setOrders([]);
+    }
+    setLoading(false);
+  }, [name]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const orderAction = async (orderId: string, action: "mark-paid" | "cancel" | "recreate" | "sync", label: string) => {
+    setBusy(`${orderId}:${action}`);
+    try {
+      const { data } = await api.post(`/api/orders/${encodeURIComponent(orderId)}/${action}`);
+      toast.success(data?.message || `${label} — done`);
+      await load();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || `${label} failed`);
+    }
+    setBusy("");
+    setConfirmCancel("");
+  };
+
+  const list = orders || [];
+  const completed = list.filter((o) => o.status === "completed");
+  const totalSpend = completed.reduce((sum, o) => sum + (Number(o.amount_usd) || 0), 0);
+  const pendingCount = list.filter((o) => [...PENDING_PAY_STATES, ...PENDING_BUILD_STATES, "paid"].includes(o.status)).length;
 
   const rows: [string, ReactNode][] = [
     ["Plan", fmt(bot.plan_name)],
@@ -803,36 +861,87 @@ function PaymentsTab({ name, bot }: { name: string; bot: any }) {
         </div>
       </HqCard>
 
-      <HqCard className="p-5">
-        <h3 className="text-[15px] font-semibold text-hq-text mb-2">Subscription details</h3>
-        <DetailGrid rows={rows} />
-      </HqCard>
+      {/* Billing totals */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3.5">
+        <MetricCard label="Lifetime spend" icon={DollarSign} tone="success" value={formatUSD(totalSpend)} sub={`${completed.length} completed order${completed.length === 1 ? "" : "s"}`} />
+        <MetricCard label="Orders" icon={CreditCard} tone="accent" value={list.length} sub={`${pendingCount} open / pending`} />
+        <MetricCard label="Validity" icon={Calendar} tone={daysLeft !== null && daysLeft <= 3 ? "danger" : "accent"}
+          value={daysLeft === null ? "—" : `${Math.max(daysLeft, 0)}d`} sub={bot.valid_till ? `Expires ${formatDate(bot.valid_till)}` : "Not set"} />
+      </div>
 
+      {/* Real orders / invoices */}
       <HqCard className="p-5">
-        <h3 className="text-[15px] font-semibold text-hq-text mb-4">Renewal history</h3>
-        {renewals.length === 0 ? (
-          <EmptyState icon={CreditCard} title="No renewal history" hint="Renewals and orders appear here once recorded." />
+        <HqTitle sub="Every order, renewal and invoice recorded for this bot"
+          right={<HqBtn tone="ghost" onClick={load} loading={loading} icon={RefreshCw}>Refresh</HqBtn>}>
+          Orders & invoices
+        </HqTitle>
+        {orders === null ? (
+          <div className="flex items-center gap-2 py-10 justify-center text-hq-muted text-[13px]"><Loader2 className="h-5 w-5 animate-spin" /> Loading orders…</div>
+        ) : list.length === 0 ? (
+          <EmptyState icon={CreditCard} title="No orders yet" hint="Orders, renewals and crypto invoices for this bot appear here." />
         ) : (
           <div className="overflow-x-auto -mx-1">
-            <table className="w-full text-[13px] min-w-[420px]">
+            <table className="w-full text-[13px] min-w-[720px]">
               <thead>
                 <tr className="text-left text-[11px] uppercase tracking-wide text-hq-muted border-b border-hq-border">
-                  {["Date", "Days added", "Order ID", "Source"].map((h) => <th key={h} className="px-2 py-2 font-medium">{h}</th>)}
+                  {["Date", "Status", "Type", "Amount", "Payment", "Actions"].map((h) => <th key={h} className="px-2.5 py-2 font-medium whitespace-nowrap">{h}</th>)}
                 </tr>
               </thead>
               <tbody className="divide-y divide-hq-border/50">
-                {[...renewals].reverse().map((r: any, i: number) => (
-                  <tr key={i}>
-                    <td className="px-2 py-2.5 text-hq-sub">{r.at ? formatDate(r.at) : "—"}</td>
-                    <td className="px-2 py-2.5 tabular-nums text-hq-text">{r.days ? `+${r.days}d` : "—"}</td>
-                    <td className="px-2 py-2.5 font-mono text-[12px] text-hq-muted">{fmt(r.order_id, "—")}</td>
-                    <td className="px-2 py-2.5 text-hq-muted">{fmt(r.source, "—")}</td>
-                  </tr>
-                ))}
+                {list.map((o: any, i: number) => {
+                  const readOnly = o.is_temppay || o.is_replacement;
+                  const canPay = !readOnly && PENDING_PAY_STATES.includes(o.status);
+                  const canBuild = !readOnly && PENDING_BUILD_STATES.includes(o.status);
+                  const canCancel = !readOnly && [...PENDING_PAY_STATES, ...PENDING_BUILD_STATES].includes(o.status);
+                  const amt = o.amount_usd != null && o.amount_usd !== "" ? formatUSD(Number(o.amount_usd)) : "—";
+                  const pay = o.tx_hash || o.payment_id || o.pay_address || "";
+                  return (
+                    <tr key={o.order_id || i} className="hover:bg-hq-hover transition-colors align-top">
+                      <td className="px-2.5 py-2.5 text-hq-sub whitespace-nowrap">{o.created_at ? formatDate(o.created_at) : "—"}</td>
+                      <td className="px-2.5 py-2.5"><OrderStatusChip status={o.status} /></td>
+                      <td className="px-2.5 py-2.5 text-hq-muted capitalize">{fmt(o.order_type, "—")}{o.is_temppay ? " · live invoice" : ""}</td>
+                      <td className="px-2.5 py-2.5 tabular-nums text-hq-text">
+                        {amt}
+                        {o.pay_currency && <span className="text-hq-muted text-[11px] ml-1 uppercase">{o.pay_amount ? `${o.pay_amount} ` : ""}{o.pay_currency}</span>}
+                        {o.coupon && <div className="text-[11px] text-hq-accent2 mt-0.5">Coupon {o.coupon}{o.coupon_percent ? ` −${o.coupon_percent}%` : ""}</div>}
+                      </td>
+                      <td className="px-2.5 py-2.5 max-w-[180px]">
+                        {pay ? (
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono text-[11px] text-hq-muted truncate">{pay}</span>
+                            <CopyBtn text={pay} />
+                          </div>
+                        ) : <span className="text-hq-muted">—</span>}
+                        {o.order_id && <div className="font-mono text-[10px] text-hq-muted/70 mt-0.5 truncate">#{o.order_id}</div>}
+                      </td>
+                      <td className="px-2.5 py-2.5">
+                        {readOnly ? (
+                          <span className="text-[11px] text-hq-muted">Read-only</span>
+                        ) : (canPay || canBuild || canCancel) ? (
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {canPay && <HqBtn tone="ghost" className="!py-1 !px-2 !text-[11px]" loading={busy === `${o.order_id}:sync`} onClick={() => orderAction(o.order_id, "sync", "Sync")} icon={RefreshCw}>Sync</HqBtn>}
+                            {canPay && <HqBtn tone="success" className="!py-1 !px-2 !text-[11px]" loading={busy === `${o.order_id}:mark-paid`} onClick={() => orderAction(o.order_id, "mark-paid", "Mark paid")} icon={CheckCircle}>Mark paid</HqBtn>}
+                            {canBuild && <HqBtn tone="secondary" className="!py-1 !px-2 !text-[11px]" loading={busy === `${o.order_id}:recreate`} onClick={() => orderAction(o.order_id, "recreate", "Recreate")} icon={RotateCw}>Recreate</HqBtn>}
+                            {canCancel && (confirmCancel === o.order_id ? (
+                              <HqBtn tone="danger" className="!py-1 !px-2 !text-[11px]" loading={busy === `${o.order_id}:cancel`} onClick={() => orderAction(o.order_id, "cancel", "Cancel")} icon={XCircle}>Confirm</HqBtn>
+                            ) : (
+                              <HqBtn tone="ghost" className="!py-1 !px-2 !text-[11px]" onClick={() => setConfirmCancel(o.order_id)} icon={Ban}>Cancel</HqBtn>
+                            ))}
+                          </div>
+                        ) : <span className="text-[11px] text-hq-muted">—</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
+      </HqCard>
+
+      <HqCard className="p-5">
+        <h3 className="text-[15px] font-semibold text-hq-text mb-2">Subscription details</h3>
+        <DetailGrid rows={rows} />
       </HqCard>
     </div>
   );
@@ -841,6 +950,7 @@ function PaymentsTab({ name, bot }: { name: string; bot: any }) {
 /* ─── ACTIONS (bot control + repair + danger zone) ─── */
 function ActionsTab({ name, bot, onUpdate, onDelete }: { name: string; bot: any; onUpdate: () => void; onDelete: () => void }) {
   const [busy, setBusy] = useState("");
+  const owner = bot.owner_id || 0;
 
   const control = async (action: string, label: string) => {
     setBusy(action);
@@ -850,6 +960,19 @@ function ActionsTab({ name, bot, onUpdate, onDelete }: { name: string; bot: any;
       onUpdate();
     } catch (e: any) {
       toast.error(e?.response?.data?.detail || `${label} failed`);
+    }
+    setBusy("");
+  };
+
+  // Freeze/unfreeze goes through the user-management endpoint (keyed by bot_name).
+  const setFrozen = async (freeze: boolean) => {
+    setBusy(freeze ? "freeze" : "unfreeze");
+    try {
+      await api.post(`/api/users/${owner}/freeze?bot_name=${encodeURIComponent(name)}&freeze=${freeze}`);
+      toast.success(freeze ? "Bot frozen" : "Bot unfrozen");
+      onUpdate();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || (freeze ? "Freeze failed" : "Unfreeze failed"));
     }
     setBusy("");
   };
@@ -873,8 +996,19 @@ function ActionsTab({ name, bot, onUpdate, onDelete }: { name: string; bot: any;
           {bot.suspended
             ? <HqBtn tone="secondary" icon={PlayCircle} loading={busy === "resume"} disabled={!!busy} onClick={() => control("resume", "Resume")}>Resume</HqBtn>
             : <HqBtn tone="secondary" icon={Pause} loading={busy === "suspend"} disabled={!!busy} onClick={() => control("suspend", "Suspend")}>Suspend</HqBtn>}
+          {bot.frozen
+            ? <HqBtn tone="secondary" icon={PlayCircle} loading={busy === "unfreeze"} disabled={!!busy} onClick={() => setFrozen(false)}>Unfreeze</HqBtn>
+            : <HqBtn tone="secondary" icon={Ban} loading={busy === "freeze"} disabled={!!busy} onClick={() => setFrozen(true)}>Freeze</HqBtn>}
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+          <HealthChip label="Posting" value={bot.running ? "Running" : "Stopped"} tone={bot.running ? "success" : "muted"} />
+          <HealthChip label="Suspended" value={bot.suspended ? "Yes — owner can't log in" : "No"} tone={bot.suspended ? "warning" : "success"} />
+          <HealthChip label="Frozen" value={bot.frozen ? "Yes — owner is read-only" : "No"} tone={bot.frozen ? "danger" : "success"} />
         </div>
       </HqCard>
+
+      {/* Grant free days */}
+      <GrantDaysCard name={name} owner={owner} bot={bot} onUpdate={onUpdate} />
 
       {/* Repair */}
       <RepairTab name={name} bot={bot} onUpdate={onUpdate} />
@@ -895,6 +1029,53 @@ function ActionsTab({ name, bot, onUpdate, onDelete }: { name: string; bot: any;
         </div>
       </div>
     </div>
+  );
+}
+
+/* Gift extra validity with no payment — extends valid_till via the user-extend endpoint. */
+function GrantDaysCard({ name, owner, bot, onUpdate }: { name: string; owner: number; bot: any; onUpdate: () => void }) {
+  const [days, setDays] = useState<string>("");
+  const [saving, setSaving] = useState(false);
+  const daysLeft = daysUntil(bot.valid_till);
+
+  const grant = async () => {
+    const n = parseInt(days, 10);
+    if (!n || n < 1) { toast.error("Enter a number of days (1 or more)"); return; }
+    setSaving(true);
+    try {
+      const { data } = await api.post(`/api/users/${owner}/extend?bot_name=${encodeURIComponent(name)}&days=${n}`);
+      toast.success(data?.message || `Added ${n} day${n === 1 ? "" : "s"}`);
+      setDays("");
+      onUpdate();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Failed to grant days");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <HqCard className="p-5">
+      <HqTitle sub="Extend validity for free — no invoice, no payment. Applied immediately.">Grant free days</HqTitle>
+      <div className="flex items-end gap-2 flex-wrap">
+        <div className="space-y-1.5">
+          <label className="block text-[12px] font-medium text-hq-sub">Days to add</label>
+          <input
+            type="number" min="1" step="1" inputMode="numeric"
+            className="w-40 rounded-[14px] border border-hq-border bg-hq-bg px-3 py-2 text-[13px] text-hq-text placeholder:text-hq-muted focus:outline-none focus:border-hq-accent/60 transition-colors tabular-nums"
+            placeholder="e.g. 3"
+            value={days}
+            onChange={(e) => setDays(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && grant()}
+          />
+        </div>
+        <HqBtn onClick={grant} loading={saving} disabled={!days.trim()} icon={Plus}>Grant days</HqBtn>
+        <span className="text-[12px] text-hq-muted pb-2.5">
+          {daysLeft !== null
+            ? (daysLeft >= 0 ? `Currently ${daysLeft}d left · expires ${formatDate(bot.valid_till)}` : `Expired ${formatDate(bot.valid_till)}`)
+            : "No expiry date set"}
+        </span>
+      </div>
+    </HqCard>
   );
 }
 
@@ -1484,6 +1665,20 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
     setActionLoading("");
   };
 
+  // Manually correct a session's health flag (does not move or delete the file).
+  const setSessionStatus = async (file: string, status: string) => {
+    setActionLoading(file);
+    try {
+      await api.post(`/api/bots/${encodeURIComponent(name)}/sessions/${encodeURIComponent(file)}/set-status`, { status });
+      toast.success(`${file.replace(".session", "")} marked ${status}`);
+      reloadOverview();
+      onUpdate();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Failed to set status");
+    }
+    setActionLoading("");
+  };
+
   const addSession = async (file: string) => {
     setActionLoading(file);
     try {
@@ -1751,6 +1946,22 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
                     <HqBtn tone="ghost" onClick={() => { fetchFreeSessions(); setShowReplace(s.file); }} icon={ArrowRightLeft} className="!py-1.5 !text-[11px] justify-center">Replace</HqBtn>
                     <HqBtn tone="ghost" onClick={() => openEdit(s)} icon={Edit} className="!py-1.5 !text-[11px] justify-center">Edit</HqBtn>
                     <HqBtn tone="ghost" onClick={() => setLogsFor(s.file)} icon={Terminal} className="!py-1.5 !text-[11px] justify-center">Logs</HqBtn>
+                  </div>
+                  {/* Manual health override — corrects the flag only, no file change */}
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] text-hq-muted shrink-0 inline-flex items-center gap-1"><Wrench className="h-3 w-3" />Set health</span>
+                    <select
+                      value=""
+                      disabled={busy}
+                      onChange={(e) => { const v = e.target.value; e.currentTarget.value = ""; if (v) setSessionStatus(s.file, v); }}
+                      className="flex-1 rounded-[10px] border border-hq-border bg-hq-bg px-2 py-1.5 text-[11px] text-hq-sub focus:outline-none focus:border-hq-accent/60 disabled:opacity-50"
+                    >
+                      <option value="">Override…</option>
+                      <option value="healthy">Healthy (clear flags)</option>
+                      <option value="limited">Limited</option>
+                      <option value="frozen">Frozen</option>
+                      <option value="dead">Dead</option>
+                    </select>
                   </div>
                   <HqBtn tone="danger" onClick={() => removeSession(s.file)} loading={busy} icon={Trash2} className="!py-1.5 !text-[12px] justify-center w-full">Remove</HqBtn>
                 </div>
@@ -2937,6 +3148,8 @@ function PlanTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: ()
         </HqCard>
       </div>
 
+      <RenewalPricingCard name={name} bot={bot} onUpdate={onUpdate} />
+
       {bot.authorized?.length > 0 && (
         <HqCard className="p-5">
           <HqTitle>Authorized Users</HqTitle>
@@ -2948,6 +3161,87 @@ function PlanTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: ()
         </HqCard>
       )}
     </div>
+  );
+}
+
+/* Per-bot renewal price override — blank falls back to the plan price. Backed by
+   PATCH /api/bots/{name} { renewal_prices: {7d, 30d} }; the renewal engine treats a
+   set value as an override and an empty value as "use the plan price". */
+function RenewalPricingCard({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: () => void }) {
+  const plan = bot.plan || {};
+  const overrides = bot.renewal_prices || {};
+  const planWeek = plan.price_week != null && plan.price_week !== "" ? Number(plan.price_week) : null;
+  const planMonth = plan.price_month != null && plan.price_month !== "" ? Number(plan.price_month) : null;
+
+  const [p7, setP7] = useState<string>(overrides["7d"] != null ? String(overrides["7d"]) : "");
+  const [p30, setP30] = useState<string>(overrides["30d"] != null ? String(overrides["30d"]) : "");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setP7(bot.renewal_prices?.["7d"] != null ? String(bot.renewal_prices["7d"]) : "");
+    setP30(bot.renewal_prices?.["30d"] != null ? String(bot.renewal_prices["30d"]) : "");
+  }, [bot?.name, JSON.stringify(bot?.renewal_prices)]);
+
+  const initial7 = overrides["7d"] != null ? String(overrides["7d"]) : "";
+  const initial30 = overrides["30d"] != null ? String(overrides["30d"]) : "";
+  const dirty = p7.trim() !== initial7 || p30.trim() !== initial30;
+
+  const save = async () => {
+    const clean = (v: string): number | null => {
+      const t = v.trim();
+      if (!t) return null;
+      const n = Number(t);
+      if (!isFinite(n) || n <= 0) return null;
+      return Math.round(n * 100) / 100;
+    };
+    setSaving(true);
+    try {
+      await api.patch(`/api/bots/${encodeURIComponent(name)}`, { renewal_prices: { "7d": clean(p7), "30d": clean(p30) } });
+      toast.success("Renewal pricing saved");
+      onUpdate();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Failed to save pricing");
+    }
+    setSaving(false);
+  };
+
+  const PriceRow = ({ label, value, setValue, planPrice }: { label: string; value: string; setValue: (v: string) => void; planPrice: number | null }) => {
+    const custom = value.trim() !== "";
+    return (
+      <div className="space-y-1.5">
+        <label className="block text-[12px] font-medium text-hq-sub">{label}</label>
+        <div className="relative">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[13px] text-hq-muted">$</span>
+          <input
+            type="number" min="0" step="0.01" inputMode="decimal"
+            className="w-full rounded-[14px] border border-hq-border bg-hq-bg pl-7 pr-3 py-2 text-[13px] text-hq-text placeholder:text-hq-muted focus:outline-none focus:border-hq-accent/60 transition-colors tabular-nums"
+            placeholder={planPrice != null ? planPrice.toFixed(2) : "Not set on plan"}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+          />
+        </div>
+        <span className={`inline-flex items-center gap-1.5 text-[11px] font-medium ${custom ? "text-hq-accent" : "text-hq-muted"}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${custom ? "bg-hq-accent" : "bg-hq-muted"}`} />
+          {custom
+            ? "Custom price"
+            : planPrice != null ? `Using plan price · ${formatUSD(planPrice)}` : "No plan price configured"}
+        </span>
+      </div>
+    );
+  };
+
+  return (
+    <HqCard className="p-5">
+      <HqTitle sub="Override what this bot's owner pays to renew. Leave blank to use the plan's normal price.">Renewal pricing</HqTitle>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <PriceRow label="7-day renewal" value={p7} setValue={setP7} planPrice={planWeek} />
+        <PriceRow label="30-day renewal" value={p30} setValue={setP30} planPrice={planMonth} />
+      </div>
+      <div className="flex items-center justify-end gap-2 mt-4">
+        {dirty && <span className="text-[12px] text-hq-muted">Unsaved changes</span>}
+        <HqBtn onClick={save} loading={saving} disabled={!dirty} icon={Save}>Save pricing</HqBtn>
+      </div>
+    </HqCard>
   );
 }
 

@@ -92,6 +92,7 @@ async def list_orders(
     status: str = Query(None),
     user_id: int = Query(None),
     order_type: str = Query(None),
+    bot_name: str = Query(None),
     pagination: Pagination = Depends(),
 ):
     orders = await _all_payment_rows()
@@ -102,6 +103,8 @@ async def list_orders(
         if user_id and o.get("user_id") != user_id:
             continue
         if order_type and o.get("order_type") != order_type:
+            continue
+        if bot_name and o.get("bot_name") != bot_name:
             continue
         results.append(serialize_order(o))
 
