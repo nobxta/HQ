@@ -675,6 +675,75 @@ async def notify_owner(name: str, body: NotifyOwnerRequest):
     return {"status": "sent", "message": "Notification sent to the owner"}
 
 
+class SetModeRequest(BaseModel):
+    mode: str  # "starter" | "enterprise"
+
+
+@router.post("/{name}/mode")
+async def set_bot_mode(name: str, body: SetModeRequest):
+    """Switch a bot between Starter and Enterprise. Group assignment and timing are recomputed
+    from cfg["mode"] every cycle (Starter: all accounts post the same ≤80 groups, time-shifted;
+    Enterprise: all groups sharded across accounts), so this only rewrites the mode fields and,
+    when the bot is on a default group file, swaps it to the new mode's default — a custom
+    chatlist/group file is preserved. A live bot gets a cycle-preserving restart to re-read it."""
+    new_mode = (body.mode or "").strip().lower()
+    if new_mode not in ("starter", "enterprise"):
+        raise HTTPException(400, "mode must be 'starter' or 'enterprise'")
+
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' not found")
+
+    from code.user_config import get_plan_mode
+    if get_plan_mode(cfg).lower() == new_mode:
+        return {"status": "unchanged", "mode": new_mode.capitalize(), "message": f"Already on {new_mode.capitalize()} mode"}
+
+    title = new_mode.capitalize()  # canonical "Starter" / "Enterprise"
+
+    # get_plan_mode reads plan.mode > mode > plan_mode, so update every source.
+    cfg["mode"] = title
+    cfg["plan_mode"] = title
+    if isinstance(cfg.get("plan"), dict):
+        cfg["plan"]["mode"] = title
+
+    # Swap the group file ONLY when it's currently a mode default, so a custom chatlist survives.
+    from code.chatlist import default_group_file_for_mode
+    from code import config as app_config
+    current_gf = (cfg.get("group_file") or "").strip()
+    defaults = {app_config.DEFAULT_GROUP_FILE_STARTER, app_config.DEFAULT_GROUP_FILE_ENTERPRISE}
+    on_default = (current_gf in defaults) or not current_gf
+    group_file_changed = False
+    if on_default:
+        cfg["group_file"] = default_group_file_for_mode(title)
+        group_file_changed = cfg["group_file"] != current_gf
+
+    await wrappers.save_user_data(name, cfg)
+
+    # A running bot must re-read mode/groups — queue a cycle-preserving restart (same as disable/enable).
+    applied = "on_next_start"
+    if _bot_is_live(cfg):
+        token = await wrappers.get_token_by_name(name)
+        if token:
+            from code.admin_ptb import submit_main_loop_job
+            submit_main_loop_job("restart_bot_preserve", (token,))
+            applied = "live"
+
+    await wrappers.log_admin_action("web_admin", "set_mode", target=f"{name} → {title}")
+    if group_file_changed:
+        note = f" Group file switched to {cfg['group_file']}."
+    elif not on_default:
+        note = " Your custom group list was kept."
+    else:
+        note = ""
+    return {
+        "status": "updated",
+        "mode": title,
+        "group_file": cfg.get("group_file", ""),
+        "applied": applied,
+        "message": f"Switched to {title} mode.{note}",
+    }
+
+
 @router.get("/{name}/stats")
 async def get_bot_stats(name: str):
     token = await wrappers.get_token_by_name(name)

@@ -3357,6 +3357,80 @@ function ConfigTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: 
   );
 }
 
+/* Switch a bot between Starter and Enterprise. The backend rewrites the mode fields (and swaps
+   the group file only if it's a mode default), then cycle-preserving-restarts a live bot so the
+   new sharding/timing takes effect. Confirm-gated because it changes how posting is distributed. */
+function ModeSwitchCard({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: () => void }) {
+  const current: string = (bot.plan?.mode || bot.mode || "starter").toString().toLowerCase();
+  const [pending, setPending] = useState<"" | "starter" | "enterprise">("");
+  const [saving, setSaving] = useState(false);
+
+  const apply = async (mode: "starter" | "enterprise") => {
+    setSaving(true);
+    try {
+      const { data } = await api.post(`/api/bots/${encodeURIComponent(name)}/mode`, { mode }, { timeout: 60000 });
+      toast.success(data?.message || `Switched to ${mode}`);
+      setPending("");
+      onUpdate();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Failed to switch mode");
+    }
+    setSaving(false);
+  };
+
+  const MODES = [
+    { id: "starter" as const, label: "Starter", icon: Zap, desc: "All accounts post the same groups (max 80), time-shifted across accounts." },
+    { id: "enterprise" as const, label: "Enterprise", icon: Server, desc: "All groups are split across accounts — each account posts its own shard." },
+  ];
+
+  return (
+    <HqCard className="p-5">
+      <HqTitle sub="How posting is distributed across the bot's accounts. Switching re-shards and re-times automatically.">Posting mode</HqTitle>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {MODES.map((m) => {
+          const active = current === m.id;
+          return (
+            <button
+              key={m.id}
+              type="button"
+              disabled={active || saving}
+              onClick={() => setPending(m.id)}
+              className={`text-left rounded-[14px] border p-3.5 transition-all disabled:cursor-default ${
+                active ? "border-hq-accent/60 bg-hq-accent/[0.08]" : "border-hq-border bg-hq-bg hover:border-white/15"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <m.icon className={`h-4 w-4 ${active ? "text-hq-accent" : "text-hq-sub"}`} strokeWidth={1.75} />
+                <span className={`text-[13px] font-semibold ${active ? "text-hq-text" : "text-hq-sub"}`}>{m.label}</span>
+                {active && <span className="ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-hq-success/15 text-hq-success">In use</span>}
+              </div>
+              <p className="text-[11px] text-hq-muted mt-1.5">{m.desc}</p>
+            </button>
+          );
+        })}
+      </div>
+
+      {pending && pending !== current && (
+        <div className="mt-3 rounded-[12px] border border-hq-warning/25 bg-hq-warning/[0.06] px-4 py-3">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="h-4 w-4 text-hq-warning shrink-0 mt-0.5" strokeWidth={1.75} />
+            <div className="min-w-0 flex-1">
+              <p className="text-[13px] font-medium text-hq-text">Switch to {cap(pending)} mode?</p>
+              <p className="text-[12px] text-hq-muted mt-0.5">
+                Posting distribution changes immediately. If this bot uses a default group file it will swap to the {cap(pending)} default; a custom chatlist is kept. A running bot restarts without losing its cycle.
+              </p>
+              <div className="flex items-center gap-2 mt-3">
+                <HqBtn tone="primary" loading={saving} onClick={() => apply(pending)} icon={ArrowRightLeft}>Confirm switch</HqBtn>
+                <HqBtn tone="ghost" onClick={() => setPending("")} disabled={saving}>Cancel</HqBtn>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </HqCard>
+  );
+}
+
 /* ─── SETTINGS (wraps General/Plan/Stats/Logs/Repair) ─── */
 const SETTINGS_SUBTABS = [
   { id: "general", label: "General", icon: Settings },
@@ -3388,7 +3462,12 @@ function SettingsTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
         ))}
       </div>
 
-      {sub === "general" && <ConfigTab name={name} bot={bot} onUpdate={onUpdate} />}
+      {sub === "general" && (
+        <div className="space-y-5">
+          <ModeSwitchCard name={name} bot={bot} onUpdate={onUpdate} />
+          <ConfigTab name={name} bot={bot} onUpdate={onUpdate} />
+        </div>
+      )}
       {sub === "plan" && <PlanTab name={name} bot={bot} onUpdate={onUpdate} />}
       {sub === "stats" && <StatsTab name={name} />}
     </div>
