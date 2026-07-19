@@ -1,4 +1,5 @@
 import axios from "axios";
+import toast from "react-hot-toast";
 import { getApiBase, applyBackend } from "./api-base";
 
 const portalApi = axios.create({
@@ -26,6 +27,20 @@ portalApi.interceptors.response.use(
     if (error?.response?.status === 401 && typeof window !== "undefined") {
       localStorage.removeItem("portal_session");
       window.location.href = "/login";
+    }
+    // Frozen bot: the server blocks every action with a marked 403. Show one clean
+    // "read-only" notice (deduped) and strip the marker so component catches read nicely.
+    const detail = error?.response?.data?.detail;
+    if (
+      error?.response?.status === 403 &&
+      typeof detail === "string" &&
+      detail.startsWith("BOT_FROZEN:")
+    ) {
+      const msg = detail.replace(/^BOT_FROZEN:\s*/, "");
+      if (typeof window !== "undefined") {
+        toast.error(msg, { id: "bot-frozen", duration: 6000, icon: "🧊" });
+      }
+      if (error.response?.data) error.response.data.detail = msg;
     }
     return Promise.reject(error);
   }

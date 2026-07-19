@@ -68,7 +68,13 @@ function LoginContent() {
         }
       }
     } catch (e: any) {
-      setError(e?.response?.data?.detail || "Invalid code");
+      // Suspended bots are refused at login with a marked 403 — show the plain message.
+      const detail: string = e?.response?.data?.detail || "";
+      if (typeof detail === "string" && detail.startsWith("BOT_SUSPENDED:")) {
+        setError(detail.replace(/^BOT_SUSPENDED:\s*/, ""));
+      } else {
+        setError(detail || "Invalid code");
+      }
       setAutoLogging(false);
       setLoading(false);
     }

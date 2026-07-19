@@ -190,6 +190,24 @@ def _ensure_not_expired(cfg: dict) -> None:
         raise HTTPException(403, "Your plan has expired. Renew to continue.")
 
 
+# Stable marker the portal frontend matches to show the "frozen — read-only" popup
+# instead of a generic error toast. Keep this prefix in sync with the client check.
+FROZEN_ERROR = "BOT_FROZEN: This bot has been frozen by an administrator. It is read-only — you can view everything, but actions are disabled. Please contact support."
+
+# Login is refused outright for a suspended bot (unlike frozen, which allows read-only access).
+SUSPENDED_ERROR = "BOT_SUSPENDED: This account has been suspended and cannot be accessed. Please contact support."
+
+
+def _ensure_not_frozen(cfg: dict) -> None:
+    """Hard server-side gate for a frozen bot. A frozen bot is fully viewable (logs, stats,
+    orders, sessions) but NO action may change its state — start/stop, posting content,
+    groups/chatlist, health checks, replacements, profile edits or renewals are all rejected.
+    Only an admin can unfreeze. This is the real enforcement; the portal also greys out the
+    controls, but even a hand-crafted request fails closed here."""
+    if cfg and cfg.get("frozen"):
+        raise HTTPException(403, FROZEN_ERROR)
+
+
 async def _get_user_bots(telegram_id: int) -> list:
     """Find all bots a user is authorized on."""
     data = await wrappers.load_adbot()
@@ -231,6 +249,8 @@ async def portal_login_token(body: PortalTokenLoginRequest, request: Request):
     for bot_token, cfg in data.get("bots", {}).items():
         wt = cfg.get("web_token", "")
         if wt and wt == token_input:
+            if cfg.get("suspended"):
+                raise HTTPException(403, SUSPENDED_ERROR)
             owner_id = cfg.get("owner_id", 0)
             bot_name = cfg.get("name", "")
             subject = f"user:{owner_id}:{bot_name}"
@@ -282,6 +302,8 @@ async def unified_login(body: UnifiedLoginRequest, request: Request):
     for bot_token, cfg in data.get("bots", {}).items():
         wt = cfg.get("web_token", "")
         if wt and wt == code:
+            if cfg.get("suspended"):
+                raise HTTPException(403, SUSPENDED_ERROR)
             owner_id = cfg.get("owner_id", 0)
             bot_name = cfg.get("name", "")
             subject = f"user:{owner_id}:{bot_name}"
@@ -493,6 +515,7 @@ async def portal_start_bot(bot_name: str, telegram_id: int = Query(...)):
     from api.services.events import emit_bot_control
     token, cfg = await _get_user_bot(telegram_id, bot_name)
     _ensure_not_expired(cfg)
+    _ensure_not_frozen(cfg)
     name = cfg.get("name", bot_name)
 
     emit_bot_control(name, "Initializing start...", status="progress", action="start")
@@ -529,6 +552,7 @@ async def portal_start_bot(bot_name: str, telegram_id: int = Query(...)):
 async def portal_stop_bot(bot_name: str, telegram_id: int = Query(...)):
     from api.services.events import emit_bot_control
     token, cfg = await _get_user_bot(telegram_id, bot_name)
+    _ensure_not_frozen(cfg)
     name = cfg.get("name", bot_name)
 
     emit_bot_control(name, "Stopping bot...", status="progress", action="stop")
@@ -547,6 +571,7 @@ async def portal_stop_bot(bot_name: str, telegram_id: int = Query(...)):
 async def portal_update_message(bot_name: str, telegram_id: int = Query(...), body: PortalUpdateMessage = ...):
     token, cfg = await _get_user_bot(telegram_id, bot_name)
     _ensure_not_expired(cfg)
+    _ensure_not_frozen(cfg)
     name = cfg.get("name", bot_name)
     full_cfg = await wrappers.load_user_data(name)
     if body.message_text is not None:
@@ -563,6 +588,7 @@ async def portal_update_message(bot_name: str, telegram_id: int = Query(...), bo
 async def portal_update_links(bot_name: str, telegram_id: int = Query(...), body: PortalUpdateLinks = ...):
     token, cfg = await _get_user_bot(telegram_id, bot_name)
     _ensure_not_expired(cfg)
+    _ensure_not_frozen(cfg)
     name = cfg.get("name", bot_name)
     full_cfg = await wrappers.load_user_data(name)
     full_cfg["post_links"] = body.post_links[:10]
@@ -574,6 +600,7 @@ async def portal_update_links(bot_name: str, telegram_id: int = Query(...), body
 async def portal_update_settings(bot_name: str, telegram_id: int = Query(...), body: PortalUpdateSettings = ...):
     token, cfg = await _get_user_bot(telegram_id, bot_name)
     _ensure_not_expired(cfg)
+    _ensure_not_frozen(cfg)
     name = cfg.get("name", bot_name)
     full_cfg = await wrappers.load_user_data(name)
     if body.cycle is not None:
@@ -601,6 +628,7 @@ async def portal_update_autoreply(bot_name: str, telegram_id: int = Query(...), 
     from code import dm_inbox as _dm
     token, cfg = await _get_user_bot(telegram_id, bot_name)
     _ensure_not_expired(cfg)
+    _ensure_not_frozen(cfg)
     name = cfg.get("name", bot_name)
     full_cfg = await wrappers.load_user_data(name)
     ar = dict(full_cfg.get("dm_autoreply") or {})
@@ -662,6 +690,7 @@ async def portal_mark_dm_read(bot_name: str, msg_id: str, telegram_id: int = Que
 async def portal_update_auth(bot_name: str, telegram_id: int = Query(...), body: PortalUpdateAuth = ...):
     token, cfg = await _get_user_bot(telegram_id, bot_name)
     _ensure_not_expired(cfg)
+    _ensure_not_frozen(cfg)
     name = cfg.get("name", bot_name)
     full_cfg = await wrappers.load_user_data(name)
     if telegram_id not in body.authorized:
@@ -702,6 +731,7 @@ async def portal_update_groups(bot_name: str, telegram_id: int = Query(...), bod
     await _get_user_bot(telegram_id, bot_name)
     cfg = await wrappers.load_user_data(bot_name)
     _ensure_not_expired(cfg or {})
+    _ensure_not_frozen(cfg or {})
     name = cfg.get("name", bot_name)
     group_file = (cfg or {}).get("group_file", "")
     if not group_file:
@@ -721,6 +751,7 @@ async def portal_update_groups(bot_name: str, telegram_id: int = Query(...), bod
 async def portal_update_chatlist(bot_name: str, telegram_id: int = Query(...), body: PortalUpdateChatlist = ...):
     token, cfg = await _get_user_bot(telegram_id, bot_name)
     _ensure_not_expired(cfg)
+    _ensure_not_frozen(cfg)
     name = cfg.get("name", bot_name)
     full_cfg = await wrappers.load_user_data(name)
 
@@ -820,6 +851,7 @@ async def portal_renewal_options(bot_name: str, telegram_id: int = Query(...)):
 async def portal_create_renewal(bot_name: str, telegram_id: int = Query(...), body: PortalRenewRequest = ...):
     """Create a renewal order with NowPayments invoice. Returns payment details."""
     token, cfg = await _get_user_bot(telegram_id, bot_name)
+    _ensure_not_frozen(cfg)
     name = cfg.get("name", bot_name)
 
     if body.duration_days not in (7, 30):
@@ -1042,6 +1074,7 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
     _log.info("DIAGNOSE called: bot=%s telegram_id=%s files=%s", bot_name, telegram_id, body.session_files)
 
     bot_token, cfg = await _get_user_bot(telegram_id, bot_name)
+    _ensure_not_frozen(cfg)
     from code.repair import check_sessions_health_parallel, SPAM_ACTIVE, SPAM_TEMP_LIMITED, SPAM_HARD_LIMITED, SPAM_FROZEN
     from code.utils import load_stats, save_stats, get_name_by_token
     from code import config as app_config
@@ -1295,6 +1328,7 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
     _log.info("▶ REPLACE called: bot=%s telegram_id=%s files=%s", bot_name, telegram_id, body.session_files)
 
     bot_token, cfg = await _get_user_bot(telegram_id, bot_name)
+    _ensure_not_frozen(cfg)
     from code.replacement import (
         detect_failing_sessions,
         create_replacement_request,
@@ -1586,6 +1620,7 @@ async def portal_update_account_profile(
 ):
     """Update Telegram profile (name, bio, username, photo) for a session account."""
     bot_token, cfg = await _get_user_bot(telegram_id, bot_name)
+    _ensure_not_frozen(cfg)
     # Verify session belongs to this bot
     session_files = [s.get("file", "") for s in cfg.get("sessions", [])]
     if session_file not in session_files:
@@ -1766,7 +1801,8 @@ async def portal_replacement_create_invoice(
     bot_name: str, body: ReplacementPayRequest, telegram_id: int = Query(...)
 ):
     """Create a NOWPayments invoice for a pending_payment replacement entry."""
-    await _get_user_bot(telegram_id, bot_name)
+    _token, cfg = await _get_user_bot(telegram_id, bot_name)
+    _ensure_not_frozen(cfg)
 
     from code.replacement import load_replacement_queue, save_replacement_queue, _queue_lock
     from code.shop.payment import create_invoice

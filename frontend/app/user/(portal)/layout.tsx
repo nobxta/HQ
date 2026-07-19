@@ -7,7 +7,7 @@ import PortalSidebar from "@/components/portal/PortalSidebar";
 import NotificationBell from "@/components/portal/NotificationBell";
 import MobileBottomNav from "@/components/portal/MobileBottomNav";
 import ExpiredGate from "@/components/portal/ExpiredGate";
-import { Menu, CalendarDays } from "lucide-react";
+import { Menu, CalendarDays, Snowflake } from "lucide-react";
 
 const PAGE_TITLES: Record<string, string> = {
   "/user/dashboard": "Dashboard",
@@ -80,6 +80,21 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
             <NotificationBell />
           </div>
         </header>
+        {/* Frozen hold — the bot stays fully viewable but every action is disabled server-side.
+            This banner explains why controls do nothing; the actual block is enforced by the API. */}
+        {bot?.frozen && (
+          <div className="flex items-start gap-3 border-b border-sky-500/20 bg-sky-500/[0.08] px-4 sm:px-6 py-3">
+            <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-sky-500/15 text-sky-300">
+              <Snowflake className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-[13px] font-semibold text-sky-200">This bot is frozen — read-only</p>
+              <p className="text-[12px] text-sky-200/70 mt-0.5">
+                You can view everything, but starting, stopping, editing groups, health checks, replacements and renewals are disabled. Please contact support to unfreeze.
+              </p>
+            </div>
+          </div>
+        )}
         <main className="p-4 sm:p-6 pb-28 lg:pb-6">{children}</main>
       </div>
       {!focusedCheckout && <MobileBottomNav />}
