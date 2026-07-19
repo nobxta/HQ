@@ -470,6 +470,55 @@ async def repair_log_group(name: str):
     return {"status": "done", "message": msg}
 
 
+class SetLogGroupRequest(BaseModel):
+    log_group: str
+
+
+@router.post("/{name}/repair/log-group/set")
+async def set_log_group(name: str, body: SetLogGroupRequest):
+    """Point the bot's log group at a specific existing channel/group (t.me link, @username or
+    -100 id). Logs are posted by the controller bot, so it must already be a member with permission
+    to post — we verify by sending a confirmation message and revert the change if that fails."""
+    token = await wrappers.get_token_by_name(name)
+    if not token:
+        raise HTTPException(404, f"Bot '{name}' not found")
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' config not found")
+
+    raw = (body.log_group or "").strip()
+    if not raw:
+        raise HTTPException(400, "Provide a channel/group link, @username, or -100 id")
+
+    from code.users import _log_group_entity, _log_group_link
+    from code.notify import notify_log_group
+
+    entity = _log_group_entity(raw)
+    if entity is None:
+        raise HTTPException(400, "Could not parse that log group. Use a t.me link, @username, or -100 id.")
+
+    prev = cfg.get("log_group") or ""
+    link = _log_group_link(raw)
+    cfg["log_group"] = link
+    await wrappers.save_user_data(name, cfg)
+
+    # Verify the controller bot can actually post there; revert if it can't.
+    ok = False
+    try:
+        ok = await notify_log_group(token, entity, f"✅ This channel is now the log group for {cfg.get('name', name)}.")
+    except Exception:
+        ok = False
+    if not ok:
+        cfg["log_group"] = prev
+        await wrappers.save_user_data(name, cfg)
+        bot_un = (cfg.get("bot_username") or "").lstrip("@")
+        hint = f" Add @{bot_un} to the channel as an admin with permission to post, then try again." if bot_un else ""
+        raise HTTPException(400, f"Couldn't post to that log group — nothing was changed.{hint}")
+
+    await wrappers.log_admin_action("web_admin", "set_log_group", target=f"{name} → {link}")
+    return {"status": "done", "message": f"Log group set to {link}", "log_group": link}
+
+
 class RepairBotTokenRequest(BaseModel):
     bot_token: Optional[str] = None   # a custom @BotFather token
     use_pool: bool = False            # or take the next available token from the pool
@@ -561,6 +610,69 @@ async def resume_bot(name: str):
 
     await wrappers.log_admin_action("web_admin", "resume_bot", target=name)
     return BotControlResponse(status="resumed", message=msg)
+
+
+def _build_renewal_reminder(cfg: dict) -> str:
+    """Owner-facing renewal reminder built from the bot's validity date."""
+    from code.shop.renewals import parse_valid_till
+    import datetime as _dt
+    bot_name = cfg.get("name", "your AdBot")
+    vt = parse_valid_till(cfg.get("valid_till"))
+    if vt:
+        days = (vt - _dt.datetime.utcnow()).days
+        when = vt.strftime("%d %b %Y")
+        if days < 0:
+            status = f"expired on {when}"
+        elif days == 0:
+            status = f"expires today ({when})"
+        else:
+            status = f"expires in {days} day{'s' if days != 1 else ''} ({when})"
+    else:
+        status = "is due for renewal"
+    return (
+        f"⏰ Renewal reminder for {bot_name}\n\n"
+        f"Your AdBot {status}. Renew now to keep it posting without interruption.\n"
+        f"Open the shop bot and choose Renew, or reply here if you need help."
+    )
+
+
+class NotifyOwnerRequest(BaseModel):
+    kind: str = "custom"            # "renewal" (prebuilt reminder) or "custom" (free text)
+    message: Optional[str] = None   # required for kind="custom"
+
+
+@router.post("/{name}/notify-owner")
+async def notify_owner(name: str, body: NotifyOwnerRequest):
+    """Send the bot's owner a Telegram DM via the shop bot — a prebuilt renewal reminder or a
+    custom alert. The owner must have started the shop bot (they did to purchase)."""
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' not found")
+    owner_id = cfg.get("owner_id")
+    if not owner_id:
+        raise HTTPException(400, "This bot has no owner on file to notify.")
+
+    kind = (body.kind or "custom").strip().lower()
+    if kind == "renewal":
+        text = _build_renewal_reminder(cfg)
+    else:
+        text = (body.message or "").strip()
+        if not text:
+            raise HTTPException(400, "Message is required")
+        text = text[:1000]
+
+    from code import notify, config as app_config
+    if not (getattr(app_config, "SHOP_BOT_TOKEN", "") or "").strip():
+        raise HTTPException(400, "Shop bot is not configured, so owner messages can't be sent.")
+    try:
+        ok = await notify.notify_send_to_chat(int(owner_id), text, bot_token=app_config.SHOP_BOT_TOKEN)
+    except Exception as e:
+        raise HTTPException(500, f"Send failed: {e}")
+    if not ok:
+        raise HTTPException(400, "Could not deliver the message — the owner may not have started the shop bot.")
+
+    await wrappers.log_admin_action("web_admin", "notify_owner", target=f"{name} ({kind})")
+    return {"status": "sent", "message": "Notification sent to the owner"}
 
 
 @router.get("/{name}/stats")

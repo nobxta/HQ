@@ -171,7 +171,7 @@ export default function BotDetailPage() {
         {activeTab === "groups" && <GroupsTab bot={bot} name={name} onUpdate={() => mutate()} />}
         {activeTab === "content" && <PostingTab name={name} bot={bot} onUpdate={() => mutate()} />}
         {activeTab === "logs" && <LogsTab name={name} />}
-        {activeTab === "payments" && <PaymentsTab name={name} bot={bot} />}
+        {activeTab === "payments" && <PaymentsTab name={name} bot={bot} onUpdate={() => mutate()} />}
         {activeTab === "access" && <AccessTab name={name} bot={bot} onUpdate={() => mutate()} />}
         {activeTab === "settings" && <SettingsTab name={name} bot={bot} onUpdate={() => mutate()} />}
         {activeTab === "actions" && <ActionsTab name={name} bot={bot} onUpdate={() => mutate()} onDelete={() => setDeleteConfirm(true)} />}
@@ -782,7 +782,7 @@ function OrderStatusChip({ status }: { status: string }) {
 const PENDING_PAY_STATES = ["payment_waiting", "confirming"];
 const PENDING_BUILD_STATES = ["pending_creation", "creating"];
 
-function PaymentsTab({ name, bot }: { name: string; bot: any }) {
+function PaymentsTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: () => void }) {
   const plan = bot.plan || {};
   const daysLeft = daysUntil(bot.valid_till);
   const expired = daysLeft !== null && daysLeft < 0;
@@ -860,6 +860,8 @@ function PaymentsTab({ name, bot }: { name: string; bot: any }) {
           </div>
         </div>
       </HqCard>
+
+      <RenewalPricingCard name={name} bot={bot} onUpdate={onUpdate} />
 
       {/* Billing totals */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3.5">
@@ -1010,6 +1012,9 @@ function ActionsTab({ name, bot, onUpdate, onDelete }: { name: string; bot: any;
       {/* Grant free days */}
       <GrantDaysCard name={name} owner={owner} bot={bot} onUpdate={onUpdate} />
 
+      {/* Notify owner */}
+      <NotifyOwnerCard name={name} bot={bot} />
+
       {/* Repair */}
       <RepairTab name={name} bot={bot} onUpdate={onUpdate} />
 
@@ -1074,6 +1079,60 @@ function GrantDaysCard({ name, owner, bot, onUpdate }: { name: string; owner: nu
             ? (daysLeft >= 0 ? `Currently ${daysLeft}d left · expires ${formatDate(bot.valid_till)}` : `Expired ${formatDate(bot.valid_till)}`)
             : "No expiry date set"}
         </span>
+      </div>
+    </HqCard>
+  );
+}
+
+/* DM the bot's owner via the shop bot — a one-click renewal reminder or a custom alert. */
+function NotifyOwnerCard({ name, bot }: { name: string; bot: any }) {
+  const [msg, setMsg] = useState("");
+  const [sending, setSending] = useState<"" | "renewal" | "custom">("");
+  const hasOwner = !!bot.owner_id;
+
+  const send = async (kind: "renewal" | "custom") => {
+    if (kind === "custom" && !msg.trim()) { toast.error("Enter a message to send"); return; }
+    setSending(kind);
+    try {
+      const { data } = await api.post(`/api/bots/${encodeURIComponent(name)}/notify-owner`,
+        kind === "renewal" ? { kind: "renewal" } : { kind: "custom", message: msg.trim() });
+      toast.success(data?.message || "Notification sent");
+      if (kind === "custom") setMsg("");
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Failed to send");
+    }
+    setSending("");
+  };
+
+  return (
+    <HqCard className="p-5">
+      <HqTitle sub={hasOwner ? `Message the owner (${bot.owner_id}) on Telegram via the shop bot.` : "This bot has no owner on file to notify."}>
+        Notify owner
+      </HqTitle>
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <HqBtn tone="secondary" icon={Send} loading={sending === "renewal"} disabled={!hasOwner || !!sending} onClick={() => send("renewal")}>
+            Send renewal reminder
+          </HqBtn>
+          <span className="text-[12px] text-hq-muted">One-click reminder built from the validity date.</span>
+        </div>
+        <div className="space-y-1.5">
+          <label className="block text-[12px] font-medium text-hq-sub">Custom alert</label>
+          <textarea
+            className="w-full h-24 rounded-[14px] border border-hq-border bg-hq-bg px-3 py-2 text-[13px] text-hq-text placeholder:text-hq-muted focus:outline-none focus:border-hq-accent/60 resize-none transition-colors"
+            placeholder="Write a message to the owner…"
+            value={msg}
+            onChange={(e) => setMsg(e.target.value)}
+            maxLength={1000}
+            disabled={!hasOwner}
+          />
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-hq-muted tabular-nums">{msg.length}/1000</span>
+            <HqBtn icon={Send} loading={sending === "custom"} disabled={!hasOwner || !msg.trim() || !!sending} onClick={() => send("custom")}>
+              Send alert
+            </HqBtn>
+          </div>
+        </div>
       </div>
     </HqCard>
   );
@@ -3148,8 +3207,6 @@ function PlanTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: ()
         </HqCard>
       </div>
 
-      <RenewalPricingCard name={name} bot={bot} onUpdate={onUpdate} />
-
       {bot.authorized?.length > 0 && (
         <HqCard className="p-5">
           <HqTitle>Authorized Users</HqTitle>
@@ -3409,6 +3466,8 @@ function RepairTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: 
         </div>
       </HqCard>
 
+      <SetLogGroupCard name={name} bot={bot} onUpdate={onUpdate} />
+
       <ChangeBotTokenModal
         open={tokenModal}
         name={name}
@@ -3417,6 +3476,57 @@ function RepairTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: 
         onDone={(msg) => { setTokenModal(false); setResult({ ok: true, text: msg }); onUpdate(); }}
       />
     </div>
+  );
+}
+
+/* Point the log group at a specific existing channel. The controller bot must already be an
+   admin there; the backend sends a test message and reverts if it can't post. */
+function SetLogGroupCard({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: () => void }) {
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const current = bot.log_group || "";
+
+  const submit = async () => {
+    const v = value.trim();
+    if (!v) { toast.error("Enter a channel link, @username or -100 id"); return; }
+    setSaving(true);
+    try {
+      const { data } = await api.post(`/api/bots/${encodeURIComponent(name)}/repair/log-group/set`, { log_group: v }, { timeout: 60000 });
+      toast.success(data?.message || "Log group updated");
+      setValue("");
+      onUpdate();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Failed to set log group");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <HqCard className="p-5">
+      <HqTitle sub="Point logs at a specific existing channel/group instead of recreating one.">Set log group</HqTitle>
+      <div className="mb-3 flex items-center gap-2 text-[12px]">
+        <span className="text-hq-muted">Current:</span>
+        {current
+          ? <a href={current} target="_blank" rel="noreferrer" className="text-hq-accent hover:underline inline-flex items-center gap-1">{current}<ExternalLink className="w-3 h-3" /></a>
+          : <span className="text-hq-muted">Not set</span>}
+      </div>
+      <div className="flex gap-2 flex-wrap">
+        <input
+          className="flex-1 min-w-[220px] rounded-[14px] border border-hq-border bg-hq-bg px-3 py-2 text-[13px] text-hq-text font-mono placeholder:text-hq-muted focus:outline-none focus:border-hq-accent/60 transition-colors"
+          placeholder="https://t.me/yourchannel · @channel · -100…"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submit()}
+        />
+        <HqBtn onClick={submit} loading={saving} disabled={!value.trim()} icon={MessageSquare}>Set log group</HqBtn>
+      </div>
+      <div className="mt-3 flex items-start gap-2 rounded-[12px] bg-hq-elev border border-hq-border px-3 py-2">
+        <AlertCircle className="h-3.5 w-3.5 text-hq-muted shrink-0 mt-0.5" />
+        <p className="text-[12px] text-hq-muted">
+          Add <span className="text-hq-sub">@{(bot.bot_username || "the bot").replace(/^@/, "")}</span> to the channel as an admin with permission to post first. We send a test message and won&apos;t change anything if it can&apos;t post.
+        </p>
+      </div>
+    </HqCard>
   );
 }
 
