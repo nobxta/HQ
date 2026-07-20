@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef, useEffect, useCallback, forwardRef, type ReactNode, type InputHTMLAttributes } from "react";
+import { useState, useRef, useEffect, useCallback, forwardRef, Fragment, type ReactNode, type InputHTMLAttributes } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { getSession } from "next-auth/react";
 import { useAdbot, useAdbotStats, useAdbotLogs, useSessionsOverview, useAdbotAnalytics, useAdbotFailureReasons, type AnalyticsRange } from "@/lib/hooks/useAdbots";
@@ -781,6 +781,14 @@ function OrderStatusChip({ status }: { status: string }) {
 
 const PENDING_PAY_STATES = ["payment_waiting", "confirming"];
 const PENDING_BUILD_STATES = ["pending_creation", "creating"];
+const CLOSED_ORDER_STATES = ["expired", "cancelled", "failed"];
+
+/* Order-list filters — default hides the noise of old expired/cancelled invoices. */
+const ORDER_FILTERS: { id: string; label: string; match: (s: string) => boolean }[] = [
+  { id: "active", label: "Active", match: (s) => !CLOSED_ORDER_STATES.includes(s) },
+  { id: "all", label: "All", match: () => true },
+  { id: "closed", label: "Closed", match: (s) => CLOSED_ORDER_STATES.includes(s) },
+];
 
 function PaymentsTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: () => void }) {
   const plan = bot.plan || {};
@@ -792,6 +800,8 @@ function PaymentsTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState<string>("");
   const [confirmCancel, setConfirmCancel] = useState<string>("");
+  const [orderFilter, setOrderFilter] = useState<string>("active");
+  const [openRow, setOpenRow] = useState<string>("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -823,6 +833,8 @@ function PaymentsTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
   const completed = list.filter((o) => o.status === "completed");
   const totalSpend = completed.reduce((sum, o) => sum + (Number(o.amount_usd) || 0), 0);
   const pendingCount = list.filter((o) => [...PENDING_PAY_STATES, ...PENDING_BUILD_STATES, "paid"].includes(o.status)).length;
+  const activeFilter = ORDER_FILTERS.find((f) => f.id === orderFilter) || ORDER_FILTERS[0];
+  const visible = list.filter((o) => activeFilter.match(o.status));
 
   const rows: [string, ReactNode][] = [
     ["Plan", fmt(bot.plan_name)],
@@ -868,7 +880,8 @@ function PaymentsTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
         <MetricCard label="Lifetime spend" icon={DollarSign} tone="success" value={formatUSD(totalSpend)} sub={`${completed.length} completed order${completed.length === 1 ? "" : "s"}`} />
         <MetricCard label="Orders" icon={CreditCard} tone="accent" value={list.length} sub={`${pendingCount} open / pending`} />
         <MetricCard label="Validity" icon={Calendar} tone={daysLeft !== null && daysLeft <= 3 ? "danger" : "accent"}
-          value={daysLeft === null ? "—" : `${Math.max(daysLeft, 0)}d`} sub={bot.valid_till ? `Expires ${formatDate(bot.valid_till)}` : "Not set"} />
+          value={daysLeft === null ? "—" : expired ? "Expired" : `${daysLeft}d`}
+          sub={bot.valid_till ? `${expired ? "Expired on" : "Expires"} ${formatDate(bot.valid_till)}` : "Not set"} />
       </div>
 
       {/* Real orders / invoices */}
@@ -877,62 +890,100 @@ function PaymentsTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate
           right={<HqBtn tone="ghost" onClick={load} loading={loading} icon={RefreshCw}>Refresh</HqBtn>}>
           Orders & invoices
         </HqTitle>
+
+        {/* Status filter — cuts the noise of old expired/cancelled invoices */}
+        {list.length > 0 && (
+          <div className="flex items-center gap-1 p-1 mb-3 rounded-[12px] border border-hq-border bg-hq-bg w-fit overflow-x-auto no-scrollbar">
+            {ORDER_FILTERS.map((f) => {
+              const n = list.filter((o) => f.match(o.status)).length;
+              return (
+                <button key={f.id} onClick={() => setOrderFilter(f.id)}
+                  className={`px-2.5 py-1.5 text-[12px] font-medium rounded-[9px] transition-colors flex items-center gap-1.5 whitespace-nowrap ${orderFilter === f.id ? "bg-hq-accent text-white" : "text-hq-muted hover:text-hq-text"}`}>
+                  {f.label}<span className={`tabular-nums ${orderFilter === f.id ? "opacity-80" : "opacity-60"}`}>{n}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         {orders === null ? (
           <div className="flex items-center gap-2 py-10 justify-center text-hq-muted text-[13px]"><Loader2 className="h-5 w-5 animate-spin" /> Loading orders…</div>
         ) : list.length === 0 ? (
           <EmptyState icon={CreditCard} title="No orders yet" hint="Orders, renewals and crypto invoices for this bot appear here." />
+        ) : visible.length === 0 ? (
+          <EmptyState icon={CreditCard} title="No orders in this view" hint="Switch the filter above to see other orders." />
         ) : (
           <div className="overflow-x-auto -mx-1">
             <table className="w-full text-[13px] min-w-[720px]">
               <thead>
                 <tr className="text-left text-[11px] uppercase tracking-wide text-hq-muted border-b border-hq-border">
-                  {["Date", "Status", "Type", "Amount", "Payment", "Actions"].map((h) => <th key={h} className="px-2.5 py-2 font-medium whitespace-nowrap">{h}</th>)}
+                  {["", "Date", "Status", "Type", "Amount", "Payment", "Actions"].map((h, i) => <th key={i} className="px-2.5 py-2 font-medium whitespace-nowrap">{h}</th>)}
                 </tr>
               </thead>
               <tbody className="divide-y divide-hq-border/50">
-                {list.map((o: any, i: number) => {
+                {visible.map((o: any, i: number) => {
                   const readOnly = o.is_temppay || o.is_replacement;
                   const canPay = !readOnly && PENDING_PAY_STATES.includes(o.status);
                   const canBuild = !readOnly && PENDING_BUILD_STATES.includes(o.status);
                   const canCancel = !readOnly && [...PENDING_PAY_STATES, ...PENDING_BUILD_STATES].includes(o.status);
                   const amt = o.amount_usd != null && o.amount_usd !== "" ? formatUSD(Number(o.amount_usd)) : "—";
                   const pay = o.tx_hash || o.payment_id || o.pay_address || "";
+                  const oid = o.order_id || String(i);
+                  const open = openRow === oid;
                   return (
-                    <tr key={o.order_id || i} className="hover:bg-hq-hover transition-colors align-top">
-                      <td className="px-2.5 py-2.5 text-hq-sub whitespace-nowrap">{o.created_at ? formatDate(o.created_at) : "—"}</td>
-                      <td className="px-2.5 py-2.5"><OrderStatusChip status={o.status} /></td>
-                      <td className="px-2.5 py-2.5 text-hq-muted capitalize">{fmt(o.order_type, "—")}{o.is_temppay ? " · live invoice" : ""}</td>
-                      <td className="px-2.5 py-2.5 tabular-nums text-hq-text">
-                        {amt}
-                        {o.pay_currency && <span className="text-hq-muted text-[11px] ml-1 uppercase">{o.pay_amount ? `${o.pay_amount} ` : ""}{o.pay_currency}</span>}
-                        {o.coupon && <div className="text-[11px] text-hq-accent2 mt-0.5">Coupon {o.coupon}{o.coupon_percent ? ` −${o.coupon_percent}%` : ""}</div>}
-                      </td>
-                      <td className="px-2.5 py-2.5 max-w-[180px]">
-                        {pay ? (
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-mono text-[11px] text-hq-muted truncate">{pay}</span>
-                            <CopyBtn text={pay} />
-                          </div>
-                        ) : <span className="text-hq-muted">—</span>}
-                        {o.order_id && <div className="font-mono text-[10px] text-hq-muted/70 mt-0.5 truncate">#{o.order_id}</div>}
-                      </td>
-                      <td className="px-2.5 py-2.5">
-                        {readOnly ? (
-                          <span className="text-[11px] text-hq-muted">Read-only</span>
-                        ) : (canPay || canBuild || canCancel) ? (
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            {canPay && <HqBtn tone="ghost" className="!py-1 !px-2 !text-[11px]" loading={busy === `${o.order_id}:sync`} onClick={() => orderAction(o.order_id, "sync", "Sync")} icon={RefreshCw}>Sync</HqBtn>}
-                            {canPay && <HqBtn tone="success" className="!py-1 !px-2 !text-[11px]" loading={busy === `${o.order_id}:mark-paid`} onClick={() => orderAction(o.order_id, "mark-paid", "Mark paid")} icon={CheckCircle}>Mark paid</HqBtn>}
-                            {canBuild && <HqBtn tone="secondary" className="!py-1 !px-2 !text-[11px]" loading={busy === `${o.order_id}:recreate`} onClick={() => orderAction(o.order_id, "recreate", "Recreate")} icon={RotateCw}>Recreate</HqBtn>}
-                            {canCancel && (confirmCancel === o.order_id ? (
-                              <HqBtn tone="danger" className="!py-1 !px-2 !text-[11px]" loading={busy === `${o.order_id}:cancel`} onClick={() => orderAction(o.order_id, "cancel", "Cancel")} icon={XCircle}>Confirm</HqBtn>
-                            ) : (
-                              <HqBtn tone="ghost" className="!py-1 !px-2 !text-[11px]" onClick={() => setConfirmCancel(o.order_id)} icon={Ban}>Cancel</HqBtn>
-                            ))}
-                          </div>
-                        ) : <span className="text-[11px] text-hq-muted">—</span>}
-                      </td>
-                    </tr>
+                    <Fragment key={oid}>
+                      <tr className="hover:bg-hq-hover transition-colors align-top cursor-pointer" onClick={() => setOpenRow(open ? "" : oid)}>
+                        <td className="px-2.5 py-2.5 text-hq-muted">{open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}</td>
+                        <td className="px-2.5 py-2.5 text-hq-sub whitespace-nowrap">{o.created_at ? formatDate(o.created_at) : "—"}</td>
+                        <td className="px-2.5 py-2.5"><OrderStatusChip status={o.status} /></td>
+                        <td className="px-2.5 py-2.5 text-hq-muted capitalize">{fmt(o.order_type, "—")}{o.is_temppay ? " · live" : ""}</td>
+                        <td className="px-2.5 py-2.5 tabular-nums text-hq-text">
+                          {amt}
+                          {o.pay_currency && <span className="text-hq-muted text-[11px] ml-1 uppercase">{o.pay_currency}</span>}
+                          {o.coupon && <div className="text-[11px] text-hq-accent2 mt-0.5">Coupon {o.coupon}{o.coupon_percent ? ` −${o.coupon_percent}%` : ""}</div>}
+                        </td>
+                        <td className="px-2.5 py-2.5 max-w-[160px]">
+                          {pay ? <span className="font-mono text-[11px] text-hq-muted truncate block">{pay}</span> : <span className="text-hq-muted">—</span>}
+                          {o.order_id && <span className="font-mono text-[10px] text-hq-muted/70 truncate block">#{o.order_id}</span>}
+                        </td>
+                        <td className="px-2.5 py-2.5" onClick={(e) => e.stopPropagation()}>
+                          {readOnly ? (
+                            <span className="text-[11px] text-hq-muted">Read-only</span>
+                          ) : (canPay || canBuild || canCancel) ? (
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {canPay && <HqBtn tone="ghost" className="!py-1 !px-2 !text-[11px]" loading={busy === `${o.order_id}:sync`} onClick={() => orderAction(o.order_id, "sync", "Sync")} icon={RefreshCw}>Sync</HqBtn>}
+                              {canPay && <HqBtn tone="success" className="!py-1 !px-2 !text-[11px]" loading={busy === `${o.order_id}:mark-paid`} onClick={() => orderAction(o.order_id, "mark-paid", "Mark paid")} icon={CheckCircle}>Mark paid</HqBtn>}
+                              {canBuild && <HqBtn tone="secondary" className="!py-1 !px-2 !text-[11px]" loading={busy === `${o.order_id}:recreate`} onClick={() => orderAction(o.order_id, "recreate", "Recreate")} icon={RotateCw}>Recreate</HqBtn>}
+                              {canCancel && (confirmCancel === o.order_id ? (
+                                <HqBtn tone="danger" className="!py-1 !px-2 !text-[11px]" loading={busy === `${o.order_id}:cancel`} onClick={() => orderAction(o.order_id, "cancel", "Cancel")} icon={XCircle}>Confirm</HqBtn>
+                              ) : (
+                                <HqBtn tone="ghost" className="!py-1 !px-2 !text-[11px]" onClick={() => setConfirmCancel(o.order_id)} icon={Ban}>Cancel</HqBtn>
+                              ))}
+                            </div>
+                          ) : <span className="text-[11px] text-hq-muted">—</span>}
+                        </td>
+                      </tr>
+                      {open && (
+                        <tr className="bg-hq-bg/50">
+                          <td colSpan={7} className="px-4 py-3">
+                            <DetailGrid rows={[
+                              ["Order ID", <span className="font-mono text-[12px] inline-flex items-center gap-1.5">{o.order_id || "—"}{o.order_id && <CopyBtn text={o.order_id} />}</span>],
+                              ["Type", `${fmt(o.order_type, "—")}${o.plan_name ? ` · ${o.plan_name}` : ""}`],
+                              ["Source", fmt(o.source, "—")],
+                              ["Amount", `${amt}${o.base_amount_usd && o.base_amount_usd !== o.amount_usd ? ` (was ${formatUSD(Number(o.base_amount_usd))})` : ""}`],
+                              ["Pay currency", o.pay_currency ? `${o.pay_amount ? `${o.pay_amount} ` : ""}${o.pay_currency}${o.network ? ` · ${o.network}` : ""}` : "—"],
+                              ["Coupon", o.coupon ? `${o.coupon}${o.coupon_percent ? ` (−${o.coupon_percent}%)` : ""}` : "—"],
+                              ["Tx hash", <span className="font-mono text-[11px] inline-flex items-center gap-1.5 max-w-full truncate">{o.tx_hash || "—"}{o.tx_hash && <CopyBtn text={o.tx_hash} />}</span>],
+                              ["Pay address", <span className="font-mono text-[11px] inline-flex items-center gap-1.5 max-w-full truncate">{o.pay_address || "—"}{o.pay_address && <CopyBtn text={o.pay_address} />}</span>],
+                              ["Created", o.created_at ? formatDateTime(o.created_at) : "—"],
+                              ["Paid", o.paid_at ? formatDateTime(o.paid_at) : "—"],
+                              ["Duration", o.duration_days ? `${o.duration_days} days` : "—"],
+                              ["Invoice expires", o.invoice_expires_at ? formatDateTime(o.invoice_expires_at) : "—"],
+                            ]} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   );
                 })}
               </tbody>
