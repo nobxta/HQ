@@ -968,11 +968,13 @@ async def _core_create_adbot_async(
         plan_mode = str(form.get("mode") or "Starter").strip().capitalize()
         session_count_val = int(form.get("sessions_count") or len(assigned))
         authorized = []
+        owner_id_val = 0
         if form.get("source") == "shop" and form.get("user_id") is not None:
             try:
                 uid = int(form["user_id"])
                 if uid and uid not in authorized:
                     authorized.append(uid)
+                    owner_id_val = uid  # save the Telegram buyer as the bot owner
             except (TypeError, ValueError):
                 pass
         from datetime import datetime as _dt
@@ -1002,6 +1004,7 @@ async def _core_create_adbot_async(
             "log_group": log_group_link,
             "log_file": f"data/logs/{safe_name}.log",
             "authorized": authorized,
+            "owner_id": owner_id_val,
             "sessions": assigned,
             "state": "stopped",
             "last_cycle_time": {},

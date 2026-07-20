@@ -408,6 +408,11 @@ CB_STATS_CYCLE_DETAILS = b"stats_cycle"
 CB_STATS_SESSION_DETAILS = b"stats_sess"
 CB_STATS_REFRESH = b"stats_refresh"
 CB_STATS_BACK = b"stats_back"
+# Owner-claim flow (works for UNauthorized users who hold the web access code)
+CB_ADD_OWNER = b"claim_owner"
+CB_OWNER_REMOVE = b"claim_rm"
+CB_OWNER_KEEP = b"claim_keep"
+CB_CLAIM_CANCEL = b"claim_cancel"
 CB_STATS_PER_SESSION = b"stats_per_sess"
 CB_STATS_ANALYZE = b"stats_analyze"
 CB_STATS_RESET = b"stats_reset"
@@ -641,6 +646,11 @@ async def _push_back_deferred(bot_token: str, g: dict) -> None:
 _set_message_state: dict[str, dict[int, str]] = {}
 # Config custom input state: bot_token -> {user_id -> "renewal_price"|"valid_till"|"cycle"|"gap"}
 _config_custom_state: dict[str, dict[int, str]] = {}
+# Owner-claim flow for UNauthorized users. bot_token -> {user_id: stage}
+# stage: "code" = awaiting the web access code; "choose" = code verified, choosing how to
+# handle the previous owner. Gated only by knowing the web_token (the per-bot secret), which
+# is the same trust model as the web portal login.
+_owner_claim_state: dict[str, dict[int, str]] = {}
 # (bot_token, user_id) -> (chat_id, message_id) for editing same message when custom input is received
 _config_custom_message_id: dict[tuple[str, int], tuple[int, int]] = {}
 # Upload sessions: bot_token -> set of user_ids waiting for .session or .zip
@@ -5249,6 +5259,13 @@ async def create_user_bot(bot_token: str) -> None:
                 asyncio.create_task(reset_menu_button(bot_token, chat_id=event.sender_id))
             except Exception:
                 pass
+            # Offer an ownership claim: whoever holds this bot's web access code is its owner.
+            _owner_claim_state.get(bot_token, {}).pop(event.sender_id, None)
+            await event.reply(
+                "🔒 You are not authorized to use this bot.\n\n"
+                "If you're the owner, tap below and paste your web access code to take over.",
+                buttons=[[Button.inline("➕ Add Me As Owner", CB_ADD_OWNER)]],
+            )
             return
         # Self-heal: make sure this authorized user has the dashboard menu button.
         try:
@@ -5308,6 +5325,101 @@ async def create_user_bot(bot_token: str) -> None:
         else:
             await event.reply("Your payment is already being processed and can't be cancelled now.")
 
+    # ── Owner-claim flow (unauthorized user proves ownership with the web access code) ──
+    async def _finalize_owner_claim(event, remove_previous: bool) -> None:
+        new_uid = event.sender_id
+
+        def _upd(c: dict) -> None:
+            old = c.get("owner_id") or 0
+            c["owner_id"] = int(new_uid)
+            auth = [int(x) for x in (c.get("authorized") or []) if x]
+            if int(new_uid) not in auth:
+                auth.append(int(new_uid))
+            if remove_previous and old and int(old) != int(new_uid):
+                auth = [x for x in auth if int(x) != int(old)]
+            c["authorized"] = auth
+
+        _save_bot_config(bot_token, _upd)
+        _owner_claim_state.get(bot_token, {}).pop(new_uid, None)
+        # Give the new owner the dashboard menu button (best-effort).
+        try:
+            wt = _ensure_web_token(bot_token)
+            if wt:
+                from .miniapp import set_menu_button_webapp
+                asyncio.create_task(set_menu_button_webapp(bot_token, wt, chat_id=new_uid))
+        except Exception:
+            pass
+        log_bot_event(bot_token, f"Ownership claimed by {new_uid} (remove_previous={remove_previous})")
+        await event.respond(
+            "✅ You're now the owner of this bot. Welcome!\n\n**AdBot** — What would you like to do?",
+            buttons=_menu_buttons(), parse_mode="md",
+        )
+
+    async def _handle_owner_claim_callback(event) -> None:
+        data = event.data
+        uid = event.sender_id
+        stage = _owner_claim_state.get(bot_token, {}).get(uid)
+        if data == CB_ADD_OWNER:
+            _owner_claim_state.setdefault(bot_token, {})[uid] = "code"
+            await event.answer()
+            try:
+                await event.edit(
+                    "🔑 Send me your **web access code** for this bot.\n\n"
+                    "It's the code from your dashboard. Send /start to cancel.",
+                    parse_mode="md",
+                )
+            except Exception:
+                await event.respond("Send me your web access code for this bot. /start to cancel.")
+            return
+        if data == CB_CLAIM_CANCEL:
+            _owner_claim_state.get(bot_token, {}).pop(uid, None)
+            await event.answer("Cancelled.")
+            try:
+                await event.edit("Ownership claim cancelled. Send /start if you change your mind.")
+            except Exception:
+                pass
+            return
+        # Remove / Keep are only valid after the code was verified (stage "choose").
+        if data in (CB_OWNER_REMOVE, CB_OWNER_KEEP):
+            if stage != "choose":
+                await event.answer("Start again with “Add Me As Owner”.", alert=True)
+                return
+            await event.answer()
+            await _finalize_owner_claim(event, remove_previous=(data == CB_OWNER_REMOVE))
+            return
+
+    @client.on(events.NewMessage())
+    async def on_owner_claim_text(event: events.NewMessage.Event) -> None:
+        # Capture the web access code for an in-progress ownership claim. Runs for UNauthorized
+        # users, so it is registered before the auth-gated text handlers and stops propagation
+        # once it handles a claim message.
+        text = (event.raw_text or "").strip()
+        if not text or text.startswith("/"):
+            return
+        uid = event.sender_id
+        if _owner_claim_state.get(bot_token, {}).get(uid) != "code":
+            return
+        cfg = get_cfg() or {}
+        expected = (cfg.get("web_token") or "").strip()
+        if not expected or text != expected:
+            await event.reply("❌ That code doesn't match. Paste your exact web access code, or send /start to cancel.")
+            raise events.StopPropagation
+        old_owner = cfg.get("owner_id") or 0
+        if old_owner and int(old_owner) != int(uid):
+            _owner_claim_state.setdefault(bot_token, {})[uid] = "choose"
+            await event.reply(
+                "✅ Code verified.\n\nThis bot already has an owner. What should I do with them?",
+                buttons=[
+                    [Button.inline("🚫 Remove previous owner", CB_OWNER_REMOVE)],
+                    [Button.inline("👥 Keep in authorized list", CB_OWNER_KEEP)],
+                    [Button.inline("Cancel", CB_CLAIM_CANCEL)],
+                ],
+            )
+            raise events.StopPropagation
+        # No previous owner (or already this user) → finalize straight away.
+        await _finalize_owner_claim(event, remove_previous=False)
+        raise events.StopPropagation
+
     def _fix_menu_buttons():
         return [
             [Button.inline("Fix Log Group", CB_FIX_LOG), Button.inline("Fix Sessions", CB_FIX_SESS)],
@@ -5344,6 +5456,10 @@ async def create_user_bot(bot_token: str) -> None:
                 await event.respond(MAINTENANCE_MESSAGE)
             return
         cfg = get_cfg()
+        # Owner-claim buttons work for UNauthorized users — the web access code is the auth.
+        if event.data in (CB_ADD_OWNER, CB_OWNER_REMOVE, CB_OWNER_KEEP, CB_CLAIM_CANCEL):
+            await _handle_owner_claim_callback(event)
+            return
         if not _is_authorized(event.sender_id, cfg):
             await event.answer("Not authorized.", alert=True)
             return
