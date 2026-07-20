@@ -1656,6 +1656,27 @@ def run_shop_bot_app() -> Application:
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
+
+    async def _shop_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        # Without an error handler PTB logs a full traceback for every transient long-polling
+        # network blip ("No error handlers are registered"). Those auto-recover via PTB's retry
+        # loop, so log them concisely and reserve tracebacks for genuinely unexpected errors.
+        from telegram.error import NetworkError, Forbidden, BadRequest
+        err = context.error
+        if err is None:
+            return
+        if isinstance(err, NetworkError):  # includes TimedOut / httpx.ReadError while polling
+            logger.warning("Shop bot transient network error (auto-retrying): %s", err)
+            return
+        if isinstance(err, Forbidden):
+            logger.debug("Shop bot: Forbidden when sending (user may have blocked bot): %s", err)
+            return
+        if isinstance(err, BadRequest) and "message to edit not found" in str(err).lower():
+            logger.debug("Shop bot: message to edit not found (likely deleted): %s", err)
+            return
+        logger.exception("Shop bot unhandled error: %s", err)
+
+    app.add_error_handler(_shop_error_handler)
     return app
 
 

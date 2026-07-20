@@ -2662,6 +2662,11 @@ async def run_admin_bot_ptb() -> None:
         err = context.error
         if err is None:
             return
+        from telegram.error import NetworkError
+        if isinstance(err, NetworkError):
+            # Transient long-polling blip (includes TimedOut / httpx.ReadError); PTB auto-retries.
+            logger.warning("Admin bot transient network error (auto-retrying): %s", err)
+            return
         if isinstance(err, Forbidden):
             # User blocked the bot or chat is inaccessible; expected in production.
             logger.debug("Admin bot: Forbidden when sending (user may have blocked bot): %s", err)
