@@ -272,12 +272,12 @@ export default function UserDashboard() {
   if (!bot) return (
     <div className="flex flex-col items-center justify-center min-h-[60vh] text-center text-dark-400 px-4">
       <ShieldAlert className="h-12 w-12 mb-3 opacity-30" />
-      <p className="text-lg font-semibold text-white">No active plan</p>
+      <p className="text-lg font-semibold text-white">Your AdBot has been removed</p>
       <p className="mt-2 max-w-sm text-sm text-dark-400">
-        Your AdBot plan has expired and the bot was removed. To get started again, purchase a new plan.
+        Your plan expired, and the 48-hour renewal period ended without a renewal. Purchase a new plan to create and set up another AdBot.
       </p>
       <Link href="/pricing" className="mt-5 inline-flex items-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-accent/20 hover:bg-accent-600 transition-colors">
-        View plans
+        View Plans
       </Link>
     </div>
   );
@@ -387,11 +387,13 @@ export default function UserDashboard() {
   // The renew banner/nudge only appears within the final 48h before expiry — a fresh purchase
   // (e.g. a new 7-day plan) never shows it.
   const expiringSoon = !expired && hoursToExpiry !== null && hoursToExpiry <= 48 && hoursToExpiry > 0;
+  // Grace has fully elapsed (48h up) — the bot is being removed, so no renewal is offered.
+  const graceEnded = expired && !inGrace;
   const renewBannerText = expired
     ? (inGrace && graceHoursLeft !== null
-        ? `Your subscription has expired. Renew within ${graceHoursLeft} hours to keep your bot and existing data.`
-        : "Your subscription has expired. Renew to keep your bot and existing data.")
-    : `Expires in ${Math.max(1, hoursToExpiry ?? 0)}h — renew now.`;
+        ? `Your plan has expired. Renew within ${graceHoursLeft} hours to keep your AdBot, accounts, and settings.`
+        : "The renewal period has ended. Your AdBot and its saved data are being removed.")
+    : `Your plan expires in ${Math.max(1, hoursToExpiry ?? 0)}h. Renew now to keep your AdBot active.`;
 
   const lastStep = controlSteps[controlSteps.length - 1];
   const controlDone = lastStep?.status === "done";
@@ -439,10 +441,12 @@ export default function UserDashboard() {
           </div>
         </button>
       )}
-      {(expired || expiringSoon) && (
+      {graceEnded ? (
+        <div className="flex items-center gap-2.5 rounded-2xl px-4 py-3 text-xs font-semibold mb-4 border animate-fade-in bg-danger/[0.04] text-danger border-danger/15"><AlertTriangle className="h-4 w-4 shrink-0" /><span className="flex-1">{renewBannerText}</span></div>
+      ) : (expired || expiringSoon) && (
         <Link href="/user/billing/renew" className={`flex items-center gap-2.5 rounded-2xl px-4 py-3 text-xs font-semibold mb-4 border animate-fade-in hover:bg-white/[0.03] ${
           expired ? "bg-danger/[0.04] text-danger border-danger/15" : "bg-warning/[0.04] text-warning border-warning/15"
-        }`}><AlertTriangle className="h-4 w-4 shrink-0" /><span className="flex-1">{renewBannerText}</span><span className="text-[11px] underline shrink-0">Renew Now</span></Link>
+        }`}><AlertTriangle className="h-4 w-4 shrink-0" /><span className="flex-1">{renewBannerText}</span><span className="text-[11px] underline shrink-0">Renew Plan</span></Link>
       )}
     </>
   );
@@ -493,9 +497,9 @@ export default function UserDashboard() {
               </div>
               <div>
                 <p className="text-[10px] font-black uppercase tracking-[0.22em] text-warning/80">Renewal reminder</p>
-                <h2 className="mt-1 text-xl font-bold text-white">Advert plan ending soon</h2>
+                <h2 className="mt-1 text-xl font-bold text-white">Your plan is ending soon</h2>
                 <p className="text-sm leading-6 text-dark-400 mt-2">
-                  Your Advert plan expires in <span className="font-bold text-white">{renewalTimeLeft}</span>. Renew now to avoid bot deletion.
+                  Your AdBot plan expires in <span className="font-bold text-white">{renewalTimeLeft}</span>. Renew before it ends to keep your bot running without interruption.
                 </p>
               </div>
             </div>
@@ -511,7 +515,7 @@ export default function UserDashboard() {
             </div>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <Button variant="secondary" className="h-11 rounded-xl" onClick={() => setShowRenewalPopup(false)}>Later</Button>
-              <Button className="h-11 rounded-xl font-bold" onClick={() => router.push("/user/billing/renew")}>Renew Now</Button>
+              <Button className="h-11 rounded-xl font-bold" onClick={() => router.push("/user/billing/renew")}>Renew Plan</Button>
             </div>
           </div>
         </div>
@@ -885,10 +889,12 @@ export default function UserDashboard() {
           </div>
         </button>
       )}
-      {(expired || expiringSoon) && (
+      {graceEnded ? (
+        <div className="flex items-center gap-2.5 rounded-2xl px-4 py-3 text-xs font-semibold mb-4 border animate-fade-in bg-danger/[0.04] text-danger border-danger/15"><AlertTriangle className="h-4 w-4 shrink-0" /><span className="flex-1">{renewBannerText}</span></div>
+      ) : (expired || expiringSoon) && (
         <Link href="/user/billing/renew" className={`flex items-center gap-2.5 rounded-2xl px-4 py-3 text-xs font-semibold mb-4 border animate-fade-in hover:bg-white/[0.03] ${
           expired ? "bg-danger/[0.04] text-danger border-danger/15" : "bg-warning/[0.04] text-warning border-warning/15"
-        }`}><AlertTriangle className="h-4 w-4 shrink-0" /><span className="flex-1">{renewBannerText}</span><span className="text-[11px] underline shrink-0">Renew Now</span></Link>
+        }`}><AlertTriangle className="h-4 w-4 shrink-0" /><span className="flex-1">{renewBannerText}</span><span className="text-[11px] underline shrink-0">Renew Plan</span></Link>
       )}
 
       {/* ═══════════ STAT CARDS ROW ═══════════ */}

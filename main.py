@@ -435,12 +435,12 @@ async def main() -> None:
                                 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
                                 from code import bot_ptb
                                 uname = (cfg.get("bot_username") or "").strip().lstrip("@").lower() or name_display
-                                kb = InlineKeyboardMarkup([[InlineKeyboardButton("Renew Now", callback_data=f"renew_open:{uname}")]])
+                                kb = InlineKeyboardMarkup([[InlineKeyboardButton("Renew Plan", callback_data=f"renew_open:{uname}")]])
                                 await bot_ptb.send_message_with_bot(
                                     owner_id,
-                                    "Your AdBot plan has expired and posting has stopped.\n\n"
-                                    "You have 48 hours to renew before your bot is removed. "
-                                    "Renew now to resume with the same accounts.",
+                                    "Your AdBot plan has expired, and posting is now paused.\n\n"
+                                    "You have 48 hours to renew and restore your bot with the same accounts and settings. "
+                                    "After that, your bot will be removed.",
                                     bot_token=bot_token,
                                     reply_markup=kb,
                                 )
@@ -465,6 +465,15 @@ async def main() -> None:
                     await asyncio.sleep(1)
                     await disconnect_and_remove_controller_bot(bot_token)
                     returned, dead = await expire_bot_return_sessions_to_pool(bot_token)
+                    # Free the pooled bot token so it can be reused. The manual-delete path does
+                    # this too; without it, the grace-purge would strand the token as "assigned"
+                    # to a bot that no longer exists.
+                    try:
+                        from code.shop.token_pool import release_by_token
+                        if release_by_token(bot_token):
+                            logger.info("purge_expired_bot: released pooled token for %s", bot_token[:20])
+                    except Exception as te:
+                        logger.warning("purge_expired_bot: token release failed for %s: %s", bot_token[:20], te)
                     msg = f"AdBot purged after grace: {name_display}. Sessions returned: {returned}. Sessions dead: {dead}."
                     if _admin_ptb_running():
                         notify.notify_admin("bot_expired", msg)

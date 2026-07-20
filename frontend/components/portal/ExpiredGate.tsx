@@ -42,43 +42,44 @@ export default function ExpiredGate({ expired, graceHoursLeft }: ExpiredGateProp
         </div>
 
         <div className="px-6 pb-6 pt-6 text-center sm:px-7">
-          <h2 className="text-[22px] font-black tracking-tight text-white">Your plan has expired</h2>
-          <p className="mx-auto mt-2 max-w-[320px] text-sm leading-relaxed text-dark-300">
-            Posting is paused and your dashboard is locked. Renew to bring your AdBot back online with
-            the same accounts.
-          </p>
-
-          {/* Countdown / status pill */}
           {inGrace ? (
-            <div className="mt-5 flex items-center justify-center gap-2.5 rounded-2xl border border-warning/20 bg-warning/[0.07] px-4 py-3">
-              <Clock className="h-4 w-4 shrink-0 text-warning" />
-              <p className="text-[13px] font-semibold text-warning">
-                <span className="tabular-nums text-white">{hrs}h</span> left before your bot is
-                permanently deleted
+            <>
+              <h2 className="text-[22px] font-black tracking-tight text-white">Your AdBot plan has expired</h2>
+              <p className="mx-auto mt-2 max-w-[320px] text-sm leading-relaxed text-dark-300">
+                Posting has been paused, and dashboard access is temporarily locked. Renew your plan to
+                bring your AdBot back online with the same accounts and settings.
               </p>
-            </div>
+
+              <div className="mt-5 flex items-center justify-center gap-2.5 rounded-2xl border border-warning/20 bg-warning/[0.07] px-4 py-3">
+                <Clock className="h-4 w-4 shrink-0 text-warning" />
+                <p className="text-[13px] font-semibold text-warning">
+                  <span className="tabular-nums text-white">{hrs}h remaining</span> before your AdBot is
+                  permanently removed
+                </p>
+              </div>
+
+              <button
+                onClick={() => router.push("/user/billing/renew")}
+                className="mt-5 inline-flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-accent text-[15px] font-bold text-white shadow-lg shadow-accent/25 transition-all hover:bg-accent-600 active:scale-[0.99]"
+              >
+                <RefreshCw className="h-4 w-4" />
+                Renew Plan
+              </button>
+
+              {/* Reassurance — nothing is lost during grace */}
+              <div className="mt-4 flex items-center justify-center gap-2 text-[12px] text-dark-400">
+                <ShieldCheck className="h-3.5 w-3.5 text-success/70" />
+                <span>Your accounts and settings will remain safe during the grace period.</span>
+              </div>
+            </>
           ) : (
-            <div className="mt-5 flex items-center justify-center gap-2.5 rounded-2xl border border-danger/20 bg-danger/[0.07] px-4 py-3">
-              <Clock className="h-4 w-4 shrink-0 text-danger" />
-              <p className="text-[13px] font-semibold text-danger">
-                Grace period ended — renew now before removal
+            <>
+              <h2 className="text-[22px] font-black tracking-tight text-white">Your AdBot can no longer be restored</h2>
+              <p className="mx-auto mt-2 max-w-[320px] text-sm leading-relaxed text-dark-300">
+                The 48-hour renewal period has ended, and your AdBot is being removed.
               </p>
-            </div>
+            </>
           )}
-
-          <button
-            onClick={() => router.push("/user/billing/renew")}
-            className="mt-5 inline-flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-accent text-[15px] font-bold text-white shadow-lg shadow-accent/25 transition-all hover:bg-accent-600 active:scale-[0.99]"
-          >
-            <RefreshCw className="h-4 w-4" />
-            Renew Now
-          </button>
-
-          {/* Reassurance — nothing is lost during grace */}
-          <div className="mt-4 flex items-center justify-center gap-2 text-[12px] text-dark-400">
-            <ShieldCheck className="h-3.5 w-3.5 text-success/70" />
-            <span>Your accounts and settings are safe during the grace period.</span>
-          </div>
         </div>
       </div>
     </div>

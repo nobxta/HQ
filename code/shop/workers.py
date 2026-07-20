@@ -956,10 +956,10 @@ async def renewal_scheduler_worker() -> None:
                     from .. import bot_ptb
                     from ..utils import get_name_by_token, save_user_data
                     bot = bot_ptb._get_ptb_bot(bot_token)
-                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Renew Now", callback_data=f"renew_open:{bot_username_norm or cfg.get('name', '')}")]])
+                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Renew Plan", callback_data=f"renew_open:{bot_username_norm or cfg.get('name', '')}")]])
                     await bot.send_message(
                         user_id,
-                        f"Your AdBot plan is ending in {hours_left} hours.\nRenew now to keep it active.",
+                        f"Your AdBot plan expires in {hours_left} hours.\n\nRenew now to keep your AdBot running without interruption.",
                         reply_markup=kb,
                     )
                     name = get_name_by_token(bot_token)

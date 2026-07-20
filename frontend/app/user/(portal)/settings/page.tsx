@@ -294,7 +294,7 @@ export default function UserSettingsPage() {
             <div className="flex items-center gap-2 rounded-lg bg-warning/5 border border-warning/20 p-3">
               <AlertTriangle className="h-4 w-4 text-warning shrink-0" />
               <p className="text-xs text-warning">
-                Your plan expires in {daysRemaining} day{daysRemaining !== 1 ? "s" : ""}. Extend now to avoid interruption.
+                Your plan expires in {daysRemaining} day{daysRemaining !== 1 ? "s" : ""}. Renew now to keep your AdBot running.
               </p>
             </div>
           )}
@@ -302,7 +302,7 @@ export default function UserSettingsPage() {
             <div className="flex items-center gap-2 rounded-lg bg-danger/5 border border-danger/20 p-3">
               <AlertTriangle className="h-4 w-4 text-danger shrink-0" />
               <p className="text-xs text-danger">
-                Your plan has expired. Extend to resume posting.
+                Your plan has expired, and posting is paused. Renew to reactivate your AdBot.
               </p>
             </div>
           )}

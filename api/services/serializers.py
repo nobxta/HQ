@@ -25,14 +25,23 @@ def _expiry_fields(cfg: dict) -> dict:
             pass
     grace_hours_left = None
     in_grace = False
-    if expired_at_raw:
-        try:
+    # Grace countdown. Normally anchored at expired_at (stamped in UTC when posting stops).
+    # But there is a window between valid_till passing and the hourly backstop worker
+    # stamping expired_at — during it, fall back to anchoring at valid_till so the portal
+    # shows "grace just started / ~48h left" instead of wrongly implying grace has ended.
+    try:
+        left = None
+        if expired_at_raw:
             started = datetime.fromisoformat(expired_at_raw.replace("Z", "").split(".")[0])
             left = (started + timedelta(hours=_GRACE_HOURS)) - datetime.utcnow()
+        elif expired and vt:
+            started = datetime.strptime(vt, "%d/%m/%Y")
+            left = (started + timedelta(hours=_GRACE_HOURS)) - datetime.now()
+        if left is not None:
             grace_hours_left = max(0, int(left.total_seconds() // 3600))
             in_grace = left.total_seconds() > 0
-        except ValueError:
-            pass
+    except ValueError:
+        pass
     return {
         "expired": expired,
         "in_grace": in_grace,

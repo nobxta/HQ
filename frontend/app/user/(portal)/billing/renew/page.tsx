@@ -524,14 +524,14 @@ function PlanStatusSummary({ planName, planExpired, remaining, graceHoursLeft }:
         <div className="min-w-0">
           <p className="truncate text-[16px] font-bold leading-tight" style={{ color: C.text }}>{planName} Plan</p>
           <p className="mt-1 text-[13px] font-semibold" style={{ color: planExpired ? "#F2555A" : C.success }}>
-            {planExpired ? "Subscription expired" : "Subscription active"}
+            {planExpired ? "Plan expired" : "Subscription active"}
           </p>
         </div>
       </div>
       {windowLabel && (
         <div className="flex shrink-0 items-center gap-2.5 text-right">
           <div>
-            <p className="text-[12px]" style={{ color: C.sub }}>Renew within</p>
+            <p className="text-[12px]" style={{ color: C.sub }}>{planExpired ? "Left to renew" : "Renew within"}</p>
             <p className="text-[19px] font-bold tabular-nums leading-tight sm:text-[20px]" style={{ color: C.text }}>{windowLabel}</p>
           </div>
           <span

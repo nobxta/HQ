@@ -5235,13 +5235,13 @@ async def create_user_bot(bot_token: str) -> None:
         hrs = _grace_hours_left(get_cfg())
         if hrs is not None:
             return (
-                "⚠️ Your AdBot plan has expired and posting has stopped.\n\n"
-                f"You have about {hrs} hour(s) left to renew before your bot is removed. "
-                "Tap Renew Now to restore it with the same accounts."
+                "⚠️ Your AdBot plan has expired, and posting is currently paused.\n\n"
+                f"You have approximately {hrs} hour(s) left to renew before your bot is removed. "
+                "Renew now to restore it with the same accounts and settings."
             )
         return (
-            "⚠️ Your AdBot plan has expired and posting has stopped.\n\n"
-            "Renew now to restore your bot."
+            "⚠️ Your AdBot plan has expired, and posting is currently paused.\n\n"
+            "Renew now to restore it with the same accounts and settings."
         )
 
     @client.on(events.NewMessage(pattern=r"^/start\s*$"))
@@ -5261,11 +5261,12 @@ async def create_user_bot(bot_token: str) -> None:
                 pass
             # Offer an ownership claim: whoever holds this bot's web access code is its owner.
             _owner_claim_state.get(bot_token, {}).pop(event.sender_id, None)
-            await event.reply(
-                "🔒 You are not authorized to use this bot.\n\n"
+            _txt, _ent = build_panel_message(
+                "trust",
+                "**You are not authorized to use this bot.**\n\n"
                 "If you're the owner, tap below and paste your web access code to take over.",
-                buttons=[[Button.inline("➕ Add Me As Owner", CB_ADD_OWNER)]],
             )
+            await event.reply(_txt, formatting_entities=_ent, buttons=[[panel_button("Add Me As Owner", CB_ADD_OWNER, "wave")]])
             return
         # Self-heal: make sure this authorized user has the dashboard menu button.
         try:
@@ -5350,10 +5351,11 @@ async def create_user_bot(bot_token: str) -> None:
         except Exception:
             pass
         log_bot_event(bot_token, f"Ownership claimed by {new_uid} (remove_previous={remove_previous})")
-        await event.respond(
-            "✅ You're now the owner of this bot. Welcome!\n\n**AdBot** — What would you like to do?",
-            buttons=_menu_buttons(), parse_mode="md",
+        _txt, _ent = build_panel_message(
+            "green_tick",
+            "**You're now the owner of this bot. Welcome!**\n\n**AdBot** — What would you like to do?",
         )
+        await event.respond(_txt, formatting_entities=_ent, buttons=_menu_buttons())
 
     async def _handle_owner_claim_callback(event) -> None:
         data = event.data
@@ -5362,20 +5364,22 @@ async def create_user_bot(bot_token: str) -> None:
         if data == CB_ADD_OWNER:
             _owner_claim_state.setdefault(bot_token, {})[uid] = "code"
             await event.answer()
+            _txt, _ent = build_panel_message(
+                "keyboard",
+                "Send me your **web access code** for this bot.\n\nIt's the code from your dashboard.",
+            )
+            _kb = [[panel_button("Cancel", CB_CLAIM_CANCEL, "cancelled")]]
             try:
-                await event.edit(
-                    "🔑 Send me your **web access code** for this bot.\n\n"
-                    "It's the code from your dashboard. Send /start to cancel.",
-                    parse_mode="md",
-                )
+                await event.edit(_txt, formatting_entities=_ent, buttons=_kb)
             except Exception:
-                await event.respond("Send me your web access code for this bot. /start to cancel.")
+                await event.respond(_txt, formatting_entities=_ent, buttons=_kb)
             return
         if data == CB_CLAIM_CANCEL:
             _owner_claim_state.get(bot_token, {}).pop(uid, None)
             await event.answer("Cancelled.")
+            _txt, _ent = build_panel_message("cancelled", "Ownership claim cancelled. Send /start if you change your mind.")
             try:
-                await event.edit("Ownership claim cancelled. Send /start if you change your mind.")
+                await event.edit(_txt, formatting_entities=_ent, buttons=None)
             except Exception:
                 pass
             return
@@ -5402,19 +5406,21 @@ async def create_user_bot(bot_token: str) -> None:
         cfg = get_cfg() or {}
         expected = (cfg.get("web_token") or "").strip()
         if not expected or text != expected:
-            await event.reply("❌ That code doesn't match. Paste your exact web access code, or send /start to cancel.")
+            _txt, _ent = build_panel_message("red_cross", "That code doesn't match. Paste your exact web access code.")
+            await event.reply(_txt, formatting_entities=_ent, buttons=[[panel_button("Cancel", CB_CLAIM_CANCEL, "cancelled")]])
             raise events.StopPropagation
         old_owner = cfg.get("owner_id") or 0
         if old_owner and int(old_owner) != int(uid):
             _owner_claim_state.setdefault(bot_token, {})[uid] = "choose"
-            await event.reply(
-                "✅ Code verified.\n\nThis bot already has an owner. What should I do with them?",
-                buttons=[
-                    [Button.inline("🚫 Remove previous owner", CB_OWNER_REMOVE)],
-                    [Button.inline("👥 Keep in authorized list", CB_OWNER_KEEP)],
-                    [Button.inline("Cancel", CB_CLAIM_CANCEL)],
-                ],
+            _txt, _ent = build_panel_message(
+                "green_tick",
+                "**Code verified.**\n\nThis bot already has an owner. What should I do with them?",
             )
+            await event.reply(_txt, formatting_entities=_ent, buttons=[
+                [panel_button("Remove previous owner", CB_OWNER_REMOVE, "delete")],
+                [panel_button("Keep in authorized list", CB_OWNER_KEEP, "trust")],
+                [panel_button("Cancel", CB_CLAIM_CANCEL, "cancelled")],
+            ])
             raise events.StopPropagation
         # No previous owner (or already this user) → finalize straight away.
         await _finalize_owner_claim(event, remove_previous=False)
