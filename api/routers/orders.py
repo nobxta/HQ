@@ -162,6 +162,18 @@ async def mark_paid(order_id: str):
     order = get_order(order_id)
     if not order:
         raise HTTPException(404, f"Order '{order_id}' not found")
+    # Renewals must EXTEND the bot's validity, never trigger a new-bot build. order_mark_paid
+    # would wrongly push a renewal into "creating" (a provisioning state), stranding it — and
+    # "creating" can't be cancelled. apply_confirmed_payment runs the renewal branch
+    # (extend_valid_till_for_bot → paid → completed), is idempotent, and is the SAME path the
+    # IPN webhook uses, so admin confirmation and automatic confirmation behave identically.
+    if order.get("order_type") == "renewal" and order.get("status") in ("payment_waiting", "confirming"):
+        from code.shop.workers import apply_confirmed_payment
+        ok = await apply_confirmed_payment(order, {})
+        if not ok:
+            raise HTTPException(400, "Renewal is no longer awaiting payment")
+        await wrappers.log_admin_action("web_admin", "order_mark_paid", target=f"{order_id} (renewal)")
+        return OrderActionResponse(success=True, message="Renewal confirmed — validity extended")
     # Web orders must run the SAME provisioning the IPN webhook does — issue the web
     # access code, reserve a pooled bot token, and submit the build — not just a status
     # flip, or the order strands in "creating" with no bot. apply_confirmed_payment is

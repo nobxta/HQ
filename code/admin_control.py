@@ -44,7 +44,9 @@ def order_cancel(order_id: str) -> tuple[bool, str]:
     if not o:
         return False, "Order not found"
     s = (o.get("status") or "").strip()
-    if s not in ("payment_waiting", "confirming", "paid", "pending_creation"):
+    # "creating" included so an admin can clear an order that stranded mid-provisioning
+    # (e.g. a renewal that was wrongly pushed into creating before the mark-paid fix).
+    if s not in ("payment_waiting", "confirming", "paid", "pending_creation", "creating"):
         return False, f"Cannot cancel order with status {s}"
     update_order_status(order_id, "cancelled")
     # Free any bot token this order was holding — a cancelled order must not

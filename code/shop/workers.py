@@ -390,7 +390,9 @@ async def apply_confirmed_payment(o: dict, details: dict) -> bool:
     now = datetime.utcnow().isoformat() + "Z"
 
     # ── Website purchase: build headlessly from the pooled token ──
-    if (o.get("source") or "") == "web":
+    # Renewals are excluded — they extend an existing bot's validity (handled below) and must
+    # never run new-bot provisioning, even if a renewal order ever carries source == "web".
+    if (o.get("source") or "") == "web" and o.get("order_type") != "renewal":
         from . import token_pool
         update_order_status(order_id, "paid", paid_at=now)
         # Redemption is counted HERE (payment confirmed), not at order creation, so an

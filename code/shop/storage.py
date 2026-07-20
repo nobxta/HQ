@@ -18,7 +18,7 @@ ORDER_STATUS_TRANSITIONS: dict[str, set[str]] = {
     "confirming": {"paid", "cancelled", "expired"},
     "paid": {"creating", "pending_creation", "cancelled", "completed"},  # completed: renewals finish without a bot-creation step
     "pending_creation": {"creating", "cancelled"},
-    "creating": {"completed", "failed", "pending_creation"},  # pending_creation for stale recovery (>5 min)
+    "creating": {"completed", "failed", "pending_creation", "cancelled"},  # pending_creation for stale recovery (>5 min); cancelled for admin cleanup of stranded orders
     "completed": set(),  # terminal
     "failed": set(),    # terminal
     "cancelled": set(), # terminal
