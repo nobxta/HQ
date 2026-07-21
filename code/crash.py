@@ -2,7 +2,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import config
@@ -38,6 +38,25 @@ def _valid_till(cfg: dict) -> bool:
         return True
 
 
+def _grace_elapsed(cfg: dict) -> bool:
+    """True if the bot is expired and its 48h grace window (from expired_at) has fully passed.
+    Such a bot is about to be purged — it must NOT be resumed on startup, or the newly-started
+    controller client would race the purge and crash when its session file is deleted underneath it."""
+    raw = str(cfg.get("expired_at") or "").strip()
+    if not raw:
+        return False
+    try:
+        started = datetime.fromisoformat(raw.replace("Z", "").split(".")[0])
+    except ValueError:
+        return False
+    try:
+        from .shop.workers import GRACE_PERIOD_HOURS
+        grace_hours = GRACE_PERIOD_HOURS
+    except Exception:
+        grace_hours = 48
+    return (datetime.utcnow() - started) >= timedelta(hours=grace_hours)
+
+
 async def resume_adbots(data: dict) -> None:
     """On start: load storage (data from main), for each bot start user client;
     if state==running and valid_till ok, start posting. Skip dead bots.
@@ -55,6 +74,12 @@ async def resume_adbots(data: dict) -> None:
             continue
         if cfg.get("state") == "dead":
             logger.info("Resume: skipping dead bot %s", cfg.get("name") or bot_token[:20])
+            continue
+        # Grace already elapsed → the grace worker will purge this bot momentarily. Do NOT bring
+        # up its controller bot: a resumed client would race the purge and crash with a readonly/
+        # disk-I/O error when disconnect_and_remove_controller_bot deletes its .session mid-startup.
+        if cfg.get("state") == "expired" and _grace_elapsed(cfg):
+            logger.info("Resume: %s grace elapsed — leaving for purge (not resuming)", cfg.get("name") or bot_token[:20])
             continue
         try:
             asyncio.create_task(create_user_bot(bot_token))
