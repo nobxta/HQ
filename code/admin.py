@@ -75,7 +75,7 @@ _CREATE_GROUP_RETRYABLE = (
 )
 from .session_guard import SessionBusyError, guarded_client
 from .users import _stop_posting, create_user_bot, _workers_alive, disconnect_and_remove_controller_bot
-from .utils import add_admin_alert, delete_bot_from_storage, get_name_by_token, get_session_user, join_chat_by_link, load_adbot, load_pool, name_to_filename, probe_session_identity, record_session_meta, register_for_shutdown, save_adbot, save_pool, save_user_data, validate_bot_token, validate_session
+from .utils import add_admin_alert, delete_bot_from_storage, get_name_by_token, join_chat_by_link, load_adbot, load_pool, name_to_filename, probe_session_identity, record_session_meta, register_for_shutdown, save_adbot, save_pool, save_user_data, validate_bot_token, validate_session
 from .user_config import get_plan_mode
 
 logger = logging.getLogger(__name__)

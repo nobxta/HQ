@@ -41,7 +41,7 @@ from .maintenance import (
 from .rpc_errors import AdBotErrorHandler, AdBotAction, with_retry, SESSION_DEAD_ERRORS, FloodWaitPause, FloodWaitGroupSkip, FLOODWAIT_THRESHOLD_SEC, GROUP_FLOOD_THRESHOLD_SEC, is_permanent_error
 from . import session_guard
 from .session_guard import SessionBusyError
-from .utils import save_pool, load_pool, load_adbot, save_adbot, get_name_by_token, load_user_data, save_user_data, load_stats, save_stats, with_floodwait_retry, add_admin_alert, format_session_death_admin_message, get_bot_log_path, get_session_user, join_chat_by_link, recreate_log_group_for_bot, log_bot_event, append_to_user_log, register_for_shutdown, register_session_active_check, unregister_for_shutdown, validate_session, SESSION_POOL_LOCK, probe_session_identity, record_session_meta, stamp_session_released
+from .utils import save_pool, load_pool, load_adbot, save_adbot, get_name_by_token, load_user_data, save_user_data, load_stats, save_stats, with_floodwait_retry, add_admin_alert, format_session_death_admin_message, get_bot_log_path, join_chat_by_link, recreate_log_group_for_bot, log_bot_event, append_to_user_log, register_for_shutdown, register_session_active_check, unregister_for_shutdown, validate_session, SESSION_POOL_LOCK, probe_session_identity, record_session_meta, stamp_session_released
 from .repair import (
     repair_fix_log_group,
     repair_fix_config,
@@ -519,7 +519,7 @@ _deferred_lock: dict[str, asyncio.Lock] = {}  # bot_token -> Lock
 
 
 def is_session_active(session_path: Path | str) -> bool:
-    """True if this session file is currently open by a posting worker. Block validate/get_session_user when True."""
+    """True if this session file is currently open by a posting worker. Block validate/identity probe when True."""
     path = Path(session_path).resolve()
     key = path.as_posix() if path.is_absolute() else str(path)
     return key in _active_posting_sessions

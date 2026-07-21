@@ -156,6 +156,24 @@ async def _fetch_profile(pc: PooledClient) -> dict:
     except Exception:
         pass
 
+    # Opening the client is a live identity read — persist it into the shared per-session
+    # cache so the admin Sessions page reflects a renamed account without its own probe.
+    try:
+        from code.utils import record_session_meta
+        probe = {
+            "full_name": (f"{me.first_name or ''} {me.last_name or ''}".strip() or None),
+            "username": me.username or None,
+            "phone": me.phone or None,
+            "user_id": me.id,
+            "bio": full_user.about or None,
+            "premium": bool(me.premium),
+            "restricted": bool(me.restricted),
+            "authorized": True,
+        }
+        await asyncio.to_thread(record_session_meta, pc.filename, probe, validation_status="valid")
+    except Exception:
+        pass  # cache write must never break the profile response
+
     return {
         "user_id": me.id,
         "first_name": me.first_name or "",

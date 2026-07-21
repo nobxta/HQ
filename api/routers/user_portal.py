@@ -1200,6 +1200,27 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
         st["session_stats"] = session_stats
         save_stats(name, st)
 
+    # ── Mirror the health outcome into the shared per-session cache so a portal-driven
+    # SpamBot/validation result shows up on the admin Sessions page too (unified health).
+    # Runs off the event loop (to_thread) and never clobbers a busy session's good record.
+    from code.utils import record_session_meta
+    for fn in valid_files:
+        val_ok, val_reason = validation_results.get(fn, (True, ""))
+        low = (val_reason or "").lower()
+        if "busy" in low or "in use" in low or "locked" in low:
+            continue  # in use by a worker — leave the cached record untouched
+        status_val = statuses.get(fn, "")
+        if not val_ok:
+            spam = SPAM_FROZEN if val_reason == "FROZEN" else "DEAD"
+            await asyncio.to_thread(record_session_meta, fn, None,
+                                    validation_status="invalid", spam_status=spam,
+                                    validation_reason=(val_reason or None))
+        elif status_val and status_val != "UNKNOWN":
+            await asyncio.to_thread(record_session_meta, fn, None,
+                                    validation_status="valid", spam_status=status_val)
+        else:
+            await asyncio.to_thread(record_session_meta, fn, None, validation_status="valid")
+
     # ── Build response ──
     _REASON_MAP = {
         SPAM_ACTIVE: {"reason": "Account is active and healthy. No issues detected.", "action": "none", "severity": "ok"},
@@ -1450,6 +1471,10 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
                     _st["session_stats"] = _ss
                     from code.utils import save_stats as _save_stats
                     _save_stats(_name, _st)
+                # Mirror into the shared per-session cache (admin Sessions health stays in sync).
+                from code.utils import record_session_meta as _record_meta
+                await asyncio.to_thread(_record_meta, sf, None,
+                                        validation_status="invalid", spam_status=(dead_reason or "DEAD"))
             else:
                 _log.info("  Session %s: LIVE CHECK = ALIVE. Skipping.", sf)
 
@@ -2212,6 +2237,17 @@ async def portal_pre_start_check(bot_name: str, telegram_id: int = Query(...)):
             if not alive:
                 ss2["_last_spam_status"] = "DEAD" if reason_str != "FROZEN" else "FROZEN"
             session_stats[sf] = ss2
+
+        # Mirror into the shared per-session cache so admin Sessions health stays unified.
+        # (busy sessions are left as-is; their cached record is still valid.)
+        if status == "dead":
+            from code.utils import record_session_meta as _record_meta
+            _spam = "FROZEN" if "frozen" in (reason or "").lower() else "DEAD"
+            await asyncio.to_thread(_record_meta, sf, None,
+                                    validation_status="invalid", spam_status=_spam)
+        elif status == "healthy":
+            from code.utils import record_session_meta as _record_meta
+            await asyncio.to_thread(_record_meta, sf, None, validation_status="valid")
 
         results.append({
             "session_file": sf,

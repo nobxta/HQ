@@ -18,7 +18,7 @@ try:
 except ImportError:
     FileLock = None  # type: ignore[misc, assignment]
 
-# Set by users module: True if session is currently in use by a posting worker (do not open for validate/get_session_user)
+# Set by users module: True if session is currently in use by a posting worker (do not open for validate/identity probe)
 _session_active_callback: Callable[[Path], bool] | None = None
 
 
@@ -685,29 +685,6 @@ async def with_floodwait_retry(
 ) -> Any:
     """FloodWait handling: delegates to rpc_errors.with_retry (retry + session-dead re-raise)."""
     return await with_retry(coro_factory, max_tries=max_tries, backoff=backoff)
-
-
-async def get_session_user(session_path: Path) -> tuple[int, str] | None:
-    """Connect with session, return (user_id, first_name) or None on failure."""
-    from .session_guard import open_session, busy_message
-    session_path = session_path.resolve()
-    if not session_path.is_file():
-        return None
-    if _session_active_callback and _session_active_callback(session_path):
-        return None
-    busy = busy_message(session_path)
-    if busy:
-        logger.info("get_session_user skipped: %s", busy)
-        return None
-    try:
-        async with open_session(session_path, "reading account info", wait_timeout=5, expected_sec=20) as tc:
-            if not await tc.is_user_authorized():
-                return None
-            me = await tc.get_me()
-            return (me.id, (me.first_name or "").strip() or str(me.id))
-    except Exception as e:
-        logger.warning("get_session_user failed for %s: %s", session_path.name, e)
-        return None
 
 
 async def join_chat_by_link(client: TelegramClient, link: str | int) -> None:
