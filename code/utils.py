@@ -1250,18 +1250,23 @@ def load_adbot() -> dict[str, Any]:
 def save_adbot(data: dict[str, Any]) -> None:
     """Save merged data to pool + user files. Each bot config must have 'name' and is stored with bot_token in user JSON.
 
-    load_adbot only surfaces the pool's bucket lists, so we merge those back onto the existing
-    pool under the lock instead of reconstructing it — this preserves pool keys save_adbot does
-    NOT own (session_meta, starred_sessions), which a hardcoded rebuild would silently wipe."""
-    with SESSION_POOL_LOCK:
-        pool = load_pool()
-        pool["free_sessions"] = data.get("free_sessions", [])
-        pool["dead_sessions"] = data.get("dead_sessions", [])
-        pool["frozen_sessions"] = data.get("frozen_sessions", [])
-        pool["limited_sessions"] = data.get("limited_sessions", [])
-        pool["unauth_sessions"] = data.get("unauth_sessions", [])
-        pool["admin_alerts"] = data.get("admin_alerts", [])
-        save_pool(pool)
+    load_adbot only surfaces the pool's bucket lists, so we overwrite just those on the existing
+    pool instead of reconstructing it — this preserves pool keys save_adbot does NOT own
+    (session_meta, starred_sessions), which the old hardcoded rebuild silently wiped.
+
+    Intentionally does NOT take SESSION_POOL_LOCK: save_adbot is called directly on the event
+    loop by the Telegram handlers, and a bot build can hold that lock for minutes — acquiring it
+    here would freeze those handlers. Locking behaviour is therefore identical to the original
+    (save_pool's cross-process file lock only); any concurrent session_meta write we might miss
+    is self-healing (identity refreshes on the session's next touch)."""
+    pool = load_pool()
+    pool["free_sessions"] = data.get("free_sessions", [])
+    pool["dead_sessions"] = data.get("dead_sessions", [])
+    pool["frozen_sessions"] = data.get("frozen_sessions", [])
+    pool["limited_sessions"] = data.get("limited_sessions", [])
+    pool["unauth_sessions"] = data.get("unauth_sessions", [])
+    pool["admin_alerts"] = data.get("admin_alerts", [])
+    save_pool(pool)
     for bot_token, cfg in data.get("bots", {}).items():
         name = (cfg.get("name") or "").strip()
         if not name:
