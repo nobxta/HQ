@@ -3539,13 +3539,13 @@ function ConfigTab({ name, bot, onUpdate }: { name: string; bot: any; onUpdate: 
         <HqTitle>Current Values</HqTitle>
         <div className="divide-y divide-hq-border/60">
           {([
-            ["Cycle", `${bot.cycle}s`],
-            ["Gap", `${bot.gap}s`],
-            ["Group File", bot.group_file || "—"],
-            ["Mode", bot.mode],
-            ["Valid Until", formatDate(bot.valid_till)],
-            ["Sessions", bot.sessions_count],
-            ["State", bot.state],
+            ["Cycle", bot.cycle != null ? `${bot.cycle}s` : "Not set"],
+            ["Gap", bot.gap != null ? `${bot.gap}s` : "Not set"],
+            ["Group File", fmt(bot.group_file, "—")],
+            ["Mode", cap(fmt(bot.mode, "—"))],
+            ["Valid Until", bot.valid_till ? formatDate(bot.valid_till) : "Not set"],
+            ["Sessions", fmt(bot.sessions_count, "0")],
+            ["State", cap(fmt(bot.state, botStatus(bot).label))],
           ] as [string, string][]).map(([k, v]) => <KV key={k} k={k} v={v} />)}
         </div>
       </HqCard>
