@@ -41,7 +41,7 @@ from .maintenance import (
 from .rpc_errors import AdBotErrorHandler, AdBotAction, with_retry, SESSION_DEAD_ERRORS, FloodWaitPause, FloodWaitGroupSkip, FLOODWAIT_THRESHOLD_SEC, GROUP_FLOOD_THRESHOLD_SEC, is_permanent_error
 from . import session_guard
 from .session_guard import SessionBusyError
-from .utils import save_pool, load_pool, load_adbot, save_adbot, get_name_by_token, load_user_data, save_user_data, load_stats, save_stats, with_floodwait_retry, add_admin_alert, format_session_death_admin_message, get_bot_log_path, get_session_user, join_chat_by_link, recreate_log_group_for_bot, log_bot_event, append_to_user_log, register_for_shutdown, register_session_active_check, unregister_for_shutdown, validate_session, SESSION_POOL_LOCK
+from .utils import save_pool, load_pool, load_adbot, save_adbot, get_name_by_token, load_user_data, save_user_data, load_stats, save_stats, with_floodwait_retry, add_admin_alert, format_session_death_admin_message, get_bot_log_path, get_session_user, join_chat_by_link, recreate_log_group_for_bot, log_bot_event, append_to_user_log, register_for_shutdown, register_session_active_check, unregister_for_shutdown, validate_session, SESSION_POOL_LOCK, probe_session_identity, record_session_meta, stamp_session_released
 from .repair import (
     repair_fix_log_group,
     repair_fix_config,
@@ -7326,12 +7326,15 @@ async def create_user_bot(bot_token: str) -> None:
                         if c:
                             sess = list(c.get("sessions", []))
                             rel = f"users/{event.sender_id}/{p.name}"
-                            info = await get_session_user(p)
-                            real_name = str(info[1]) if info else p.name
-                            uid_sess = int(info[0]) if info else 0
+                            probe = await probe_session_identity(p)
+                            real_name = probe.get("full_name") or p.name
+                            uid_sess = int(probe.get("user_id") or 0)
                             sess.append({"file": rel, "real_name": real_name, "user_id": uid_sess, "index": len(sess) + 1})
                             c["sessions"] = sess
                             save_adbot(data)
+                            if probe.get("status") != "busy":
+                                record_session_meta(rel, probe,
+                                                    validation_status="valid" if probe.get("status") == "active" else "unknown")
                             added += 1
                             log_group = _log_group_entity(c.get("log_group"))
                             if log_group:
@@ -7359,12 +7362,15 @@ async def create_user_bot(bot_token: str) -> None:
                             if c:
                                 rel = f"users/{event.sender_id}/{dest.name}"
                                 sess = list(c.get("sessions", []))
-                                info = await get_session_user(dest)
-                                real_name = str(info[1]) if info else dest.name
-                                uid_sess = int(info[0]) if info else 0
+                                probe = await probe_session_identity(dest)
+                                real_name = probe.get("full_name") or dest.name
+                                uid_sess = int(probe.get("user_id") or 0)
                                 sess.append({"file": rel, "real_name": real_name, "user_id": uid_sess, "index": len(sess) + 1})
                                 c["sessions"] = sess
                                 save_adbot(data)
+                                if probe.get("status") != "busy":
+                                    record_session_meta(rel, probe,
+                                                        validation_status="valid" if probe.get("status") == "active" else "unknown")
                                 added += 1
                                 log_group = _log_group_entity(c.get("log_group"))
                                 if log_group:

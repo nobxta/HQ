@@ -170,10 +170,11 @@ def _health_from(pool: str, validation_status: str | None, spam_status: str | No
     vs = (validation_status or "").lower()
     if vs == "invalid":
         return "dead"
+    # SpamBot statuses arrive raw (ACTIVE / TEMP_LIMITED / HARD_LIMITED / FROZEN) — match by substring.
     ss = (spam_status or "").lower()
-    if ss == "frozen":
+    if "frozen" in ss:
         return "frozen"
-    if ss == "limited":
+    if "limited" in ss:
         return "limited"
     if vs in ("valid", "active"):
         return "healthy"
@@ -200,16 +201,21 @@ def _build_overview(range_key: str) -> dict:
     pool = load_pool()
     adbot = load_adbot()
     starred = set(pool.get("starred_sessions", []) or [])
+    # Per-session identity/health cache — read once here; NEVER open a session on this path.
+    session_meta_all = pool.get("session_meta") or {}
 
     sessions: list[dict] = []
 
     def _emit(fn: str, *, pool_bucket: str, entry: dict | None,
               assign: dict | None, activity: dict, stats: dict) -> dict:
         entry = entry or {}
+        meta = session_meta_all.get(fn) or {}
         act = activity.get(fn) or {}
         sstat = stats.get(fn) or {}
         disabled = bool(assign["disabled"]) if assign else False
-        validation_status = entry.get("validation_status")
+        # Cache is the source of truth for identity/health; fall back to the legacy cfg entry
+        # (assigned sessions only) so nothing regresses before the cache is first populated.
+        validation_status = meta.get("validation_status") or (entry.get("validation_status") if assign else None)
         pause_until = 0.0
         cooldown_until = 0.0
         if assign:
@@ -234,7 +240,7 @@ def _build_overview(range_key: str) -> dict:
             }.get(pool_bucket, "unknown"))
 
         pool_label = "assigned" if assign else pool_bucket
-        spam_status = entry.get("spam_status") if assign else None
+        spam_status = meta.get("spam_status") or (entry.get("spam_status") if assign else None)
         health = _health_from(pool_bucket if not assign else "assigned", validation_status, spam_status)
         # Resolve real file presence (assigned-but-missing is an attention state).
         path = config.resolve_session_path(fn)
@@ -287,11 +293,18 @@ def _build_overview(range_key: str) -> dict:
             "pool": pool_label,
             "starred": fn in starred,
 
-            "real_name": (entry.get("real_name") or None),
-            "user_id": entry.get("user_id") or None,
-            "username": None,  # not reliably persisted → honest null
-            "phone_from_file": _digits_from_file(fn),
-            "phone_verified": False,
+            # Identity — from the per-session cache (populated on any real touchpoint), with a
+            # legacy cfg fallback for assigned sessions. Phone is the VERIFIED number or null —
+            # never guessed from the filename.
+            "full_name": (meta.get("full_name") or (entry.get("real_name") if assign else None) or None),
+            "real_name": (meta.get("full_name") or (entry.get("real_name") if assign else None) or None),
+            "user_id": (meta.get("user_id") if meta.get("user_id") is not None else (entry.get("user_id") if assign else None)) or None,
+            "username": meta.get("username") or None,
+            "phone": meta.get("phone") or None,
+            "bio": meta.get("bio") or None,
+            "premium": bool(meta.get("premium")) if meta else False,
+            "restricted": bool(meta.get("restricted")) if meta else False,
+            "authorized": meta.get("authorized") if meta else None,
 
             "bot_name": assign["bot_name"] if assign else None,
             "bot_state": assign["state"] if assign else None,
@@ -300,10 +313,13 @@ def _build_overview(range_key: str) -> dict:
 
             "health": health,
             "validation_status": validation_status or None,
-            "validation_reason": entry.get("validation_reason") or None,
-            "last_validated_at": entry.get("last_validated_at") or None,
+            "validation_reason": (meta.get("validation_reason") or (entry.get("validation_reason") if assign else None) or None),
+            "last_validated_at": (meta.get("last_checked") or (entry.get("last_validated_at") if assign else None) or None),
+            "last_checked": meta.get("last_checked") or None,
             "spam_status": spam_status or None,
             "last_spambot_check_at": (entry.get("last_spambot_check_at") or None) if assign else None,
+            "last_released_from": meta.get("last_released_from") or None,
+            "last_released_at": meta.get("last_released_at") or None,
 
             "derived_status": derived,
             "pause_until": (pause_at or None) if pause_at > now else None,
@@ -732,7 +748,7 @@ async def validate_sessions(body: dict = None):
     are reported as ``busy`` and left untouched.
     """
     from code.config import resolve_session_path
-    from code.utils import validate_session_with_reason
+    from code.utils import validate_session_with_reason, probe_session_identity, record_session_meta
 
     pool = await wrappers.load_pool()
     requested = (body or {}).get("filenames") or list(pool.get("free_sessions", []))
@@ -753,6 +769,7 @@ async def validate_sessions(body: dict = None):
         path = resolve_session_path(fn)
         if not path.is_file():
             results.append({"file": fn, "status": "dead", "reason": "Session file missing"})
+            await asyncio.to_thread(record_session_meta, fn, None, validation_status="invalid")
             await asyncio.to_thread(_reconcile_dead, fn)
             dead_moved.append(fn)
             continue
@@ -766,10 +783,16 @@ async def validate_sessions(body: dict = None):
         low = (reason or "").lower()
         if valid:
             results.append({"file": fn, "status": "active", "reason": ""})
+            # Session is authorized+reachable — capture fresh identity into the cache.
+            probe = await probe_session_identity(path)
+            if probe.get("status") != "busy":
+                await asyncio.to_thread(record_session_meta, fn, probe, validation_status="valid")
         elif "in use" in low or "busy" in low or "locked" in low:
             results.append({"file": fn, "status": "busy", "reason": reason})
         else:
             results.append({"file": fn, "status": "dead", "reason": reason})
+            await asyncio.to_thread(record_session_meta, fn, None,
+                                    validation_status="invalid", validation_reason=reason)
             # canonical validator already moved the file to dead/ — sync the pool
             await asyncio.to_thread(_reconcile_dead, fn)
             dead_moved.append(fn)
@@ -845,9 +868,14 @@ async def spambot_check(body: dict = None):
     moved_limited: list[str] = []
     moved_frozen: list[str] = []
 
+    from code.utils import record_session_meta
+
     for fn in to_check:
         st = statuses.get(fn, "UNKNOWN")
         results.append({"file": fn, "spambot_status": st})
+        # Cache the SpamBot outcome so the dashboard shows health without reconnecting.
+        if st and st != "UNKNOWN":
+            await asyncio.to_thread(record_session_meta, fn, None, spam_status=st)
         if st in (SPAM_TEMP_LIMITED, SPAM_HARD_LIMITED):
             await asyncio.to_thread(_spambot_apply, fn, "limited")
             moved_limited.append(fn)
@@ -879,12 +907,13 @@ async def spambot_check(body: dict = None):
 
 @router.get("/info")
 async def get_sessions_info(filenames: str = Query(None, description="Comma-separated session filenames")):
-    """Quick identity check (connect + get_me via guarded client, no send test). Fast.
-    Safe to run on any session — uses the cross-process session guard, so a busy session
-    reports 'busy' rather than corrupting the file."""
+    """Live identity refresh (connect + get_me/GetFullUser via the guarded client, no send test).
+    This is the manual 'Refresh identity' path: every successful probe is persisted into the
+    per-session metadata cache (pool.json['session_meta']) so subsequent dashboard reads are
+    served from cache without reconnecting. Safe on any session — a busy session reports 'busy'
+    and its cached record is left untouched."""
     from code.config import resolve_session_path
-    from code.session_guard import SessionBusyError, guarded_client
-    from telethon.tl.functions.users import GetFullUserRequest
+    from code.utils import probe_session_identity, record_session_meta
 
     pool = await wrappers.load_pool()
     fns = [f.strip() for f in filenames.split(",")] if filenames else list(pool.get("free_sessions", []))
@@ -892,58 +921,25 @@ async def get_sessions_info(filenames: str = Query(None, description="Comma-sepa
 
     results = []
     for fn in fns:
-        info = {
-            "file": fn, "real_name": "", "user_id": None, "username": "", "phone": "",
-            "bio": "", "premium": False, "restricted": False, "status": "unknown", "error": "",
-        }
-        path = resolve_session_path(fn)
-        if not path.is_file():
-            info["status"] = "dead"
-            info["error"] = "Session file missing"
-            results.append(info)
-            continue
-        client = None
-        try:
-            client = guarded_client(path, "session details check", wait_timeout=5, expected_sec=30)
-            await client.connect()
-            if not await client.is_user_authorized():
-                await client.disconnect()
-                info["status"] = "dead"
-                info["error"] = "Not authorized"
-                results.append(info)
-                continue
-            me = await client.get_me()
-            if me:
-                info["status"] = "active"
-                info["real_name"] = f"{me.first_name or ''} {me.last_name or ''}".strip()
-                info["username"] = me.username or ""
-                info["phone"] = me.phone or ""
-                info["user_id"] = me.id
-                info["premium"] = bool(getattr(me, "premium", False))
-                info["restricted"] = bool(getattr(me, "restricted", False))
-                try:
-                    full = await client(GetFullUserRequest(me.id))
-                    info["bio"] = getattr(full.full_user, "about", "") or ""
-                except Exception:
-                    pass
-            else:
-                info["status"] = "dead"
-                info["error"] = "Could not get user info"
-            await client.disconnect()
-        except SessionBusyError as e:
-            info["status"] = "busy"
-            info["error"] = str(e)[:200]
-        except Exception as e:
-            if client is not None:
-                try:
-                    await client.disconnect()
-                except Exception:
-                    pass
-            if "database is locked" in str(e).lower():
-                info["status"] = "busy"
-            else:
-                info["status"] = "error"
-            info["error"] = str(e)[:150]
-        results.append(info)
+        probe = await probe_session_identity(resolve_session_path(fn))
+        st = probe.get("status")
+        # Persist real results (never a busy skip — that would clobber good cache).
+        if st != "busy":
+            validation_status = "valid" if st == "active" else "invalid" if st in ("unauthorized", "dead") else "unknown"
+            await asyncio.to_thread(record_session_meta, fn, probe, validation_status=validation_status)
+        results.append({
+            "file": fn,
+            "real_name": probe.get("full_name") or "",
+            "full_name": probe.get("full_name"),
+            "user_id": probe.get("user_id"),
+            "username": probe.get("username") or "",
+            "phone": probe.get("phone") or "",
+            "bio": probe.get("bio") or "",
+            "premium": probe.get("premium", False),
+            "restricted": probe.get("restricted", False),
+            "authorized": probe.get("authorized", False),
+            "status": st,
+            "error": probe.get("error", ""),
+        })
 
     return {"sessions": results}

@@ -2,7 +2,7 @@
 import { useState, useRef, useEffect } from "react";
 import {
   MoreHorizontal, Eye, ExternalLink, ShieldCheck, Shield, LinkIcon,
-  ArrowRightLeft, Star, Trash2, Power, Repeat, Unlink, Bot, Activity,
+  ArrowRightLeft, Star, Trash2, Power, Repeat, Unlink, Bot, Activity, RefreshCw,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { SessionOverviewItem } from "@/lib/types";
@@ -13,6 +13,7 @@ export interface SessionActions {
   onOpenClient: (s: SessionOverviewItem) => void;
   onOpenBot: (s: SessionOverviewItem) => void;
   onValidate: (s: SessionOverviewItem) => void;
+  onRefreshInfo: (s: SessionOverviewItem) => void;
   onSpambot: (s: SessionOverviewItem) => void;
   onAssign: (s: SessionOverviewItem) => void;
   onMove: (s: SessionOverviewItem) => void;
@@ -37,6 +38,7 @@ export function buildMenuItems(s: SessionOverviewItem, a: SessionActions): Item[
   if (isAssigned(s)) {
     items.push({ label: "Open assigned AdBot", icon: Bot, fn: () => a.onOpenBot(s) });
     items.push({ label: "Validate safely", icon: ShieldCheck, fn: () => a.onValidate(s) });
+    items.push({ label: "Refresh identity", icon: RefreshCw, fn: () => a.onRefreshInfo(s) });
     items.push({ label: s.disabled ? "Enable (use in ads)" : "Disable (pause in ads)", icon: Power, fn: () => a.onToggleEnabled(s) });
     items.push({ label: "Replace session", icon: Repeat, fn: () => a.onReplace(s) });
     items.push({ label: "Change health status", icon: Activity, fn: () => a.onSetStatus(s) });
@@ -44,6 +46,7 @@ export function buildMenuItems(s: SessionOverviewItem, a: SessionActions): Item[
     items.push({ label: "Unassign", icon: Unlink, fn: () => a.onUnassign(s), danger: true, separator: true });
   } else {
     items.push({ label: "Validate", icon: ShieldCheck, fn: () => a.onValidate(s) });
+    items.push({ label: "Refresh identity", icon: RefreshCw, fn: () => a.onRefreshInfo(s) });
     // SpamBot only meaningful on non-failure unassigned sessions
     if (s.pool === "free" || s.pool === "limited" || s.pool === "frozen") {
       items.push({ label: "SpamBot check", icon: Shield, fn: () => a.onSpambot(s) });

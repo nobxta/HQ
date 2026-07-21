@@ -267,11 +267,18 @@ export interface SessionOverviewItem {
   pool: SessionPool;
   starred: boolean;
 
+  // Identity — sourced from the per-session cache (pool.json["session_meta"]); null where the
+  // account doesn't expose it (never guessed from the filename). `real_name` is kept as an
+  // alias of `full_name` for back-compat with older components.
+  full_name: string | null;
   real_name: string | null;
   user_id: number | null;
   username: string | null;
-  phone_from_file: string | null;
-  phone_verified: boolean;
+  phone: string | null;          // verified Telegram phone, or null
+  bio: string | null;
+  premium: boolean;
+  restricted: boolean;
+  authorized: boolean | null;
 
   bot_name: string | null;
   bot_state: string | null;
@@ -282,8 +289,11 @@ export interface SessionOverviewItem {
   validation_status: string | null;
   validation_reason: string | null;
   last_validated_at: number | null;
+  last_checked: number | null;   // epoch of last live probe (identity/health)
   spam_status: string | null;
   last_spambot_check_at: number | null;
+  last_released_from: string | null;
+  last_released_at: number | null;
 
   derived_status: SessionDerivedStatus;
   pause_until: number | null;

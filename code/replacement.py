@@ -233,6 +233,7 @@ async def check_and_flag_failing_sessions(bot_token: str) -> list[dict[str, Any]
     if not st:
         st = {}
     session_stats = st.get("session_stats", {})
+    from .utils import record_session_meta
     for f in failing:
         fn = f["session_file"]
         spam_status = statuses.get(fn, "UNKNOWN")
@@ -243,6 +244,9 @@ async def check_and_flag_failing_sessions(bot_token: str) -> list[dict[str, Any]
         ss["_last_health_check_ts"] = time.time()
         ss["_last_spam_status"] = spam_status
         session_stats[fn] = ss
+        # Mirror the SpamBot outcome into the shared per-session cache.
+        if spam_status and spam_status != "UNKNOWN":
+            record_session_meta(fn, None, spam_status=spam_status)
     st["session_stats"] = session_stats
     save_stats(name, st)
     return flagged

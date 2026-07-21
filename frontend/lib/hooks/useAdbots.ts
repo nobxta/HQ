@@ -44,11 +44,15 @@ export interface SessionOverview {
     file: string;
     display_name: string;
     telegram_user_id: number | null;
+    username?: string | null;
+    phone?: string | null;
     phone_from_file: string | null;
+    authorized?: boolean | null;
     status: string;
     enabled: boolean;
     last_active_at: number | null;
     last_validated_at: number | null;
+    last_checked?: number | null;
     validation_status: string;
     validation_reason: string | null;
     last_error: string | null;

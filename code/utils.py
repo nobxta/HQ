@@ -50,7 +50,7 @@ def name_to_filename(name: str) -> str:
 
 def _default_pool() -> dict[str, Any]:
     """Return the default pool structure."""
-    return {"free_sessions": [], "dead_sessions": [], "frozen_sessions": [], "limited_sessions": [], "unauth_sessions": [], "admin_alerts": []}
+    return {"free_sessions": [], "dead_sessions": [], "frozen_sessions": [], "limited_sessions": [], "unauth_sessions": [], "admin_alerts": [], "session_meta": {}}
 
 
 @contextmanager
@@ -203,6 +203,7 @@ def load_pool() -> dict[str, Any]:
         data.setdefault("limited_sessions", [])
         data.setdefault("unauth_sessions", [])
         data.setdefault("admin_alerts", [])
+        data.setdefault("session_meta", {})
         return data
     except Exception as e:
         logger.warning("Could not load pool: %s", e)
@@ -217,6 +218,7 @@ def save_pool(data: dict[str, Any]) -> None:
     data.setdefault("limited_sessions", [])
     data.setdefault("unauth_sessions", [])
     data.setdefault("admin_alerts", [])
+    data.setdefault("session_meta", {})
     path = config.DATA_POOL_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     with _file_lock(path):
@@ -280,6 +282,207 @@ def move_session_to_bucket(fn: str, dest_bucket: str) -> None:
         save_pool(pool)
 
 
+# ── Per-session metadata cache (data/pool.json["session_meta"]) ─────────────────
+# Single filename-keyed store of INTRINSIC account facts (identity, auth, health) so the
+# admin/portal views can render name/id/phone/health for every session — assigned or free —
+# WITHOUT opening the Telethon session on each read. Written only when a session is actually
+# probed by a real touchpoint (create/validate/spambot/return/refresh); read freely.
+#
+# It deliberately does NOT hold "assigned to which bot" — ownership is derived live from the
+# bot config (adbot.json cfg["sessions"]) so it can never drift into a two-bots-one-account
+# bug. Only historical breadcrumbs (last_released_from/at) are stored, and those are events.
+_SESSION_META_PROBE_KEYS = (
+    "full_name", "username", "phone", "user_id", "bio",
+    "premium", "restricted", "authorized", "session_path",
+)
+_SESSION_META_TTL = 24 * 3600  # re-probe only if the cached record is older than this
+
+# Per-filename asyncio locks so two tasks never live-probe the same session concurrently.
+_session_probe_locks: dict[str, asyncio.Lock] = {}
+_session_probe_locks_guard = threading.Lock()
+
+
+def get_session_meta(fn: str) -> dict[str, Any] | None:
+    """Cached identity/health for one session from data/pool.json['session_meta']. Pure read —
+    NEVER opens the session. Returns None when nothing has been recorded yet."""
+    if not fn:
+        return None
+    return (load_pool().get("session_meta") or {}).get(fn)
+
+
+def record_session_meta(fn: str, probe: dict[str, Any] | None = None, *,
+                        health: str | None = None,
+                        validation_status: str | None = None,
+                        validation_reason: str | None = None,
+                        spam_status: str | None = None,
+                        touch: bool = True,
+                        **extra: Any) -> dict[str, Any] | None:
+    """Merge a probe result + health signals into pool['session_meta'][fn] under the pool lock.
+
+    ``probe`` is the full dict from :func:`probe_session_identity` — its identity keys overwrite
+    (None values included, so a cleared username is honestly stored as null). ``health`` /
+    ``validation_status`` / ``validation_reason`` / ``spam_status`` are sentinels: None means
+    "leave whatever is cached". ``touch`` stamps ``last_checked`` (set False for pure history
+    writes). Extra kwargs (e.g. last_released_from) are merged verbatim."""
+    if not fn:
+        return None
+    with SESSION_POOL_LOCK:
+        pool = load_pool()
+        meta = pool.setdefault("session_meta", {})
+        rec = dict(meta.get(fn) or {})
+        if probe:
+            for k in _SESSION_META_PROBE_KEYS:
+                if k in probe:
+                    rec[k] = probe[k]
+        if health is not None:
+            rec["health"] = health
+        if validation_status is not None:
+            rec["validation_status"] = validation_status
+        if validation_reason is not None:
+            rec["validation_reason"] = validation_reason
+        if spam_status is not None:
+            rec["spam_status"] = spam_status
+        for k, v in extra.items():
+            rec[k] = v
+        if touch:
+            rec["last_checked"] = time.time()
+        meta[fn] = rec
+        save_pool(pool)
+        return rec
+
+
+def stamp_session_released(fn: str, bot_name: str | None) -> None:
+    """Record return-to-pool history (NOT live assignment). Does not bump last_checked so the
+    24h re-probe TTL still measures the last real identity check."""
+    record_session_meta(fn, touch=False,
+                         last_released_from=(bot_name or None),
+                         last_released_at=time.time())
+
+
+async def probe_session_identity(session_path: Path) -> dict[str, Any]:
+    """The ONE live identity probe: connect under the session guard, read get_me +
+    GetFullUserRequest. Returns a dict with every identity key (None where the account does
+    not expose it) plus ``authorized`` and a ``status`` hint
+    (active|unauthorized|dead|busy|error). Never raises for a busy/dead session — the outcome
+    is reported in the dict so callers decide whether to persist it."""
+    from .session_guard import SessionBusyError, guarded_client
+    from telethon.tl.functions.users import GetFullUserRequest
+    out: dict[str, Any] = {
+        "full_name": None, "username": None, "phone": None, "user_id": None,
+        "bio": None, "premium": False, "restricted": False, "authorized": False,
+        "session_path": None, "status": "unknown", "error": "",
+    }
+    session_path = Path(session_path).resolve()
+    out["session_path"] = str(session_path)
+    if not session_path.is_file():
+        out["status"] = "dead"
+        out["error"] = "Session file missing"
+        return out
+    if _session_active_callback and _session_active_callback(session_path):
+        out["status"] = "busy"
+        out["error"] = "in use by posting"
+        return out
+    client = None
+    try:
+        client = guarded_client(session_path, "session identity probe", wait_timeout=5, expected_sec=30)
+        await client.connect()
+        if not await client.is_user_authorized():
+            out["status"] = "unauthorized"
+            return out
+        me = await client.get_me()
+        if me:
+            out["authorized"] = True
+            out["status"] = "active"
+            out["full_name"] = (f"{me.first_name or ''} {me.last_name or ''}".strip() or None)
+            out["username"] = me.username or None
+            out["phone"] = me.phone or None
+            out["user_id"] = me.id
+            out["premium"] = bool(getattr(me, "premium", False))
+            out["restricted"] = bool(getattr(me, "restricted", False))
+            try:
+                full = await client(GetFullUserRequest(me.id))
+                out["bio"] = getattr(full.full_user, "about", "") or None
+            except Exception:
+                pass
+        else:
+            out["status"] = "dead"
+            out["error"] = "Could not get user info"
+    except SessionBusyError as e:
+        out["status"] = "busy"
+        out["error"] = str(e)[:200]
+    except Exception as e:
+        out["status"] = "busy" if "database is locked" in str(e).lower() else "error"
+        out["error"] = str(e)[:150]
+    finally:
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+    return out
+
+
+def _probe_lock_for(fn: str) -> asyncio.Lock:
+    with _session_probe_locks_guard:
+        lock = _session_probe_locks.get(fn)
+        if lock is None:
+            lock = asyncio.Lock()
+            _session_probe_locks[fn] = lock
+        return lock
+
+
+def _session_meta_needs_probe(meta: dict[str, Any] | None, reason: str, force: bool) -> bool:
+    """Decide whether ensure_session_fresh should open the session (see policy in its docstring)."""
+    if force or reason in ("manual", "assign"):
+        return True
+    if not meta:
+        return True
+    # Cached identity missing.
+    if meta.get("user_id") is None and meta.get("full_name") is None:
+        return True
+    # Previously failed / unauthorized / never validated.
+    if meta.get("authorized") is False:
+        return True
+    if meta.get("validation_status") in (None, "invalid", "unknown"):
+        return True
+    # 24h TTL (covers reason="returned" rule #3 and generic staleness).
+    age = time.time() - float(meta.get("last_checked") or 0)
+    return age >= _SESSION_META_TTL
+
+
+async def ensure_session_fresh(fn: str, *, reason: str = "manual",
+                               force: bool = False) -> dict[str, Any] | None:
+    """Return the cached session_meta for ``fn``, live-re-probing ONLY when policy requires:
+    manual refresh / being assigned to a bot / cached identity missing / previously
+    failed-or-unauthorized / cache older than the 24h TTL (this is also rule #3 for a session
+    returned from a deleted bot). Otherwise the fresh cached record is returned untouched with
+    no Telegram connection. Serialized per-fn so concurrent callers probe at most once.
+
+    A busy probe never overwrites a good cache — the existing record is returned as-is."""
+    from .config import resolve_session_path
+    meta = get_session_meta(fn)
+    if not _session_meta_needs_probe(meta, reason, force):
+        return meta
+
+    lock = _probe_lock_for(fn)
+    async with lock:
+        # Another task may have refreshed while we waited for the lock.
+        meta = get_session_meta(fn)
+        if meta and not (force or reason in ("manual", "assign")) \
+                and (time.time() - float(meta.get("last_checked") or 0)) < _SESSION_META_TTL \
+                and meta.get("authorized") is not False \
+                and meta.get("validation_status") not in (None, "invalid", "unknown"):
+            return meta
+
+        probe = await probe_session_identity(resolve_session_path(fn))
+        st = probe.get("status")
+        if st == "busy":
+            # In use by another task — its metadata is still valid; do not clobber.
+            return get_session_meta(fn)
+        validation_status = "valid" if st == "active" else "invalid" if st in ("unauthorized", "dead") else "unknown"
+        return record_session_meta(fn, probe, validation_status=validation_status)
+
+
 async def delete_bot_from_storage(bot_token: str, move_to: str) -> bool:
     """Full bot deletion: return admin-pool sessions to free/dead, delete user-uploaded sessions,
     remove custom group file, clean pool references, delete user data/log/stats.
@@ -297,6 +500,9 @@ async def delete_bot_from_storage(bot_token: str, move_to: str) -> bool:
     pool = load_pool()
     pool.setdefault("free_sessions", [])
     pool.setdefault("dead_sessions", [])
+    _pool_meta = pool.setdefault("session_meta", {})
+    returned_free: list[str] = []   # admin-pool sessions returned to the free pool (refresh after save)
+    dead_returned: list[str] = []   # admin-pool sessions sent to dead (mark invalid after save)
 
     # --- 1. Handle sessions ---
     for s in cfg.get("sessions", []):
@@ -307,6 +513,8 @@ async def delete_bot_from_storage(bot_token: str, move_to: str) -> bool:
         is_user_uploaded = fn.startswith("users/")
 
         if is_user_uploaded:
+            # Session leaves the system entirely — drop its cached metadata too.
+            _pool_meta.pop(fn, None)
             # User-provided session: delete the file entirely (not admin's pool session)
             if src.is_file():
                 try:
@@ -336,10 +544,12 @@ async def delete_bot_from_storage(bot_token: str, move_to: str) -> bool:
                     if ok:
                         if fn not in pool["free_sessions"]:
                             pool["free_sessions"].append(fn)
+                        returned_free.append(fn)
                         logger.info("[Delete] Returned session to free pool: %s", fn)
                     else:
                         if fn not in pool["dead_sessions"]:
                             pool["dead_sessions"].append(fn)
+                        dead_returned.append(fn)
                         dest = config.SESSIONS_DEAD / Path(fn).name
                         try:
                             shutil.move(str(src), str(dest))
@@ -348,9 +558,11 @@ async def delete_bot_from_storage(bot_token: str, move_to: str) -> bool:
                 else:
                     if fn not in pool["dead_sessions"]:
                         pool["dead_sessions"].append(fn)
+                    dead_returned.append(fn)
             else:
                 if fn not in pool["dead_sessions"]:
                     pool["dead_sessions"].append(fn)
+                dead_returned.append(fn)
                 if src.is_file():
                     dest = config.SESSIONS_DEAD / Path(fn).name
                     try:
@@ -365,6 +577,19 @@ async def delete_bot_from_storage(bot_token: str, move_to: str) -> bool:
             pool[bucket] = [f for f in pool[bucket] if f not in session_files]
 
     save_pool(pool)
+
+    # --- 2b. Refresh the per-session cache for returned sessions (after the pool save so the
+    # cache helpers, which do their own locked load/save, cannot be clobbered by save_pool above).
+    for fn in dead_returned:
+        record_session_meta(fn, None, validation_status="invalid")
+    for fn in returned_free:
+        stamp_session_released(fn, user_name)
+        # reason="returned": re-probe only if the cache is missing/stale/invalid (24h rule),
+        # otherwise reuse the record we already have — no extra Telegram connection.
+        try:
+            await ensure_session_fresh(fn, reason="returned")
+        except Exception as err:
+            logger.warning("[Delete] identity refresh for returned session %s failed: %s", fn, err)
 
     # --- 3. Delete custom group file (chatlist) ---
     try:
@@ -920,8 +1145,12 @@ async def run_startup_validation(data: dict[str, Any]) -> tuple[int, int, list[t
     pool = load_pool()
     pool.setdefault("free_sessions", [])
     pool.setdefault("dead_sessions", [])
+    # Mutate the cache on the local pool dict (not via record_session_meta) so the final
+    # save_pool below does not clobber concurrent-looking writes.
+    meta_all = pool.setdefault("session_meta", {})
     invalid_list: list[tuple[str, str]] = []
     valid_count = 0
+    skipped_fresh = 0
     to_validate: list[tuple[str, str]] = []  # (filename, "free" | bot_token)
     for fn in list(pool.get("free_sessions", [])):
         path = config.SESSIONS_ACTIVE / fn
@@ -943,6 +1172,14 @@ async def run_startup_validation(data: dict[str, Any]) -> tuple[int, int, list[t
         path = config.SESSIONS_ACTIVE / fn
         if not path.is_file():
             continue
+        # TTL gate: a session validated OK within the last 24h is trusted from cache — do NOT
+        # reconnect it on boot (honors "no validation during startup" for the common case).
+        m = meta_all.get(fn)
+        if m and m.get("validation_status") == "valid" \
+                and (time.time() - float(m.get("last_checked") or 0)) < _SESSION_META_TTL:
+            valid_count += 1
+            skipped_fresh += 1
+            continue
         ok, reason = await validate_session_with_reason(path)
         if not ok and ("is busy:" in reason or reason == "in use by posting"):
             # Session held by a live task (posting/chatlist/portal) — cannot check now,
@@ -952,8 +1189,17 @@ async def run_startup_validation(data: dict[str, Any]) -> tuple[int, int, list[t
             continue
         if ok:
             valid_count += 1
+            rec = dict(meta_all.get(fn) or {})
+            rec["validation_status"] = "valid"
+            rec["last_checked"] = time.time()
+            meta_all[fn] = rec
         else:
             invalid_list.append((fn, reason))
+            rec = dict(meta_all.get(fn) or {})
+            rec["validation_status"] = "invalid"
+            rec["validation_reason"] = reason
+            rec["last_checked"] = time.time()
+            meta_all[fn] = rec
             if fn not in pool["dead_sessions"]:
                 pool["dead_sessions"].append(fn)
             if owner == "free":
@@ -966,6 +1212,8 @@ async def run_startup_validation(data: dict[str, Any]) -> tuple[int, int, list[t
                     save_user_data(name, cfg)
             logger.warning("Session %s failed validation: %s", fn if fn.endswith(".session") else fn + ".session", reason)
     invalid_count = len(invalid_list)
+    if skipped_fresh:
+        logger.info("Startup validation: skipped %d session(s) with fresh (<24h) valid cache", skipped_fresh)
     save_pool(pool)
     return valid_count, invalid_count, invalid_list
 
@@ -1000,15 +1248,20 @@ def load_adbot() -> dict[str, Any]:
 
 
 def save_adbot(data: dict[str, Any]) -> None:
-    """Save merged data to pool + user files. Each bot config must have 'name' and is stored with bot_token in user JSON."""
-    save_pool({
-        "free_sessions": data.get("free_sessions", []),
-        "dead_sessions": data.get("dead_sessions", []),
-        "frozen_sessions": data.get("frozen_sessions", []),
-        "limited_sessions": data.get("limited_sessions", []),
-        "unauth_sessions": data.get("unauth_sessions", []),
-        "admin_alerts": data.get("admin_alerts", []),
-    })
+    """Save merged data to pool + user files. Each bot config must have 'name' and is stored with bot_token in user JSON.
+
+    load_adbot only surfaces the pool's bucket lists, so we merge those back onto the existing
+    pool under the lock instead of reconstructing it — this preserves pool keys save_adbot does
+    NOT own (session_meta, starred_sessions), which a hardcoded rebuild would silently wipe."""
+    with SESSION_POOL_LOCK:
+        pool = load_pool()
+        pool["free_sessions"] = data.get("free_sessions", [])
+        pool["dead_sessions"] = data.get("dead_sessions", [])
+        pool["frozen_sessions"] = data.get("frozen_sessions", [])
+        pool["limited_sessions"] = data.get("limited_sessions", [])
+        pool["unauth_sessions"] = data.get("unauth_sessions", [])
+        pool["admin_alerts"] = data.get("admin_alerts", [])
+        save_pool(pool)
     for bot_token, cfg in data.get("bots", {}).items():
         name = (cfg.get("name") or "").strip()
         if not name:

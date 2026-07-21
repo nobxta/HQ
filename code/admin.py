@@ -75,7 +75,7 @@ _CREATE_GROUP_RETRYABLE = (
 )
 from .session_guard import SessionBusyError, guarded_client
 from .users import _stop_posting, create_user_bot, _workers_alive, disconnect_and_remove_controller_bot
-from .utils import add_admin_alert, delete_bot_from_storage, get_name_by_token, get_session_user, join_chat_by_link, load_adbot, load_pool, name_to_filename, register_for_shutdown, save_adbot, save_pool, save_user_data, validate_bot_token, validate_session
+from .utils import add_admin_alert, delete_bot_from_storage, get_name_by_token, get_session_user, join_chat_by_link, load_adbot, load_pool, name_to_filename, probe_session_identity, record_session_meta, register_for_shutdown, save_adbot, save_pool, save_user_data, validate_bot_token, validate_session
 from .user_config import get_plan_mode
 
 logger = logging.getLogger(__name__)
@@ -357,9 +357,11 @@ async def _admin_replace_dead(
             if not await validate_session(path):
                 data.setdefault("dead_sessions", []).append(fn)
                 continue
-            info = await get_session_user(path)
-            real_name = str(info[1]) if info else fn
-            user_id = int(info[0]) if info else 0
+            probe = await probe_session_identity(path)
+            real_name = probe.get("full_name") or fn
+            user_id = int(probe.get("user_id") or 0)
+            if probe.get("status") != "busy":
+                record_session_meta(fn, probe, validation_status="valid" if probe.get("status") == "active" else "unknown")
             new_s = {"file": fn, "real_name": real_name, "user_id": user_id, "index": len(sessions) + 1}
             sessions.append(new_s)
             data["free_sessions"] = [x for x in data.get("free_sessions", []) if x != fn]
@@ -427,9 +429,11 @@ async def _admin_replace_error_sessions(
                     candidate = None
             if candidate:
                 path = config.SESSIONS_ACTIVE / candidate
-                info = await get_session_user(path)
-                real_name = str(info[1]) if info else candidate
-                user_id = int(info[0]) if info else 0
+                probe = await probe_session_identity(path)
+                real_name = probe.get("full_name") or candidate
+                user_id = int(probe.get("user_id") or 0)
+                if probe.get("status") != "busy":
+                    record_session_meta(candidate, probe, validation_status="valid" if probe.get("status") == "active" else "unknown")
                 sessions.append({"file": candidate, "real_name": real_name, "user_id": user_id, "index": len(sessions) + 1})
                 data["free_sessions"] = [x for x in data.get("free_sessions", []) if x != candidate]
                 cfg["session_replacements"].append({
@@ -807,14 +811,13 @@ async def _core_create_adbot_async(
                     continue
             if fn in adbot_data.get("free_sessions", []):
                 adbot_data["free_sessions"] = [x for x in adbot_data["free_sessions"] if x != fn]
-            try:
-                info = await get_session_user(path)
-            except Exception as e:
-                info = None
-                if skip_health_check:
-                    await log_async(f"Session {fn} info lookup failed (using anyway): {e!s}")
-            real_name = str(info[1]) if info else fn
-            user_id = int(info[0]) if info else 0
+            probe = await probe_session_identity(path)
+            if probe.get("status") not in ("active", "busy") and skip_health_check:
+                await log_async(f"Session {fn} info lookup failed (using anyway): {probe.get('error', '')}")
+            real_name = probe.get("full_name") or fn
+            user_id = int(probe.get("user_id") or 0)
+            if probe.get("status") != "busy":
+                record_session_meta(fn, probe, validation_status="valid" if probe.get("status") == "active" else "unknown")
             assigned.append({"file": fn, "real_name": real_name, "user_id": user_id, "index": len(assigned) + 1})
 
         if len(assigned) < sessions_count:

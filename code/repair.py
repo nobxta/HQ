@@ -31,9 +31,10 @@ from .utils import (
     claim_free_session,
     get_bot_log_path,
     get_name_by_token,
-    get_session_user,
     join_chat_by_link,
     load_pool,
+    probe_session_identity,
+    record_session_meta,
     load_user_data,
     move_session_to_bucket,
     name_to_filename,
@@ -380,9 +381,14 @@ async def repair_replace_session(
         await asyncio.to_thread(move_session_to_bucket, new_fn, "dead_sessions")
         return "Replacement session failed validation."
 
-    info = await get_session_user(new_path)
-    real_name = str(info[1]) if info else new_fn
-    user_id = int(info[0]) if info else 0
+    probe = await probe_session_identity(new_path)
+    real_name = probe.get("full_name") or new_fn
+    user_id = int(probe.get("user_id") or 0)
+    if probe.get("status") != "busy":
+        await asyncio.to_thread(
+            record_session_meta, new_fn, probe,
+            validation_status="valid" if probe.get("status") == "active" else "unknown",
+        )
 
     if not add_mode:
         # Swap-in-place: move the old (frozen/limited/unauth) session out of active/ and

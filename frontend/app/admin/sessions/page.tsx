@@ -9,7 +9,7 @@ import { AlertCircle } from "lucide-react";
 import { useSessionsOverview, useAuditLog } from "@/lib/sessions";
 import {
   validateSessions, validateAssignedSession, spambotCheck, starSession, setSessionEnabled,
-  unassignSession,
+  unassignSession, getSessionsInfo,
 } from "@/lib/sessions";
 import type { SessionOverviewItem, BulkOpResult } from "@/lib/types";
 
@@ -212,6 +212,22 @@ export default function SessionsPage() {
     setValidating((p) => { const n = new Set(p); n.delete(s.filename); return n; });
   }, [mutate, highlight]);
 
+  const refreshInfoOne = useCallback(async (s: SessionOverviewItem) => {
+    // Live "Refresh identity": opens the session once (via /info), persists the fresh
+    // identity into the per-session cache, then re-reads the overview from cache.
+    setValidating((p) => new Set(p).add(s.filename));
+    try {
+      const [info] = await getSessionsInfo([s.filename]);
+      const st = String(info?.status || "unknown");
+      if (st === "busy") toast.error("Session is in use by a worker — try again shortly.");
+      else if (st === "active") toast.success(`Identity refreshed: ${info?.full_name || info?.real_name || s.filename}`);
+      else toast.error(`Could not read identity (${st})`);
+      highlight(s.filename);
+      await mutate();
+    } catch (e) { toast.error(errMsg(e, "Refresh failed")); }
+    setValidating((p) => { const n = new Set(p); n.delete(s.filename); return n; });
+  }, [mutate, highlight]);
+
   const toggleStar = useCallback(async (s: SessionOverviewItem) => {
     const on = !s.starred;
     // optimistic
@@ -239,6 +255,7 @@ export default function SessionsPage() {
     onOpenClient: (s) => window.open(`/admin/sessions/${encodeURIComponent(s.filename)}`, "_blank"),
     onOpenBot: (s) => s.bot_name && router.push(`/admin/adbots/${encodeURIComponent(s.bot_name)}`),
     onValidate: validateOne,
+    onRefreshInfo: refreshInfoOne,
     onSpambot: spambotOne,
     onAssign: (s) => setAssignTargets([s]),
     onMove: (s) => setMoveTargets([s]),

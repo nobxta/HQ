@@ -2,7 +2,7 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  X, ExternalLink, Bot, ShieldCheck, Shield, Power, Repeat, Unlink, LinkIcon, Loader2, Activity,
+  X, ExternalLink, Bot, ShieldCheck, Shield, Power, Repeat, Unlink, LinkIcon, Loader2, Activity, RefreshCw,
 } from "lucide-react";
 import Link from "next/link";
 import type { SessionOverviewItem } from "@/lib/types";
@@ -111,18 +111,40 @@ export default function SessionDetailsDrawer({
               {tab === "overview" && (
                 <div className="space-y-0.5">
                   <Field label="Session file" value={s.filename} mono copy={s.filename} />
-                  <Field label="Account name" value={s.real_name || "—"} />
+                  <Field label="Account name" value={s.full_name || s.real_name || "—"} />
+                  <Field label="Username" value={s.username ? `@${s.username}` : "—"} copy={s.username ? `@${s.username}` : undefined} />
                   <Field label="Telegram user ID" value={s.user_id ?? "—"} mono copy={s.user_id ? String(s.user_id) : undefined} />
                   <Field
-                    label="Phone (from filename · unverified)"
-                    value={s.phone_from_file ? `${s.phone_from_file}` : "—"}
+                    label="Phone (verified)"
+                    value={s.phone ? s.phone : "—"}
                     mono
+                    copy={s.phone || undefined}
                   />
+                  {s.bio && <Field label="Bio" value={s.bio} />}
+                  <Field
+                    label="Account flags"
+                    value={
+                      s.authorized == null && s.last_checked == null
+                        ? "Not checked yet"
+                        : [s.premium ? "Premium" : null, s.restricted ? "Restricted" : null,
+                           s.authorized === false ? "Unauthorized" : s.authorized ? "Authorized" : null]
+                            .filter(Boolean).join(" · ") || "—"
+                    }
+                  />
+                  <Field label="Identity checked" value={s.last_checked ? timeAgo(now - s.last_checked) : "Never"} />
                   <Field label="Location" value={<LocationBadge pool={s.pool} />} />
                   <Field label="Starred" value={s.starred ? "Yes" : "No"} />
                   <Field label="Assigned bot" value={s.bot_name || "Not assigned"} />
                   {isAssigned(s) && <Field label="Enabled" value={s.disabled ? "Disabled (parked)" : "Enabled"} />}
-                  <div className="pt-3 flex gap-2">
+                  <div className="pt-3 flex flex-wrap gap-2">
+                    <button
+                      onClick={() => actions.onRefreshInfo(s)}
+                      disabled={validating}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-600 disabled:opacity-60"
+                    >
+                      {validating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                      {validating ? "Refreshing…" : "Refresh identity"}
+                    </button>
                     <button onClick={() => actions.onOpenClient(s)} className="inline-flex items-center gap-1.5 rounded-lg border border-dark-700 bg-dark-800 px-3 py-1.5 text-xs text-dark-200 hover:bg-dark-700">
                       <ExternalLink className="h-3.5 w-3.5" /> Open Telegram client
                     </button>

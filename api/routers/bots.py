@@ -1130,6 +1130,11 @@ async def get_sessions_overview(name: str, range: str = Query("24h")):
 
     activity = await asyncio.to_thread(compute_session_activity, name, since_ts)
 
+    # Per-session identity cache (pool.json) — prefer it over the legacy cfg copy so a renamed
+    # account shows its new name here too. Pure read, no Telethon.
+    from code.utils import load_pool as _load_pool
+    session_meta_all = (await asyncio.to_thread(_load_pool)).get("session_meta") or {}
+
     sessions_cfg = cfg.get("sessions") or []
     disabled_set = {(f or "").strip() for f in (cfg.get("disabled_sessions") or []) if (f or "").strip()}
     pause_until = cfg.get("session_pause_until") or {}
@@ -1145,8 +1150,9 @@ async def get_sessions_overview(name: str, range: str = Query("24h")):
         act = activity.get(fn) or {}
         sstat = session_stats.get(fn) or {}
 
+        meta = session_meta_all.get(fn) or {}
         is_disabled = fn in disabled_set
-        validation_status = s.get("validation_status", "unknown")
+        validation_status = meta.get("validation_status") or s.get("validation_status", "unknown")
 
         # Sent/failed within the window come from the log; "all" prefers the durable
         # lifetime counter (logs may have rotated), flood always from the log.
@@ -1186,23 +1192,25 @@ async def get_sessions_overview(name: str, range: str = Query("24h")):
         sum_failed += failed
         sum_flood += flood
 
-        # Phone number is NOT verified from Telegram here — only derivable from the
-        # session file name. Labeled as such on the client so it isn't shown as a
-        # real phone number.
+        # Verified phone from the identity cache (or null) — never a filename guess.
         digits = "".join(ch for ch in fn.replace(".session", "") if ch.isdigit())
 
         out_sessions.append({
             "index": s.get("index") if s.get("index") is not None else i + 1,
             "file": fn,
-            "display_name": s.get("real_name") or "",
-            "telegram_user_id": s.get("user_id") or None,
+            "display_name": meta.get("full_name") or s.get("real_name") or "",
+            "telegram_user_id": (meta.get("user_id") if meta.get("user_id") is not None else s.get("user_id")) or None,
+            "username": meta.get("username") or None,
+            "phone": meta.get("phone") or None,
             "phone_from_file": digits or None,
+            "authorized": meta.get("authorized") if meta else None,
             "status": status,
             "enabled": not is_disabled,
             "last_active_at": last_active_ts or None,
-            "last_validated_at": s.get("last_validated_at") or None,
+            "last_validated_at": meta.get("last_checked") or s.get("last_validated_at") or None,
+            "last_checked": meta.get("last_checked") or None,
             "validation_status": validation_status,
-            "validation_reason": s.get("validation_reason") or None,
+            "validation_reason": meta.get("validation_reason") or s.get("validation_reason") or None,
             "last_error": act.get("last_error") or None,
             "last_error_at": (act.get("last_error_ts") or None) if act.get("last_error") else None,
             "stats": {
@@ -1464,6 +1472,28 @@ async def validate_all_sessions(name: str):
             s["validation_status"] = "valid" if info["status"] == "active" else "unknown"
             s["validation_reason"] = info["reason"] or ""
             s["last_validated_at"] = time.time()
+
+        # Write-through to the shared per-session cache (single source of truth for the
+        # dashboard). A busy result must not clobber a previously-good cached record.
+        if info["status"] != "busy":
+            from code.utils import record_session_meta
+            probe = None
+            if info["status"] == "active":
+                probe = {
+                    "full_name": (info.get("real_name") or None),
+                    "username": (info.get("username") or None),
+                    "phone": (info.get("phone") or None),
+                    "user_id": info.get("user_id"),
+                    "bio": (info.get("bio") or None),
+                    "premium": info.get("premium", False),
+                    "restricted": info.get("restricted", False),
+                    "authorized": True,
+                    "session_path": str(path),
+                }
+            vs = "valid" if info["status"] == "active" else "invalid" if info["status"] == "dead" else "unknown"
+            await asyncio.to_thread(record_session_meta, fn, probe,
+                                    validation_status=vs,
+                                    validation_reason=(info.get("reason") or None))
 
         results.append(info)
 
