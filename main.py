@@ -277,7 +277,7 @@ async def main() -> None:
     _clean_stale_session_journals()
     _clean_stale_userbot_sessions()
 
-    from code.utils import load_adbot, discover_local_sessions, get_shutdown_clients
+    from code.utils import load_adbot, discover_local_sessions, get_shutdown_clients, cleanup_stray_temp_bot_sessions
     from code.users import _stop_posting, _log_queue_consumer, run_session_health_monitor, await_all_pending_stop_cleanup, _stats_flush_loop, _drift_check_loop, _user_log_flush_loop, run_miniapp_menu_button_sweep, cleanup_stopped_bot_locks
 
     # Recover orphaned posting locks left by a previous unclean exit for bots that are
@@ -288,6 +288,13 @@ async def main() -> None:
         cleanup_stopped_bot_locks()
     except Exception as _e:
         logger.warning("startup cleanup_stopped_bot_locks failed: %s", _e)
+
+    # Sweep leftover bot-token-validation temp session files (_tmp_bot_*.session) that older
+    # code left piling up in the working directory.
+    try:
+        cleanup_stray_temp_bot_sessions()
+    except Exception as _e:
+        logger.warning("startup cleanup_stray_temp_bot_sessions failed: %s", _e)
 
     data = load_adbot()
 

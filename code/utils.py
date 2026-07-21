@@ -711,16 +711,19 @@ async def join_chat_by_link(client: TelegramClient, link: str | int) -> None:
 
 
 async def validate_bot_token(token: str) -> tuple[bool, str]:
-    """Validate bot token by starting temp client. Returns (ok, username_or_error).
-    Uses a unique session name per token so different tokens always get fresh validation (no cached bot)."""
+    """Validate bot token by starting a temp client. Returns (ok, username_or_error).
+
+    Uses an in-memory StringSession so the check writes NO file to disk — the previous
+    implementation named the client ``_tmp_bot_<hash>`` (a bare name), which made Telethon
+    drop a ``_tmp_bot_<hash>.session`` file in the working directory that was never cleaned up,
+    piling up in the app's main folder over time."""
     import re
+    from telethon.sessions import StringSession
     token = (token or "").strip()
     if not token or not re.fullmatch(r"[0-9]+:[a-zA-Z0-9_-]+", token):
         return False, "Invalid token format."
-    # Unique session per token so we never reuse a previous bot's session
-    session_name = "_tmp_bot_" + str(abs(hash(token)))[:12]
     tc = TelegramClient(
-        session_name, config.API_ID, config.API_HASH, proxy=config.PROXY
+        StringSession(), config.API_ID, config.API_HASH, proxy=config.PROXY
     )
     try:
         await tc.start(bot_token=token)
@@ -731,6 +734,35 @@ async def validate_bot_token(token: str) -> tuple[bool, str]:
         return False, str(e) or "Invalid token."
     finally:
         await tc.disconnect()
+
+
+def cleanup_stray_temp_bot_sessions() -> int:
+    """Delete leftover bot-token-validation temp session files. Legacy validate_bot_token wrote
+    ``_tmp_bot_<hash>.session`` into the working directory and never removed them; creation/token
+    repair also leave ``_creation_tmp_bot*`` / ``_fix_bot_token_tmp_*`` under data/ on a crash.
+    None of these are ever real accounts (bot sessions, never in the pool), so they are safe to
+    delete. Returns the number of files removed. Called once at startup."""
+    removed = 0
+    targets: list[tuple[Path, str]] = [
+        (Path.cwd(), "_tmp_bot_*.session"),
+        (Path.cwd(), "_tmp_bot_*.session-journal"),
+        (config.DATA_DIR, "_creation_tmp_bot*"),
+        (config.DATA_DIR, "_fix_bot_token_tmp_*"),
+    ]
+    for base, pattern in targets:
+        try:
+            for p in base.glob(pattern):
+                if p.is_file():
+                    try:
+                        p.unlink()
+                        removed += 1
+                    except OSError as e:
+                        logger.warning("cleanup_stray_temp_bot_sessions: could not remove %s: %s", p, e)
+        except OSError as e:
+            logger.warning("cleanup_stray_temp_bot_sessions: scan of %s failed: %s", base, e)
+    if removed:
+        logger.info("Startup: removed %d stray temp bot-session file(s)", removed)
+    return removed
 
 
 def discover_local_sessions(data: dict[str, Any]) -> int:
