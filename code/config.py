@@ -146,6 +146,9 @@ DATA_POOL_FILE = DATA_DIR / "pool.json"
 DATA_PLANS_FILE = DATA_DIR / "plans.json"
 DATA_COUPONS_FILE = DATA_DIR / "coupons.json"
 DATA_ORDERS_FILE = DATA_DIR / "orders.json"
+# Permanent sales ledger: one append-only record per bot we ever sold (who/what/when),
+# retained even after the bot itself is purged. See utils.record_sold_bot().
+DATA_SOLD_FILE = DATA_DIR / "sold_bots.json"
 DATA_TEMPPAY_FILE = DATA_DIR / "temppay.json"
 DATA_NOW_SUPPORTED_FILE = DATA_DIR / "now_supported.json"
 DATA_MAINTENANCE_FILE = DATA_DIR / "maintenance.json"

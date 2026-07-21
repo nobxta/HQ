@@ -453,9 +453,10 @@ async def main() -> None:
                     if _admin_ptb_running():
                         notify.notify_admin("bot_expired", f"AdBot grace-entry failed: {e}")
             elif job_type == "purge_expired_bot":
-                # Phase 2 — grace elapsed with no renewal. Full teardown: disconnect+remove the
-                # controller bot, return admin sessions to the pool (user-uploaded left on disk),
-                # and archive the config. Same behavior expiry had before the grace window existed.
+                # Phase 2 — grace elapsed with no renewal. Full teardown: send the owner a final
+                # goodbye, disconnect+remove the controller bot (also retires the mini app), return
+                # admin sessions to the pool (user-uploaded left on disk), keep a permanent sales
+                # record, delete logs + group list, and leave a slim 'dead' tombstone.
                 (bot_token,) = payload
                 try:
                     name = get_name_by_token(bot_token)
@@ -463,6 +464,21 @@ async def main() -> None:
                     name_display = (cfg.get("name") or bot_token[:20]) if cfg else bot_token[:20]
                     await _stop_posting(bot_token)
                     await asyncio.sleep(1)
+                    # Final message from the bot to its owner, sent while the controller bot is
+                    # still connected (disconnect_and_remove_controller_bot below tears it down).
+                    owner_id = cfg.get("owner_id") if cfg else None
+                    if owner_id:
+                        try:
+                            from code import bot_ptb
+                            await bot_ptb.send_message_with_bot(
+                                owner_id,
+                                "👋 Your AdBot has been removed.\n\n"
+                                "The 48-hour grace period has ended. Get a new plan whenever you're "
+                                "ready to start again. 🚀",
+                                bot_token=bot_token,
+                            )
+                        except Exception as ge:
+                            logger.warning("purge_expired_bot goodbye failed for %s: %s", bot_token[:20], ge)
                     await disconnect_and_remove_controller_bot(bot_token)
                     returned, dead = await expire_bot_return_sessions_to_pool(bot_token)
                     # Free the pooled bot token so it can be reused. The manual-delete path does

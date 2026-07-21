@@ -613,6 +613,54 @@ def _move_session_to_dead(session_path: Path) -> None:
         logger.warning("Could not move %s to dead: %s", session_path.name, err)
 
 
+def record_sold_bot(cfg: dict, bot_token: str, reason: str = "grace_purge") -> None:
+    """Append a permanent sales record to data/sold_bots.json before a bot is purged.
+
+    Keeps the business history ("we sold this plan, to this owner, on this date") even
+    after the bot, its logs and its config are deleted. Append-only; deduped per bot_token."""
+    path = config.DATA_SOLD_FILE
+    record = {
+        "bot_token_hint": (bot_token or "")[:12] + "…",
+        "name": cfg.get("name"),
+        "owner_id": cfg.get("owner_id"),
+        "bot_username": cfg.get("bot_username"),
+        "plan_mode": cfg.get("plan_mode"),
+        "sessions_count": len(cfg.get("sessions", []) or []),
+        "created_at": cfg.get("created_at") or cfg.get("provisioned_at"),
+        "valid_till": cfg.get("valid_till"),
+        "expired_at": cfg.get("expired_at"),
+        "renewal_price": cfg.get("renewal_price"),
+        "renewals_count": len((cfg.get("renewal_history") or [])) + len(((cfg.get("history") or {}).get("renewals") or [])),
+        "retired_at": datetime.utcnow().isoformat() + "Z",
+        "retired_reason": reason,
+    }
+    with _file_lock(path):
+        ledger: list = []
+        if path.exists():
+            try:
+                loaded = _loads(path.read_bytes())
+                if isinstance(loaded, list):
+                    ledger = loaded
+            except Exception:
+                ledger = []
+        # Dedupe: same token retired at the same expiry shouldn't be recorded twice.
+        key = (record["bot_token_hint"], record["expired_at"])
+        if not any((r.get("bot_token_hint"), r.get("expired_at")) == key for r in ledger if isinstance(r, dict)):
+            ledger.append(record)
+        tmp = path.parent / (path.name + ".tmp")
+        tmp.write_bytes(_dumps(ledger))
+        try:
+            os.replace(tmp, path)
+        except Exception:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
+            raise
+    logger.info("[Sold] Recorded sale history for %s (owner=%s, reason=%s)", cfg.get("name"), cfg.get("owner_id"), reason)
+
+
 async def expire_bot_return_sessions_to_pool(bot_token: str) -> tuple[int, int]:
     """On bot expiry: return ADMIN-assigned sessions to free/dead pool; leave USER-uploaded sessions untouched
     (user owns them — they stay on disk for re-subscription). Archive config instead of deleting.
@@ -661,23 +709,74 @@ async def expire_bot_return_sessions_to_pool(bot_token: str) -> tuple[int, int]:
             "[Expiry] User-owned sessions kept in place (not pooled): %s for bot %s",
             user_sessions_kept, bot_token[:20],
         )
-    # Archive user config and log instead of deleting (allows admin recovery / re-subscription)
-    import shutil
     safe = name_to_filename(user_name)
-    archive_dir = config.DATA_DIR / "archived"
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    user_file = config.DATA_USER_DIR / f"{safe}.json"
-    if user_file.exists():
-        try:
-            ts_tag = str(int(time.time()))
-            shutil.move(str(user_file), str(archive_dir / f"{safe}_{ts_tag}.json"))
-        except OSError:
-            pass
+
+    # --- Keep the permanent sales record (who/what/when) before deleting everything else ---
+    try:
+        record_sold_bot(cfg, bot_token, reason="grace_purge")
+    except Exception as e:
+        logger.warning("[Expiry] Could not record sold-bot history for %s: %s", user_name, e)
+
+    # --- Delete the local group list. Do NOT leave the Telegram groups — leaving would cost
+    #     one API call per group per account and risk rate limits; the accounts simply stay
+    #     joined. We only drop our stored copy of the list. ---
+    try:
+        from .chatlist import custom_group_filename
+        gf_path = config.GROUPS_DIR / custom_group_filename(user_name)
+        if gf_path.is_file():
+            gf_path.unlink()
+            logger.info("[Expiry] Removed group list for %s", user_name)
+        if gf_path.parent.is_dir() and gf_path.parent.name == "user groups" and not any(gf_path.parent.iterdir()):
+            try:
+                gf_path.parent.rmdir()
+            except OSError:
+                pass
+    except Exception as e:
+        logger.warning("[Expiry] Could not remove group list for %s: %s", user_name, e)
+
+    # --- Delete logs (not retained after purge) ---
     log_file = config.DATA_LOGS_DIR / f"{safe}.log"
     if log_file.exists():
         try:
-            ts_tag = str(int(time.time()))
-            shutil.move(str(log_file), str(archive_dir / f"{safe}_{ts_tag}.log"))
+            log_file.unlink()
+            logger.info("[Expiry] Removed log file for %s", user_name)
+        except OSError:
+            pass
+
+    # --- Delete per-user stats file too (counts only; not needed once retired) ---
+    stats_file = config.DATA_STATS_DIR / f"{safe}.json"
+    if stats_file.exists():
+        try:
+            stats_file.unlink()
+        except OSError:
+            pass
+
+    # --- Replace the live config with a slim 'dead' tombstone in archived/. The portal then
+    #     shows "removed" (no live config resolves), while admin keeps a lightweight marker
+    #     that this bot existed and was retired. Heavy data (sessions, groups) is stripped. ---
+    archive_dir = config.DATA_DIR / "archived"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    tombstone = {
+        "name": f"{cfg.get('name') or user_name} ☠ (dead)",
+        "state": "dead",
+        "owner_id": cfg.get("owner_id"),
+        "bot_username": cfg.get("bot_username"),
+        "plan_mode": cfg.get("plan_mode"),
+        "valid_till": cfg.get("valid_till"),
+        "expired_at": cfg.get("expired_at"),
+        "retired_at": datetime.utcnow().isoformat() + "Z",
+        "retired_reason": "grace_purge",
+    }
+    try:
+        ts_tag = str(int(time.time()))
+        (archive_dir / f"{safe}_{ts_tag}.dead.json").write_bytes(_dumps(tombstone))
+    except OSError as e:
+        logger.warning("[Expiry] Could not write dead tombstone for %s: %s", user_name, e)
+    user_file = config.DATA_USER_DIR / f"{safe}.json"
+    if user_file.exists():
+        try:
+            user_file.unlink()
+            logger.info("[Expiry] Removed live config for %s (marked dead)", user_name)
         except OSError:
             pass
     return returned, dead
