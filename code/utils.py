@@ -410,6 +410,10 @@ async def delete_bot_from_storage(bot_token: str, move_to: str) -> bool:
         except OSError:
             pass
 
+    # --- 6b. Delete name-scoped stores (portal bell + DM inbox) so they can't
+    #     resurrect if a bot with the same name is created later. ---
+    purge_name_scoped_stores(user_name)
+
     # --- 7. Release the pooled bot token (if this bot came from the pool) ---
     # The pooled token *is* the bot token, so free it directly — the delete path
     # doesn't always know the originating order id, and a stale "assigned" entry
@@ -661,6 +665,30 @@ def record_sold_bot(cfg: dict, bot_token: str, reason: str = "grace_purge") -> N
     logger.info("[Sold] Recorded sale history for %s (owner=%s, reason=%s)", cfg.get("name"), cfg.get("owner_id"), reason)
 
 
+def purge_name_scoped_stores(user_name: str) -> None:
+    """Delete every per-bot store keyed by the bot's (display) name that the main
+    teardown does not otherwise remove: the portal bell (data/notifications/<name>.json)
+    and the DM inbox (data/dm_inbox/<name>.json).
+
+    These use the raw lowercased display name (NOT name_to_filename), so we resolve
+    them via the same helpers that write them to guarantee we hit the exact files.
+    Called from BOTH teardown paths (manual delete + grace purge). Best-effort;
+    never raises — a missing/locked file must not abort a bot teardown."""
+    if not user_name:
+        return
+    try:
+        from .dm_inbox import _notif_path, _inbox_path
+        for p in (_notif_path(user_name), _inbox_path(user_name)):
+            try:
+                if p.is_file():
+                    p.unlink()
+                    logger.info("[Teardown] Removed name-scoped store: %s", p.name)
+            except OSError as e:
+                logger.warning("[Teardown] Could not remove %s: %s", p, e)
+    except Exception as e:
+        logger.warning("[Teardown] purge_name_scoped_stores(%s) failed: %s", user_name, e)
+
+
 async def expire_bot_return_sessions_to_pool(bot_token: str) -> tuple[int, int]:
     """On bot expiry: return ADMIN-assigned sessions to free/dead pool; leave USER-uploaded sessions untouched
     (user owns them — they stay on disk for re-subscription). Archive config instead of deleting.
@@ -690,7 +718,13 @@ async def expire_bot_return_sessions_to_pool(bot_token: str) -> tuple[int, int]:
         # Admin-assigned sessions: return to pool
         path = config.resolve_session_path(fn)
         if path.is_file():
-            ok = await validate_session(path)
+            # A raising validation must never abort the purge before the deletion
+            # steps below — treat an errored validation as "dead" and move on.
+            try:
+                ok = await validate_session(path)
+            except Exception as e:
+                logger.warning("[Expiry] Session validation errored for %s (treated as dead): %s", fn, e)
+                ok = False
             if ok:
                 if fn not in pool["free_sessions"]:
                     pool["free_sessions"].append(fn)
@@ -750,6 +784,10 @@ async def expire_bot_return_sessions_to_pool(bot_token: str) -> tuple[int, int]:
             stats_file.unlink()
         except OSError:
             pass
+
+    # --- Delete name-scoped stores the loop above never touches (portal bell + DM inbox).
+    #     Without this they survive the purge and resurrect on a same-name recreate. ---
+    purge_name_scoped_stores(user_name)
 
     # --- Replace the live config with a slim 'dead' tombstone in archived/. The portal then
     #     shows "removed" (no live config resolves), while admin keeps a lightweight marker
