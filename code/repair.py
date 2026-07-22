@@ -126,12 +126,15 @@ async def _check_session_spambot(path: Path) -> tuple[str, str, str | None]:
             if not await client.is_user_authorized():
                 return name, SPAM_UNAUTHORIZED, "Session is not authorized (logged out)."
             try:
-                await client.send_message("SpamBot", "/start")
-                await asyncio.sleep(1.5)
-                async for msg in client.iter_messages("SpamBot", limit=3):
-                    if msg.text:
-                        status, details = classify_spambot_response_detailed(msg.text)
-                        return name, status, details
+                # Wait for the inbound reply. Reading recent messages after sending can
+                # return our own outgoing `/start` first and falsely produce UNKNOWN.
+                async with client.conversation("@SpamBot", timeout=20, exclusive=True) as conv:
+                    await conv.send_message("/start")
+                    msg = await conv.get_response()
+                if msg and msg.text:
+                    status, details = classify_spambot_response_detailed(msg.text)
+                    return name, status, details
+                return name, SPAM_UNKNOWN, "SpamBot returned an empty response."
             except Exception as e:
                 logger.debug("SpamBot check failed for %s: %s", name, e)
                 return name, SPAM_FAILED, str(e)[:200]

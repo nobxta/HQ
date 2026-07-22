@@ -1091,7 +1091,8 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
     bot_token, cfg = await _get_user_bot(telegram_id, bot_name)
     _ensure_not_frozen(cfg)
     from code.repair import check_sessions_health_detailed_parallel, SPAM_ACTIVE, SPAM_TEMP_LIMITED, SPAM_HARD_LIMITED, SPAM_FROZEN
-    from code.utils import load_stats, save_stats, get_name_by_token
+    from code.utils import (load_stats, save_stats, get_name_by_token,
+                            is_inconclusive_validation_reason)
     from code import config as app_config
 
     if len(body.session_files) > 20:
@@ -1136,16 +1137,16 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
                 # In use by another task → working, just can't be checked right now
                 return fn, True, str(e)[:200]
             except Exception as e:
-                err_str = str(e).lower()
-                if "deactivated" in err_str or "banned" in err_str or "frozen" in err_str:
-                    return fn, False, "FROZEN"
-                if "revoked" in err_str or "unregistered" in err_str or "authkey" in type(e).__name__.lower():
-                    return fn, False, "revoked"
-                return fn, False, str(e)[:80]
+                from code.utils import _session_failure_reason
+                return fn, False, _session_failure_reason(e)
             finally:
-                await client.disconnect()
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
         except Exception as e:
-            return fn, False, str(e)[:80]
+            from code.utils import _session_failure_reason
+            return fn, False, _session_failure_reason(e)
 
     for fn in valid_files:
         path = app_config.SESSIONS_ACTIVE / fn
@@ -1160,13 +1161,13 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
                 alive_files.append(fn)
                 _log.info("  Session %s: ALIVE", fn)
             else:
-                _log.warning("  Session %s: DEAD (%s)", fn, reason)
+                label = "INCONCLUSIVE" if is_inconclusive_validation_reason(reason) else "DEAD"
+                _log.warning("  Session %s: %s (%s)", fn, label, reason)
         except asyncio.TimeoutError:
-            validation_results[fn] = (True, "")  # assume alive if timeout
-            alive_files.append(fn)
-            _log.warning("  Session %s: validation timed out, assuming alive", fn)
+            validation_results[fn] = (False, "CHECK_FAILED: validation timed out")
+            _log.warning("  Session %s: validation timed out; preserving as inconclusive", fn)
         except Exception as e:
-            validation_results[fn] = (False, str(e)[:80])
+            validation_results[fn] = (False, f"CHECK_FAILED: {type(e).__name__}: {str(e)[:80]}")
             _log.warning("  Session %s: validation error: %s", fn, e)
 
     # ── STEP 2: SpamBot check on alive sessions ──
@@ -1205,7 +1206,7 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
             ss["_last_health_check_ts"] = time.time()
             status_val = statuses.get(fn, "")
             val_ok, val_reason = validation_results.get(fn, (True, ""))
-            if not val_ok:
+            if not val_ok and not is_inconclusive_validation_reason(val_reason):
                 # Distinguish the failure states (unauthorized/logged-out is NOT the same as
                 # a revoked/banned dead connection).
                 if val_reason == "FROZEN":
@@ -1227,7 +1228,7 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
     for fn in valid_files:
         val_ok, val_reason = validation_results.get(fn, (True, ""))
         low = (val_reason or "").lower()
-        if "busy" in low or "in use" in low or "locked" in low:
+        if is_inconclusive_validation_reason(val_reason):
             continue  # in use by a worker — leave the cached record untouched
         status_val = statuses.get(fn, "")
         status_details = (detailed_checks.get(fn) or {}).get("details")
@@ -1272,7 +1273,21 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
                 real_name = s.get("real_name", fn)
                 break
 
-        # Dead session — skip SpamBot, use validation result
+        # A network/proxy/Telegram failure is inconclusive, never proof of death.
+        if not val_ok and is_inconclusive_validation_reason(val_reason):
+            results.append({
+                "session_file": fn,
+                "real_name": (real_name or fn).replace(".session", ""),
+                "spam_status": "UNKNOWN",
+                "reason": f"Health check was inconclusive: {val_reason}. The session was not marked dead.",
+                "action": "none",
+                "severity": "unknown",
+                "validation": "inconclusive",
+                "validation_reason": val_reason,
+            })
+            continue
+
+        # Proven-dead session — skip SpamBot, use validation result
         if not val_ok:
             dead_info = _DEAD_REASONS.get(val_reason, {
                 "spam_status": "DEAD",
@@ -2201,11 +2216,14 @@ async def portal_pre_start_check(bot_name: str, telegram_id: int = Query(...)):
                     return fn, False, "FROZEN"
                 if "revoked" in err or "unregistered" in err or "authkey" in type(e).__name__.lower():
                     return fn, False, "REVOKED"
-                return fn, False, str(e)[:60]
+                return fn, None, f"CHECK_FAILED: {type(e).__name__}: {str(e)[:60]}"
             finally:
-                await client.disconnect()
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
         except Exception as e:
-            return fn, False, str(e)[:60]
+            return fn, None, f"CHECK_FAILED: {type(e).__name__}: {str(e)[:60]}"
 
     # Run all validations in parallel with timeout
     import asyncio
@@ -2231,8 +2249,8 @@ async def portal_pre_start_check(bot_name: str, telegram_id: int = Query(...)):
         r = raw_results[i]
         if isinstance(r, Exception):
             # Timeout or unexpected error — assume alive
-            alive, reason_str = True, ""
-            status, severity, reason = "healthy", "ok", "Session check timed out (assumed OK)"
+            alive, reason_str = True, "CHECK_FAILED: validation timed out"
+            status, severity, reason = "busy", "warning", "Session check timed out; not marked dead"
             healthy_count += 1
         elif isinstance(r, tuple):
             _, alive, reason_str = r

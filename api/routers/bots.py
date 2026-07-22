@@ -1335,7 +1335,7 @@ async def validate_bot_session(name: str, session_file: str):
         raise HTTPException(404, f"Session '{session_file}' not assigned to '{name}'")
 
     from code.config import resolve_session_path
-    from code.utils import validate_session_with_reason
+    from code.utils import validate_session_with_reason, is_inconclusive_validation_reason
     path = resolve_session_path(session_file)
 
     valid, reason = await validate_session_with_reason(path)
@@ -1346,7 +1346,7 @@ async def validate_bot_session(name: str, session_file: str):
     # informational skip — do NOT persist validation_status/reason/last_validated_at
     # and do not change the session's health. (Same rule the startup validator uses.)
     low = (reason or "").lower()
-    if not valid and ("is busy:" in low or "in use by posting" in low):
+    if not valid and is_inconclusive_validation_reason(reason):
         return {"file": session_file, "status": "skipped", "reason": reason}
 
     status = "valid" if valid else "invalid"
@@ -1462,9 +1462,15 @@ async def validate_all_sessions(name: str):
                 info["status"] = "busy"
                 info["reason"] = str(e)[:200]
             else:
-                info["status"] = "dead"
-                info["reason"] = str(e)[:150]
-                dead_files.append(fn)
+                from code.utils import _session_failure_reason, is_inconclusive_validation_reason
+                reason = _session_failure_reason(e)
+                if is_inconclusive_validation_reason(reason):
+                    info["status"] = "unknown"
+                    info["reason"] = reason
+                else:
+                    info["status"] = "dead"
+                    info["reason"] = reason
+                    dead_files.append(fn)
 
         # Persist validation outcome onto surviving entries (dead ones are removed
         # below, so only record for those that stay assigned).

@@ -754,7 +754,8 @@ async def validate_sessions(body: dict = None):
     are reported as ``busy`` and left untouched.
     """
     from code.config import resolve_session_path
-    from code.utils import validate_session_with_reason, probe_session_identity, record_session_meta
+    from code.utils import (validate_session_with_reason, probe_session_identity,
+                            record_session_meta, is_inconclusive_validation_reason)
 
     pool = await wrappers.load_pool()
     requested = (body or {}).get("filenames") or list(pool.get("free_sessions", []))
@@ -793,8 +794,9 @@ async def validate_sessions(body: dict = None):
             probe = await probe_session_identity(path)
             if probe.get("status") != "busy":
                 await asyncio.to_thread(record_session_meta, fn, probe, validation_status="valid")
-        elif "in use" in low or "busy" in low or "locked" in low:
-            results.append({"file": fn, "status": "busy", "reason": reason})
+        elif is_inconclusive_validation_reason(reason):
+            state = "busy" if ("in use" in low or "busy" in low or "locked" in low) else "error"
+            results.append({"file": fn, "status": state, "reason": reason})
         else:
             results.append({"file": fn, "status": "dead", "reason": reason})
             await asyncio.to_thread(record_session_meta, fn, None,

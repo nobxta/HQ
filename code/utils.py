@@ -1108,19 +1108,37 @@ def _is_sqlite_session_file(path: Path) -> bool:
 
 
 def _session_failure_reason(exc: Exception) -> str:
-    """Map exception to admin-facing reason: UNAUTHORIZED, FROZEN, or revoked."""
+    """Map an exception without turning transient infrastructure errors into logout."""
     t = type(exc)
     err_str = str(exc).lower()
-    if getattr(t, "__name__", "").startswith("AuthKey") or "revoked" in err_str or "unregistered" in err_str:
+    type_name = getattr(t, "__name__", "")
+    if type_name.startswith("AuthKey") or "revoked" in err_str or "unregistered" in err_str:
         return "revoked"
-    if "deactivated" in err_str or "banned" in err_str or "frozen" in err_str or "PhoneNumberBanned" in t.__name__:
+    if "deactivated" in err_str or "banned" in err_str or "frozen" in err_str or "PhoneNumberBanned" in type_name:
         return "FROZEN"
-    return "UNAUTHORIZED"
+    if isinstance(exc, _SESSION_DEAD_ERRORS):
+        return "revoked"
+    return f"CHECK_FAILED: {type_name or 'Error'}: {str(exc)[:160]}"
+
+
+def is_inconclusive_validation_reason(reason: str | None) -> bool:
+    """True when validation could not run, but the session was not proven dead."""
+    low = (reason or "").lower()
+    return (
+        low.startswith("check_failed:")
+        or "is busy:" in low
+        or "in use by posting" in low
+        or "database is locked" in low
+    )
 
 
 async def validate_session_with_reason(session_path: Path) -> tuple[bool, str]:
-    """Validate session; return (ok, reason). If invalid, move to dead/ and return (False, reason).
-    Reason is one of: '' (ok), 'UNAUTHORIZED', 'FROZEN', 'revoked', or a short message for other failures."""
+    """Validate a session without destructive guesses.
+
+    Only explicit authorization/key/deactivation failures and invalid files are moved
+    to dead. Busy, network, proxy, timeout, flood and Telegram server failures return
+    ``CHECK_FAILED`` and leave both the file and pool membership untouched.
+    """
     from .session_guard import SessionBusyError, busy_message, guarded_client
     session_path = session_path.resolve()
     if not session_path.is_file():
@@ -1142,13 +1160,26 @@ async def validate_session_with_reason(session_path: Path) -> tuple[bool, str]:
     client = guarded_client(session_path, "session validation", wait_timeout=5, expected_sec=30)
     ok = False
     busy_skip = False
+    terminal_failure = False
     reason = ""
     try:
         await client.connect()
         if not await client.is_user_authorized():
             logger.warning("Session %s failed validation: not authorized", session_path.name)
+            terminal_failure = True
             return False, "UNAUTHORIZED"
-        await with_floodwait_retry(lambda: client.send_message("me", "."))
+        try:
+            await with_floodwait_retry(lambda: client.send_message("me", "."))
+        except Exception as send_exc:
+            # Authorization is already proven. Only an auth-key/deactivation error can
+            # make the session dead; flood, timeout, proxy and Telegram 5xx failures make
+            # the send test inconclusive but must never relocate the session.
+            if isinstance(send_exc, _SESSION_DEAD_ERRORS):
+                terminal_failure = True
+                raise
+            logger.warning("Session %s send test inconclusive: %s", session_path.name, send_exc)
+            ok = True
+            return True, f"send test inconclusive: {type(send_exc).__name__}: {str(send_exc)[:140]}"
         ok = True
         return True, ""
     except SessionBusyError as e:
@@ -1157,14 +1188,16 @@ async def validate_session_with_reason(session_path: Path) -> tuple[bool, str]:
         return False, str(e)
     except Exception as e:
         reason = _session_failure_reason(e)
-        if type(e) in _SESSION_DEAD_ERRORS:
-            logger.warning("Session %s failed validation: %s", session_path.name, e)
-        else:
-            logger.warning("Session %s failed validation: %s", session_path.name, e)
+        terminal_failure = isinstance(e, _SESSION_DEAD_ERRORS)
+        logger.warning("Session %s validation %s: %s", session_path.name,
+                       "failed" if terminal_failure else "inconclusive", e)
         return False, reason
     finally:
-        await client.disconnect()
-        if not ok and not busy_skip and session_path.is_file():
+        try:
+            await client.disconnect()
+        except Exception as disconnect_error:
+            logger.debug("Session %s disconnect failed: %s", session_path.name, disconnect_error)
+        if terminal_failure and not ok and not busy_skip and session_path.is_file():
             _move_session_to_dead(session_path)
 
 
@@ -1173,8 +1206,10 @@ async def validate_session(session_path: Path) -> bool:
     Uses FloodWait retry (max 3, exponential backoff) for the send. SessionRevoked/AuthKey* etc.
     → move to dead/ and return False. Skips if session is currently in use by posting (avoids SQLite lock).
     Rejects non-SQLite files before opening to avoid sqlite3.DatabaseError (e.g. wrong upload format)."""
-    ok, _ = await validate_session_with_reason(session_path)
-    return ok
+    ok, reason = await validate_session_with_reason(session_path)
+    # Legacy boolean callers historically equated False with "move/remove as dead".
+    # Preserve the session when a live check was merely busy or inconclusive.
+    return ok or is_inconclusive_validation_reason(reason)
 
 
 def _default_merged() -> dict[str, Any]:
@@ -1230,7 +1265,7 @@ async def run_startup_validation(data: dict[str, Any]) -> tuple[int, int, list[t
             skipped_fresh += 1
             continue
         ok, reason = await validate_session_with_reason(path)
-        if not ok and ("is busy:" in reason or reason == "in use by posting"):
+        if not ok and is_inconclusive_validation_reason(reason):
             # Session held by a live task (posting/chatlist/portal) — cannot check now,
             # but that also means it works. Do not mark dead.
             valid_count += 1
