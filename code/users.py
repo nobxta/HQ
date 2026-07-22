@@ -1579,6 +1579,10 @@ def _get_stats_for_display(bot_token: str) -> dict:
             "avg_cycle_duration_sec": entry.get("avg_cycle_duration_sec", 0),
             "best_cycle_success": int(entry.get("best_cycle_success", 0)),
             "best_cycle_ts": entry.get("best_cycle_ts", 0),
+            # Carry the last health-check outcome through so it survives the display rebuild
+            # (dropping these was why the portal "forgot" a health result on refresh).
+            "_last_spam_status": entry.get("_last_spam_status", ""),
+            "_last_health_check_ts": entry.get("_last_health_check_ts", 0),
         }
     global_buckets = list(st.get("last24h_buckets") or [])
     daily_buckets = [dict(b) for b in (st.get("daily_buckets") or [])]

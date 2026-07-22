@@ -310,6 +310,46 @@ def get_session_meta(fn: str) -> dict[str, Any] | None:
     return (load_pool().get("session_meta") or {}).get(fn)
 
 
+# Canonical per-session health vocabulary shared by the customer portal and the admin views.
+# Keep in sync with the frontend STATUS_CFG badge keys.
+HEALTH_ACTIVE = "ACTIVE"
+HEALTH_TEMP_LIMITED = "TEMP_LIMITED"
+HEALTH_HARD_LIMITED = "HARD_LIMITED"
+HEALTH_FROZEN = "FROZEN"
+HEALTH_UNAUTHORIZED = "UNAUTHORIZED"
+HEALTH_DEAD = "DEAD"
+HEALTH_BUSY = "BUSY"
+HEALTH_UNKNOWN = "UNKNOWN"
+
+
+def portal_health(meta: dict[str, Any] | None) -> str:
+    """Collapse a cached session_meta record into ONE canonical health status (see the
+    HEALTH_* constants). Pure — no I/O. A failure state (frozen/unauthorized/dead) always wins
+    over a SpamBot limit, which wins over active; an empty/never-checked record is UNKNOWN.
+
+    Distinguishes UNAUTHORIZED (logged out / can't connect) from DEAD (revoked/banned) so the
+    portal shows them as separate states instead of collapsing both to 'dead'."""
+    if not meta or not meta.get("last_checked"):
+        return HEALTH_UNKNOWN
+    spam = str(meta.get("spam_status") or "").upper()
+    invalid = str(meta.get("validation_status") or "").lower() == "invalid"
+    if "FROZEN" in spam:
+        return HEALTH_FROZEN
+    if "UNAUTHORIZED" in spam:
+        return HEALTH_UNAUTHORIZED
+    if spam == HEALTH_DEAD or (invalid and not spam):
+        return HEALTH_DEAD
+    if "HARD_LIMITED" in spam:
+        return HEALTH_HARD_LIMITED
+    if "LIMITED" in spam:  # TEMP_LIMITED (and any other limited variant)
+        return HEALTH_TEMP_LIMITED
+    if invalid:
+        return HEALTH_DEAD
+    if spam == HEALTH_ACTIVE or meta.get("validation_status") == "valid":
+        return HEALTH_ACTIVE
+    return HEALTH_UNKNOWN
+
+
 def record_session_meta(fn: str, probe: dict[str, Any] | None = None, *,
                         health: str | None = None,
                         validation_status: str | None = None,

@@ -441,6 +441,20 @@ async def portal_list_bots(telegram_id: int = Query(...)):
 async def portal_get_bot(bot_name: str, telegram_id: int = Query(...)):
     token, cfg = await _get_user_bot(telegram_id, bot_name)
     detail = serialize_bot_detail(token, cfg)
+    # Attach per-session health + verified identity from the unified session_meta cache — a pure
+    # read, NO live Telethon. This is the single source of truth the admin Sessions page uses, so
+    # a health check done anywhere persists and shows here on refresh.
+    from code.utils import load_pool as _load_pool, portal_health
+    _meta_all = (await asyncio.to_thread(_load_pool)).get("session_meta") or {}
+    for _s in detail.get("sessions", []):
+        _m = _meta_all.get((_s.get("file") or "").strip()) or {}
+        _s["health"] = portal_health(_m)
+        _s["spam_status"] = _m.get("spam_status") or None
+        _s["validation_status"] = _m.get("validation_status") or None
+        _s["last_checked"] = _m.get("last_checked") or None
+        _s["full_name"] = _m.get("full_name") or (_s.get("real_name") or None)
+        _s["username"] = _m.get("username") or None
+        _s["phone"] = _m.get("phone") or None
     detail["message_text"] = cfg.get("message_text", "")
     detail["message_mode"] = cfg.get("message_mode", "link")
     detail["post_links"] = cfg.get("post_links", [])
@@ -1187,12 +1201,13 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
             status_val = statuses.get(fn, "")
             val_ok, val_reason = validation_results.get(fn, (True, ""))
             if not val_ok:
-                # Dead session — override status
-                if val_reason in ("FROZEN",):
+                # Distinguish the failure states (unauthorized/logged-out is NOT the same as
+                # a revoked/banned dead connection).
+                if val_reason == "FROZEN":
                     ss["_last_spam_status"] = SPAM_FROZEN
-                elif val_reason in ("revoked", "UNAUTHORIZED"):
-                    ss["_last_spam_status"] = "DEAD"
-                else:
+                elif val_reason == "UNAUTHORIZED":
+                    ss["_last_spam_status"] = "UNAUTHORIZED"
+                else:  # revoked / banned / other
                     ss["_last_spam_status"] = "DEAD"
             elif status_val:
                 ss["_last_spam_status"] = status_val
@@ -1211,7 +1226,8 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
             continue  # in use by a worker — leave the cached record untouched
         status_val = statuses.get(fn, "")
         if not val_ok:
-            spam = SPAM_FROZEN if val_reason == "FROZEN" else "DEAD"
+            spam = ("FROZEN" if val_reason == "FROZEN"
+                    else "UNAUTHORIZED" if val_reason == "UNAUTHORIZED" else "DEAD")
             await asyncio.to_thread(record_session_meta, fn, None,
                                     validation_status="invalid", spam_status=spam,
                                     validation_reason=(val_reason or None))
@@ -1463,10 +1479,13 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
                     "spam_status": dead_reason or "DEAD",
                 })
                 _log.info("  Session %s: LIVE CHECK = DEAD (%s) — allowing replace", sf, dead_reason)
+                # Canonical failure status — unauthorized stays distinct from dead/revoked.
+                _spam = ("FROZEN" if dead_reason == "FROZEN"
+                         else "UNAUTHORIZED" if dead_reason == "UNAUTHORIZED" else "DEAD")
                 # Save diagnosis
                 if _name:
                     import time as _t
-                    _ss.setdefault(sf, {})["_last_spam_status"] = "DEAD"
+                    _ss.setdefault(sf, {})["_last_spam_status"] = _spam
                     _ss[sf]["_last_health_check_ts"] = _t.time()
                     _st["session_stats"] = _ss
                     from code.utils import save_stats as _save_stats
@@ -1474,7 +1493,7 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
                 # Mirror into the shared per-session cache (admin Sessions health stays in sync).
                 from code.utils import record_session_meta as _record_meta
                 await asyncio.to_thread(_record_meta, sf, None,
-                                        validation_status="invalid", spam_status=(dead_reason or "DEAD"))
+                                        validation_status="invalid", spam_status=_spam)
             else:
                 _log.info("  Session %s: LIVE CHECK = ALIVE. Skipping.", sf)
 
@@ -2229,22 +2248,26 @@ async def portal_pre_start_check(bot_name: str, telegram_id: int = Query(...)):
             status, severity, reason = "healthy", "ok", "Session appears healthy"
             healthy_count += 1
 
+        # Canonical failure status — unauthorized/logged-out stays distinct from dead.
+        _rs = (reason_str or "").upper()
+        _fail_spam = ("FROZEN" if _rs == "FROZEN"
+                      else "UNAUTHORIZED" if _rs == "UNAUTHORIZED" else "DEAD")
+
         # Save diagnosis result into stats
         if st is not None and name:
             session_stats = st.setdefault("session_stats", {})
             ss2 = session_stats.get(sf, {})
             ss2["_last_health_check_ts"] = _time.time()
             if not alive:
-                ss2["_last_spam_status"] = "DEAD" if reason_str != "FROZEN" else "FROZEN"
+                ss2["_last_spam_status"] = _fail_spam
             session_stats[sf] = ss2
 
         # Mirror into the shared per-session cache so admin Sessions health stays unified.
         # (busy sessions are left as-is; their cached record is still valid.)
         if status == "dead":
             from code.utils import record_session_meta as _record_meta
-            _spam = "FROZEN" if "frozen" in (reason or "").lower() else "DEAD"
             await asyncio.to_thread(_record_meta, sf, None,
-                                    validation_status="invalid", spam_status=_spam)
+                                    validation_status="invalid", spam_status=_fail_spam)
         elif status == "healthy":
             from code.utils import record_session_meta as _record_meta
             await asyncio.to_thread(_record_meta, sf, None, validation_status="valid")

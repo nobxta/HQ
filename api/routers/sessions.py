@@ -170,12 +170,17 @@ def _health_from(pool: str, validation_status: str | None, spam_status: str | No
     vs = (validation_status or "").lower()
     if vs == "invalid":
         return "dead"
-    # SpamBot statuses arrive raw (ACTIVE / TEMP_LIMITED / HARD_LIMITED / FROZEN) — match by substring.
+    # SpamBot / validation statuses arrive raw (ACTIVE / TEMP_LIMITED / HARD_LIMITED / FROZEN /
+    # UNAUTHORIZED / DEAD) — match by substring so admin + portal agree on the state.
     ss = (spam_status or "").lower()
     if "frozen" in ss:
         return "frozen"
+    if "unauthorized" in ss:
+        return "unauthorized"
     if "limited" in ss:
         return "limited"
+    if ss == "dead":
+        return "dead"
     if vs in ("valid", "active"):
         return "healthy"
     return "unknown"

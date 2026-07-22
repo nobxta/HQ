@@ -54,7 +54,12 @@ const STATUS_CFG: Record<string, {
   DEAD: {
     bg: "bg-red-500/[0.06]", border: "border-red-500/15", text: "text-red-400",
     iconBg: "bg-red-500/15", Icon: Skull, label: "Dead Session",
-    desc: "Session is no longer valid. It was logged out, revoked, or banned.",
+    desc: "Connection is dead — the account was revoked or banned. Replace it.",
+  },
+  UNAUTHORIZED: {
+    bg: "bg-rose-500/[0.06]", border: "border-rose-500/15", text: "text-rose-400",
+    iconBg: "bg-rose-500/15", Icon: WifiOff, label: "Logged Out",
+    desc: "Session is unauthorized — it can't log in (signed out elsewhere). Replace it.",
   },
   HARD_LIMITED: {
     bg: "bg-red-500/[0.06]", border: "border-red-500/15", text: "text-red-400",
@@ -121,6 +126,28 @@ function getFailInfo(ss: Record<string, any> | undefined, file: string) {
 
 function mkStatsDiag(rate: number): DiagResult {
   return { status: "STATS_ONLY", reason: `${Math.round(rate * 100)}% failure rate detected from stats`, action: "replace", source: "stats" };
+}
+
+// Map a canonical cache health status → the recommended action.
+const _ACTION_FOR: Record<string, "replace" | "wait" | "ok" | "unknown"> = {
+  FROZEN: "replace", DEAD: "replace", HARD_LIMITED: "replace", UNAUTHORIZED: "replace",
+  TEMP_LIMITED: "wait", ACTIVE: "ok",
+};
+
+// Turn the persisted per-session health (session_meta cache, served by the bot endpoint) into
+// the same DiagResult shape a live "Check health" produces — so the card renders the saved
+// status on load and it survives refresh. A live in-session check always takes precedence.
+function cacheDiag(health?: string): DiagResult | null {
+  if (!health || health === "UNKNOWN" || health === "BUSY") return null;
+  const cfg = STATUS_CFG[health] || STATUS_CFG.UNKNOWN;
+  const action = _ACTION_FOR[health] || "unknown";
+  return {
+    status: health,
+    reason: cfg.desc || "Saved from last check",
+    action,
+    source: "spambot",
+    severity: action === "ok" ? "ok" : action === "wait" ? "warning" : "critical",
+  };
 }
 
 const AVATAR_COLORS = [
@@ -218,38 +245,9 @@ export default function AccountsPage() {
   // Collapsible queue
   const [queueExpanded, setQueueExpanded] = useState(false);
 
-  /* ─── Restore saved diagnosis from stats._last_spam_status on load ─── */
-  useEffect(() => {
-    const ss = stats?.session_stats as Record<string, any> | undefined;
-    if (!ss) return;
-    const restored: Record<string, DiagResult> = {};
-    const _BAD: Record<string, { action: "replace" | "wait" | "ok"; severity: "ok" | "warning" | "critical" | "unknown" }> = {
-      FROZEN: { action: "replace", severity: "critical" },
-      DEAD: { action: "replace", severity: "critical" },
-      HARD_LIMITED: { action: "replace", severity: "critical" },
-      TEMP_LIMITED: { action: "wait", severity: "warning" },
-      ACTIVE: { action: "ok", severity: "ok" },
-    };
-    for (const [file, data] of Object.entries(ss)) {
-      const saved = data?._last_spam_status;
-      if (!saved) continue;
-      // Don't overwrite a fresher result from an in-session diagnose call
-      if (diagResults[file]) continue;
-      const cfg = STATUS_CFG[saved] || STATUS_CFG.UNKNOWN;
-      const info = _BAD[saved];
-      restored[file] = {
-        status: saved,
-        reason: cfg.desc || "Saved from previous check",
-        action: info?.action || "unknown",
-        source: "spambot",
-        severity: info?.severity || "unknown" as const,
-      };
-    }
-    if (Object.keys(restored).length > 0) {
-      setDiagResults((p) => ({ ...restored, ...p }));
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stats?.session_stats]);
+  // Health is now sourced from the unified session_meta cache (each session carries `health`
+  // from the bot endpoint). The card resolves it via cacheDiag() at render time, so there is
+  // no fragile stats-restore effect and a checked status persists across refresh automatically.
 
   const openSupportModal = useCallback((file: string, name: string, diag: DiagResult | null, failRate: number) => {
     setSupportFile(file);
@@ -531,10 +529,14 @@ export default function AccountsPage() {
     </div>
   );
 
-  const sessions: Array<{ file: string; real_name: string; user_id?: number }> = bot.sessions || [];
+  const sessions: Array<{
+    file: string; real_name: string; user_id?: number;
+    health?: string; spam_status?: string | null; last_checked?: number | null;
+    full_name?: string | null; username?: string | null; phone?: string | null;
+  }> = bot.sessions || [];
   const sessionStats = stats?.session_stats as Record<string, any> | undefined;
 
-  const _BAD_DIAG_STATUSES = new Set(["FROZEN", "DEAD", "HARD_LIMITED", "STATS_FAILING", "STATS_ONLY"]);
+  const _BAD_DIAG_STATUSES = new Set(["FROZEN", "DEAD", "HARD_LIMITED", "UNAUTHORIZED", "STATS_FAILING", "STATS_ONLY"]);
 
   const failMap: Record<string, ReturnType<typeof getFailInfo>> = {};
   const failFiles: string[] = [];
@@ -542,9 +544,9 @@ export default function AccountsPage() {
   sessions.forEach((s) => {
     const fi = getFailInfo(sessionStats, s.file);
     if (fi) { failMap[s.file] = fi; failFiles.push(s.file); }
-    // Also count sessions with saved bad diagnosis (even if stats are 0)
+    // Also count sessions the cache (or a live check) flags as bad, even with zero stats.
     else {
-      const diag = diagResults[s.file];
+      const diag = diagResults[s.file] || cacheDiag(s.health);
       if (diag && _BAD_DIAG_STATUSES.has(diag.status)) {
         failFiles.push(s.file);
         diagBadFiles.add(s.file);
@@ -627,23 +629,29 @@ export default function AccountsPage() {
         ))}
       </div>
 
-      {/* ══════ REPLACEMENT PLAN INFO ══════ */}
-      <div className="grid grid-cols-3 gap-2 rounded-2xl border border-white/[0.06] bg-dark-850 p-3">
-        <div className="flex flex-col items-center gap-1 py-1">
-          <Gift className="h-4 w-4 text-emerald-400" />
-          <span className="text-[16px] font-bold text-emerald-400 tabular-nums">{freeRem}</span>
-          <span className="text-[9px] font-medium text-dark-500 text-center leading-tight">Free Left</span>
-        </div>
-        <div className="flex flex-col items-center gap-1 py-1 border-x border-white/[0.06]">
-          <CreditCard className="h-4 w-4 text-accent" />
-          <span className="text-[16px] font-bold text-dark-100 tabular-nums">${pricePer.toFixed(2)}</span>
-          <span className="text-[9px] font-medium text-dark-500 text-center leading-tight">Per Session</span>
-        </div>
-        <div className="flex flex-col items-center gap-1 py-1">
-          <ArrowRightLeft className="h-4 w-4 text-amber-400" />
-          <span className="text-[16px] font-bold text-amber-400 tabular-nums">{pendingReplacements.length}</span>
-          <span className="text-[9px] font-medium text-dark-500 text-center leading-tight">In Queue</span>
-        </div>
+      {/* ══════ REPLACEMENT PLAN INFO — slim always-on strip ══════ */}
+      <div className="flex items-center gap-2 rounded-xl border border-white/[0.06] bg-dark-850 px-3 py-2 text-[11px]">
+        <span className={`inline-flex items-center gap-1.5 font-semibold ${freeRem > 0 ? "text-emerald-400" : "text-dark-500"}`}>
+          <Gift className="h-3.5 w-3.5" />
+          <span className="tabular-nums">{freeRem}</span>
+          <span className="font-medium text-dark-500">free</span>
+        </span>
+        <span className="h-3 w-px bg-white/[0.08]" />
+        <span className="inline-flex items-center gap-1.5 font-semibold text-dark-300">
+          <CreditCard className="h-3.5 w-3.5 text-accent" />
+          <span className="tabular-nums">${pricePer.toFixed(2)}</span>
+          <span className="font-medium text-dark-500">/ replace</span>
+        </span>
+        {pendingReplacements.length > 0 && (
+          <>
+            <span className="h-3 w-px bg-white/[0.08]" />
+            <span className="inline-flex items-center gap-1.5 font-semibold text-amber-400">
+              <ArrowRightLeft className="h-3.5 w-3.5" />
+              <span className="tabular-nums">{pendingReplacements.length}</span>
+              <span className="font-medium text-dark-500">in queue</span>
+            </span>
+          </>
+        )}
       </div>
 
       {/* ══════ ACTION BAR — compact alert + actions ══════ */}
@@ -731,7 +739,8 @@ export default function AccountsPage() {
           const fi = failMap[file];
           const isFail = !!fi || diagBadFiles.has(file);
           const isChk = !!diagLoading[file];
-          const diag = diagResults[file];
+          const liveDiag = diagResults[file];                 // in-session "Check health" result
+          const diag = liveDiag || cacheDiag(sess.health);    // else the persisted cache status
           const diagCfg = diag ? STATUS_CFG[diag.status] || STATUS_CFG.UNKNOWN : null;
           const isPendingRepl = pendingFiles.has(file);
 
@@ -742,7 +751,11 @@ export default function AccountsPage() {
           const total = sent + failed;
           const pct = total > 0 ? Math.round((sent / total) * 100) : 0;
           const hasData = total > 0;
-          const name = sess.real_name?.replace(".session", "") || file.replace(".session", "");
+          const name = (sess.full_name || sess.real_name)?.replace(".session", "") || file.replace(".session", "");
+          const checkedAgo = sess.last_checked
+            ? (() => { const m = Math.floor((Date.now() / 1000 - sess.last_checked!) / 60);
+                       return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.floor(m / 60)}h ago` : `${Math.floor(m / 1440)}d ago`; })()
+            : null;
 
           // Determine card accent
           const cardState = isPendingRepl ? "replacing" : isFail ? "failing" : "normal";
@@ -789,9 +802,11 @@ export default function AccountsPage() {
                         </span>
                       )}
                     </div>
-                    <div className="text-[10px] text-dark-600 mt-0.5 flex items-center gap-2">
+                    <div className="text-[10px] text-dark-600 mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      {sess.username ? <span className="text-sky-400/80">@{sess.username}</span> : null}
+                      {sess.phone ? <span className="font-mono">{sess.phone}</span> : null}
                       {sess.user_id ? <span>ID: {sess.user_id}</span> : null}
-                      <span className="font-mono">{file.replace(".session", "").slice(-8)}</span>
+                      {checkedAgo ? <span className="inline-flex items-center gap-1"><Clock className="h-2.5 w-2.5" />checked {checkedAgo}</span> : <span className="text-dark-600">not checked yet</span>}
                     </div>
                   </div>
 
@@ -848,7 +863,7 @@ export default function AccountsPage() {
                 )}
 
                 {/* ─── Diagnosis check loading ─── */}
-                {isChk && !diag && (
+                {isChk && !liveDiag && (
                   <div className="mt-3 flex items-center gap-2.5 rounded-xl bg-accent/[0.04] border border-accent/10 px-3 py-2.5">
                     <Loader2 className="h-4 w-4 text-accent animate-spin shrink-0" />
                     <div>
@@ -858,8 +873,8 @@ export default function AccountsPage() {
                   </div>
                 )}
 
-                {/* ─── Diagnosis result ─── */}
-                {diag && diagCfg && (() => {
+                {/* ─── Diagnosis result (only when action needed, or a live check just ran) ─── */}
+                {diag && diagCfg && (liveDiag || diag.action !== "ok") && (() => {
                   const healthyButFailing = diag.action === "ok" && isFail;
                   const displayLabel = healthyButFailing ? "Session OK — But Failing in Stats" : diagCfg.label;
                   const displayReason = healthyButFailing
