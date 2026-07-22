@@ -10,7 +10,7 @@ import {
   User, AlertOctagon, Search, Skull, Ban,
   Timer, HelpCircle, CircleDollarSign, Gift,
   CreditCard, WifiOff, Activity, ShieldCheck, Info,
-  Clock, ChevronRight, ChevronDown, Zap, Send, Eye, Settings,
+  Clock, ChevronRight, ChevronLeft, ChevronDown, Zap, Send, Eye, Settings, Copy,
 } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import CryptoPaymentModal from "@/components/portal/CryptoPaymentModal";
@@ -160,13 +160,27 @@ const AVATAR_COLORS = [
 const CRITICAL_STATUSES = new Set(["FROZEN", "DEAD", "HARD_LIMITED", "UNAUTHORIZED", "STATS_ONLY"]);
 const WARNING_STATUSES = new Set(["TEMP_LIMITED", "STATS_FAILING"]);
 
-// Partially mask a phone for privacy: "+919876543124" → "+919876••••24".
+// Compact numbered pagination window with ellipses (e.g. 1 … 4 5 6 … 12).
+function pageWindow(current: number, total: number): (number | "…")[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const out: (number | "…")[] = [1];
+  const start = Math.max(2, current - 1);
+  const end = Math.min(total - 1, current + 1);
+  if (start > 2) out.push("…");
+  for (let i = start; i <= end; i++) out.push(i);
+  if (end < total - 1) out.push("…");
+  out.push(total);
+  return out;
+}
+
+// Partially mask a phone for privacy: "919876543124" → "+91 ••••• ••••3124".
 function maskPhone(p?: string | null): string | null {
   if (!p) return null;
   const raw = String(p).replace(/[^\d]/g, "");
   if (!raw) return null;
-  if (raw.length < 7) return "+" + raw;
-  return "+" + raw.slice(0, raw.length - 6) + "••••" + raw.slice(-2);
+  if (raw.length <= 4) return "+" + raw;
+  const cc = raw.length > 10 ? raw.slice(0, raw.length - 10) : raw.slice(0, 2);
+  return `+${cc} ••••• ••••${raw.slice(-4)}`;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -215,6 +229,13 @@ export default function AccountsPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "healthy" | "attention" | "critical">("all");
   const [openMenu, setOpenMenu] = useState<string | null>(null); // per-card "Manage" dropdown
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 12;
+
+  const copyPhone = useCallback((phone?: string | null) => {
+    if (!phone) return;
+    try { navigator.clipboard?.writeText(String(phone)); setToast({ msg: "Phone copied", type: "ok" }); } catch { /* ignore */ }
+  }, []);
   const [toast, setToast] = useState<{ msg: string; type: "ok" | "err" | "warn" } | null>(null);
   const showToast = useCallback((msg: string, type: "ok" | "err" | "warn" = "ok") => setToast({ msg, type }), []);
 
@@ -318,6 +339,9 @@ export default function AccountsPage() {
   }, []);
 
   useEffect(() => { fetchRepl(); const iv = setInterval(fetchRepl, 15000); return () => clearInterval(iv); }, [fetchRepl]);
+
+  // Reset to the first page whenever the filters change.
+  useEffect(() => { setPage(1); }, [search, statusFilter, filter]);
 
   /* ══════════════════════════════════════════════════════
      DIAGNOSE
@@ -600,57 +624,102 @@ export default function AccountsPage() {
     return hay.includes(q);
   });
 
+  // Aggregate totals for the stats strip (from the bot's own stats — no extra fetch).
+  const totalSent = Number(stats?.lifetime_sent || 0);
+  const totalFailed = Number(stats?.lifetime_failed || 0);
+  const avgSuccess = totalSent + totalFailed > 0 ? (totalSent / (totalSent + totalFailed)) * 100 : null;
+  const planLabel: string | null = (bot?.plan?.name || bot?.plan_name || (typeof bot?.plan === "string" ? bot.plan : null)) || null;
+  const healthyPct = sessions.length ? Math.round((healthyCount / sessions.length) * 100) : 0;
+  const attentionPct = sessions.length ? Math.round((attentionCount / sessions.length) * 100) : 0;
+  const criticalPct = sessions.length ? Math.round((criticalCount / sessions.length) * 100) : 0;
+
+  // Client-side pagination over the filtered list.
+  const totalPages = Math.max(1, Math.ceil(visibleSessions.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageStart = (safePage - 1) * PAGE_SIZE;
+  const pageSessions = visibleSessions.slice(pageStart, pageStart + PAGE_SIZE);
+
   return (
     <div className="space-y-5 animate-fade-in" suppressHydrationWarning>
       {toast && <Toast msg={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
 
       {/* ══════ SUMMARY ══════ */}
-      <div className="flex items-stretch gap-1 rounded-2xl border border-white/[0.05] bg-[#171723] px-1.5 py-3">
-        {[
-          { label: "Accounts", value: sessions.length, tone: "text-white" },
-          { label: "Healthy", value: healthyCount, tone: "text-emerald-400" },
-          { label: "Need attention", value: attentionCount, tone: "text-amber-400" },
-          { label: "Critical", value: criticalCount, tone: "text-red-400" },
-        ].map((st, i) => (
-          <div key={st.label} className={`flex-1 flex flex-col items-center justify-center gap-1 min-w-0 ${i > 0 ? "border-l border-white/[0.05]" : ""}`}>
-            <span className={`text-[22px] leading-none font-extrabold tabular-nums ${st.tone}`}>{st.value}</span>
-            <span className="text-[10px] font-medium text-dark-500 text-center leading-tight px-0.5">{st.label}</span>
+      <div className="rounded-2xl border border-white/[0.06] bg-[#171723] p-3 sm:p-4">
+        <div className="flex items-center gap-2">
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/10 text-accent shrink-0"><Users className="h-5 w-5" /></span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] font-medium text-dark-500 leading-none">Total Accounts</p>
+            <p className="text-[22px] font-extrabold text-white tabular-nums leading-tight">{sessions.length}</p>
           </div>
-        ))}
-        <button type="button" onClick={() => { mutateBot(); fetchRepl(); }} aria-label="Refresh accounts"
-          className="ml-1 self-center flex h-11 w-11 items-center justify-center rounded-xl border border-white/[0.06] bg-white/[0.02] text-dark-400 hover:text-dark-100 hover:bg-white/[0.05] active:scale-95 transition-all shrink-0">
-          <RefreshCw className="h-4 w-4" />
-        </button>
+          <button type="button" onClick={() => { mutateBot(); fetchRepl(); }}
+            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-xl border border-white/[0.08] bg-white/[0.02] text-[12px] font-semibold text-dark-200 hover:bg-white/[0.05] active:scale-95 transition-all shrink-0">
+            <RefreshCw className="h-3.5 w-3.5" /> Refresh
+          </button>
+        </div>
+        <div className="mt-3 grid grid-cols-4 gap-1.5">
+          {[
+            { label: "Healthy", value: healthyCount, pct: healthyPct, dot: "bg-emerald-400", tone: "text-emerald-400", pill: "bg-emerald-500/10 text-emerald-400" },
+            { label: "Needs Attention", value: attentionCount, pct: attentionPct, dot: "bg-amber-400", tone: "text-amber-400", pill: "bg-amber-500/10 text-amber-400" },
+            { label: "Critical", value: criticalCount, pct: criticalPct, dot: "bg-red-500", tone: "text-red-400", pill: "bg-red-500/10 text-red-400" },
+            { label: "Free Repl.", value: freeRem, pct: null as number | null, dot: "bg-accent", tone: "text-accent", pill: "bg-accent/10 text-accent", sub: freeRem > 0 ? "Available" : "None" },
+          ].map((st) => (
+            <div key={st.label} className="rounded-xl bg-white/[0.02] border border-white/[0.05] px-2 py-2 min-w-0">
+              <div className="flex items-center gap-1.5">
+                <span className={`h-1.5 w-1.5 rounded-full ${st.dot} shrink-0`} />
+                <span className={`text-[16px] font-bold tabular-nums ${st.tone}`}>{st.value}</span>
+                {st.pct != null && <span className={`ml-auto text-[9px] font-semibold rounded px-1 py-0.5 ${st.pill}`}>{st.pct}%</span>}
+              </div>
+              <p className="mt-0.5 text-[9px] font-medium text-dark-500 truncate">{(st as { sub?: string }).sub || st.label}</p>
+            </div>
+          ))}
+        </div>
       </div>
 
-      {/* ══════ TIME + STATUS FILTER ══════ */}
-      <div className="flex items-center gap-2">
-        <div className="flex gap-0.5 rounded-xl bg-[#171723] border border-white/[0.06] p-0.5 shrink-0">
-          {([{ k: "24h" as TimeFilter, l: "24h" }, { k: "overall" as TimeFilter, l: "Overall" }]).map((f) => (
+      {/* ══════ FILTERS ══════ */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="flex gap-0.5 rounded-xl bg-[#171723] border border-white/[0.06] p-0.5 shrink-0 self-start">
+          {([{ k: "24h" as TimeFilter, l: "Last 24h" }, { k: "overall" as TimeFilter, l: "Overall" }]).map((f) => (
             <button key={f.k} type="button" onClick={() => setFilter(f.k)}
               className={`h-9 px-3.5 rounded-lg text-[12px] font-semibold transition-all ${
                 filter === f.k ? "bg-accent text-white shadow-[0_2px_12px_rgba(108,92,231,0.35)]" : "text-dark-400 hover:text-dark-200"
               }`}>{f.l}</button>
           ))}
         </div>
-        <div className="relative flex-1 min-w-0">
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
-            className="w-full h-10 appearance-none rounded-xl bg-[#171723] border border-white/[0.06] pl-3 pr-8 text-[12px] font-medium text-dark-300 outline-none focus:border-accent/40 cursor-pointer">
-            <option value="all">All status</option>
-            <option value="healthy">Healthy</option>
-            <option value="attention">Needs attention</option>
-            <option value="critical">Critical</option>
-          </select>
-          <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-dark-500 pointer-events-none" />
+        <div className="flex items-center gap-2 flex-1 min-w-0">
+          <div className="relative w-36 shrink-0">
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
+              className="w-full h-10 appearance-none rounded-xl bg-[#171723] border border-white/[0.06] pl-3 pr-8 text-[12px] font-medium text-dark-300 outline-none focus:border-accent/40 cursor-pointer">
+              <option value="all">All Status</option>
+              <option value="healthy">Healthy</option>
+              <option value="attention">Needs attention</option>
+              <option value="critical">Critical</option>
+            </select>
+            <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-dark-500 pointer-events-none" />
+          </div>
+          <div className="relative flex-1 min-w-0">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-dark-500 pointer-events-none" />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} inputMode="search" placeholder="Search accounts…"
+              className="w-full h-10 rounded-xl bg-[#171723] border border-white/[0.06] pl-9 pr-3 text-[13px] text-dark-200 placeholder:text-dark-600 outline-none focus:border-accent/40" />
+          </div>
         </div>
       </div>
 
-      {/* ══════ SEARCH ══════ */}
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-dark-500 pointer-events-none" />
-        <input value={search} onChange={(e) => setSearch(e.target.value)} inputMode="search"
-          placeholder="Search name, @username, phone…"
-          className="w-full h-10 rounded-xl bg-[#171723] border border-white/[0.06] pl-9 pr-3 text-[13px] text-dark-200 placeholder:text-dark-600 outline-none focus:border-accent/40" />
+      {/* ══════ AGGREGATE STATS STRIP ══════ */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        {[
+          { Icon: Send, label: "Total Sent", value: totalSent.toLocaleString(), tone: "text-emerald-400" },
+          { Icon: XCircle, label: "Total Failed", value: totalFailed.toLocaleString(), tone: "text-red-400" },
+          { Icon: Activity, label: "Avg Success", value: avgSuccess != null ? `${avgSuccess.toFixed(1)}%` : "—", tone: "text-accent" },
+          { Icon: CreditCard, label: "Per replace", value: `$${pricePer.toFixed(2)}`, tone: "text-dark-200" },
+        ].map(({ Icon, label, value, tone }) => (
+          <div key={label} className="flex items-center gap-2.5 rounded-xl border border-white/[0.06] bg-[#171723] px-3 py-2.5 min-w-0">
+            <Icon className={`h-4 w-4 shrink-0 ${tone}`} />
+            <div className="min-w-0">
+              <p className={`text-[14px] font-bold tabular-nums leading-none ${tone}`}>{value}</p>
+              <p className="text-[9px] text-dark-500 mt-1 truncate">{label}</p>
+            </div>
+          </div>
+        ))}
       </div>
 
       {/* ══════ ACTION BAR — compact alert + actions ══════ */}
@@ -731,8 +800,8 @@ export default function AccountsPage() {
       )}
 
       {/* ══════ SESSION CARDS ══════ */}
-      <div className="space-y-3">
-        {visibleSessions.map((sess, idx) => {
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
+        {pageSessions.map((sess, idx) => {
           const file = sess.file;
           const s = sessionStats?.[file];
           const fi = failMap[file];
@@ -771,7 +840,7 @@ export default function AccountsPage() {
           else { badgeLabel = "Unchecked"; badgeCls = "bg-dark-700/30 border-white/[0.06] text-dark-400"; BadgeIcon = HelpCircle; }
 
           return (
-            <div key={file} className="rounded-2xl border border-white/[0.06] bg-[#171723] p-4 shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
+            <div key={file} className="flex h-full flex-col rounded-2xl border border-white/[0.06] bg-[#171723] p-4 shadow-[0_1px_2px_rgba(0,0,0,0.35)] transition-colors hover:border-white/[0.12]">
               {/* Row 1 — avatar + identity + status */}
               <div className="flex items-start gap-3">
                 <div className="relative shrink-0">
@@ -781,18 +850,26 @@ export default function AccountsPage() {
                   <span className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ring-2 ring-[#171723] ${dotTone}`} />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-[14px] font-bold text-white truncate max-w-[52%]">{name}</span>
-                    {sess.username ? <span className="text-[12px] text-sky-400/80 truncate">@{sess.username}</span> : null}
-                    <span className={`inline-flex items-center gap-1 text-[10px] font-semibold rounded-full border px-2 py-0.5 whitespace-nowrap ${badgeCls}`}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                      <span className="text-[14px] font-bold text-white truncate max-w-[9rem]">{name}</span>
+                      {sess.username ? <span className="text-[12px] text-sky-400/80 truncate">@{sess.username}</span> : null}
+                      {planLabel && <span className="text-[9px] font-semibold rounded-md px-1.5 py-0.5 bg-white/[0.06] border border-white/[0.06] text-dark-300 whitespace-nowrap">{planLabel}</span>}
+                    </div>
+                    <span className={`inline-flex items-center gap-1 text-[10px] font-semibold rounded-full border px-2 py-0.5 whitespace-nowrap shrink-0 ${badgeCls}`}>
                       <BadgeIcon className={`h-2.5 w-2.5 ${badgeSpin ? "animate-spin" : ""}`} /> {badgeLabel}
                     </span>
                   </div>
-                  {masked && <p className="text-[12.5px] font-mono text-dark-300 mt-1">{masked}</p>}
+                  {masked && (
+                    <button type="button" onClick={() => copyPhone(sess.phone)} title="Copy phone"
+                      className="group mt-1 inline-flex items-center gap-1.5 text-[12.5px] font-mono text-dark-300 hover:text-dark-100 transition-colors">
+                      {masked}<Copy className="h-3 w-3 text-dark-600 group-hover:text-dark-400" />
+                    </button>
+                  )}
                   <p className="text-[10px] text-dark-500 mt-0.5 flex flex-wrap items-center gap-x-2">
                     {sess.user_id ? <span>ID: {sess.user_id}</span> : null}
                     <span className="inline-flex items-center gap-1">
-                      <Clock className="h-2.5 w-2.5" />{checkedAgo ? `Last checked: ${checkedAgo}` : "Not checked yet"}
+                      <Clock className="h-2.5 w-2.5" />{checkedAgo ? `Checked ${checkedAgo}` : "Not checked yet"}
                     </span>
                   </p>
                 </div>
@@ -834,14 +911,14 @@ export default function AccountsPage() {
 
               {/* Reason line for non-healthy states */}
               {diag && diagCfg && tier !== "healthy" && !isPendingRepl && (
-                <p className="mt-2 text-[10.5px] text-dark-400 leading-snug">{diag.reason}</p>
+                <p className="mt-2 text-[10.5px] text-dark-400 leading-snug line-clamp-2">{diag.reason}</p>
               )}
               {isPendingRepl && (
                 <p className="mt-2 inline-flex items-center gap-1 text-[10.5px] text-accent font-medium"><Clock className="h-3 w-3" /> Replacement in progress</p>
               )}
 
-              {/* Row 4 — actions */}
-              <div className="mt-3 flex items-center gap-2">
+              {/* Row 4 — actions (pinned to the bottom of the card) */}
+              <div className="mt-auto pt-3 flex items-center gap-2">
                 <button type="button" onClick={() => openEdit(file)}
                   className="flex-1 inline-flex items-center justify-center gap-1.5 h-11 rounded-xl border border-white/[0.08] bg-white/[0.02] text-[12px] font-semibold text-dark-200 hover:bg-white/[0.05] active:scale-[0.98] transition-all">
                   <Eye className="h-4 w-4 text-accent" /> View Details
@@ -879,6 +956,33 @@ export default function AccountsPage() {
           );
         })}
       </div>
+
+      {/* ══════ PAGINATION ══════ */}
+      {visibleSessions.length > PAGE_SIZE && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-1">
+          <p className="text-[11px] text-dark-500 order-2 sm:order-1">
+            Showing {pageStart + 1}–{Math.min(pageStart + PAGE_SIZE, visibleSessions.length)} of {visibleSessions.length} accounts
+          </p>
+          <div className="flex items-center gap-1 order-1 sm:order-2">
+            <button type="button" disabled={safePage <= 1} onClick={() => setPage(safePage - 1)} aria-label="Previous page"
+              className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/[0.08] bg-[#171723] text-dark-300 hover:bg-white/[0.05] disabled:opacity-40 disabled:pointer-events-none transition-colors">
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            {pageWindow(safePage, totalPages).map((p, i) => (
+              p === "…"
+                ? <span key={`e${i}`} className="px-1 text-[12px] text-dark-600">…</span>
+                : <button key={p} type="button" onClick={() => setPage(p)}
+                    className={`h-9 min-w-[2.25rem] px-2 rounded-lg text-[12px] font-semibold transition-colors ${
+                      p === safePage ? "bg-accent text-white shadow-[0_2px_10px_rgba(108,92,231,0.35)]" : "border border-white/[0.08] bg-[#171723] text-dark-300 hover:bg-white/[0.05]"
+                    }`}>{p}</button>
+            ))}
+            <button type="button" disabled={safePage >= totalPages} onClick={() => setPage(safePage + 1)} aria-label="Next page"
+              className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/[0.08] bg-[#171723] text-dark-300 hover:bg-white/[0.05] disabled:opacity-40 disabled:pointer-events-none transition-colors">
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* click-away layer to dismiss any open Manage menu */}
       {openMenu && <div className="fixed inset-0 z-30" onClick={() => setOpenMenu(null)} />}
