@@ -47,7 +47,7 @@ export async function validateAssignedSession(botName: string, file: string) {
 
 // ── spambot ──
 export interface SpambotResult {
-  sessions: Array<{ file: string; spambot_status: string }>;
+  sessions: Array<{ file: string; spambot_status: string; details?: string | null }>;
   total: number;
   active: number;
   limited: number;

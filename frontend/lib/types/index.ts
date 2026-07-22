@@ -291,6 +291,7 @@ export interface SessionOverviewItem {
   last_validated_at: number | null;
   last_checked: number | null;   // epoch of last live probe (identity/health)
   spam_status: string | null;
+  spam_details: string | null;
   last_spambot_check_at: number | null;
   last_released_from: string | null;
   last_released_at: number | null;

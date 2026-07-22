@@ -156,8 +156,8 @@ async def _periodic_spambot_health_check() -> None:
     Only act on results: FROZEN -> move to frozen/, DEAD errors -> move to dead/, ACTIVE -> no action.
     Do NOT act on LIMITED (user requested: leave limited sessions alone)."""
     import shutil
-    from code.utils import load_pool, save_pool, load_adbot, add_admin_alert, get_name_by_token, load_user_data, save_user_data
-    from code.repair import check_sessions_health_parallel, SPAM_FROZEN, SPAM_ACTIVE, SPAM_UNKNOWN
+    from code.utils import load_pool, save_pool, load_adbot, add_admin_alert, get_name_by_token, load_user_data, save_user_data, record_session_meta
+    from code.repair import check_sessions_health_detailed_parallel, SPAM_FROZEN, SPAM_ACTIVE, SPAM_UNKNOWN
     await asyncio.sleep(SPAMBOT_CHECK_INTERVAL_SEC)  # first run after 48h
     while True:
         try:
@@ -177,9 +177,16 @@ async def _periodic_spambot_health_check() -> None:
             if not all_files:
                 logger.info("[SpamBot Health] No sessions to check")
             else:
-                results = await check_sessions_health_parallel(all_files)
+                checks = await check_sessions_health_detailed_parallel(all_files)
+                results = {fn: str(check["status"]) for fn, check in checks.items()}
                 frozen_count = 0
                 for fn, status in results.items():
+                    check = checks.get(fn) or {}
+                    if status not in ("UNKNOWN", "FAILED"):
+                        await asyncio.to_thread(
+                            record_session_meta, fn, None, spam_status=status,
+                            spam_details=check.get("details"), last_spambot_check_at=time.time(),
+                        )
                     if status == SPAM_FROZEN:
                         # Move to frozen
                         frozen_count += 1

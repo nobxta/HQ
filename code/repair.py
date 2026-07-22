@@ -5,6 +5,7 @@ Used by /fix command in admin and user controller bots.
 import asyncio
 import hashlib
 import logging
+import re
 from datetime import datetime
 import random
 import shutil
@@ -60,85 +61,122 @@ SPAM_TEMP_LIMITED = "TEMP_LIMITED"
 SPAM_HARD_LIMITED = "HARD_LIMITED"
 SPAM_FROZEN = "FROZEN"
 SPAM_UNKNOWN = "UNKNOWN"
+SPAM_UNAUTHORIZED = "UNAUTHORIZED"
+SPAM_DEAD = "DEAD"
+SPAM_FAILED = "FAILED"
 
 
 # Phrases that indicate hard-limited accounts (SpamBot responses)
+_ACTIVE_PHRASES = (
+    "no limits are currently applied",
+    "free as a bird",
+    "no limits",
+    "no restrictions",
+)
+_FROZEN_PHRASES = (
+    "your account was blocked for violations of the telegram terms of service",
+    "account is frozen",
+)
 _HARD_LIMIT_PHRASES = (
-    "hard limit",
+    "harsh response from our anti-spam systems",
+    "submit a complaint to our moderators",
     "permanently limited",
-    "banned",
-    "we have received complaints",
-    "due to complaints",
-    "your account is limited",
-    "some of your messages were reported",
-    "you will not be able to",
+    "permanent limit",
+)
+_TEMP_LIMIT_RE = re.compile(
+    r"your account is now limited until\s+(.+?)(?:\.(?:\s|$)|$)", re.IGNORECASE | re.DOTALL
 )
 
 
-def classify_spambot_response(text: str) -> str:
-    """Classify SpamBot response into ACTIVE, TEMP_LIMITED, HARD_LIMITED, FROZEN, UNKNOWN."""
+def classify_spambot_response_detailed(text: str) -> tuple[str, str | None]:
+    """Classify an official English @SpamBot reply without broad, unsafe guesses.
+
+    The second value contains the advertised expiry for a temporary limit, or a
+    short response excerpt for an unknown reply.  Callers can therefore display
+    the actual limit time instead of replacing it with a generic 24-48h estimate.
+    """
     if not text or not isinstance(text, str):
-        return SPAM_UNKNOWN
+        return SPAM_UNKNOWN, None
     t = text.strip().lower()
-    if "good news" in t or "no limits" in t or "no restrictions" in t:
-        return SPAM_ACTIVE
-    if "temporarily limited" in t or ("temp" in t and "limit" in t):
-        return SPAM_TEMP_LIMITED
-    for phrase in _HARD_LIMIT_PHRASES:
-        if phrase in t:
-            return SPAM_HARD_LIMITED
-    if "frozen" in t or ("spam" in t and "reported" in t):
-        return SPAM_FROZEN
+    if "good news" in t and all(phrase in t for phrase in _ACTIVE_PHRASES[:2]):
+        return SPAM_ACTIVE, None
+    if any(phrase in t for phrase in _FROZEN_PHRASES):
+        return SPAM_FROZEN, None
+    if any(phrase in t for phrase in _HARD_LIMIT_PHRASES):
+        return SPAM_HARD_LIMITED, None
+    match = _TEMP_LIMIT_RE.search(text.strip())
+    if match:
+        return SPAM_TEMP_LIMITED, " ".join(match.group(1).split())
     logger.info("SpamBot UNKNOWN classification: %s", (text or "")[:120])
-    return SPAM_UNKNOWN
+    return SPAM_UNKNOWN, text.strip()[:200]
 
 
-async def _check_session_spambot(path: Path) -> tuple[str, str]:
-    """Check a single session via SpamBot. Returns (session_name, status)."""
+def classify_spambot_response(text: str) -> str:
+    """Backward-compatible status-only SpamBot classifier."""
+    return classify_spambot_response_detailed(text)[0]
+
+
+async def _check_session_spambot(path: Path) -> tuple[str, str, str | None]:
+    """Check one session. Returns ``(name, status, optional_details)``."""
     name = path.stem
     try:
         client = guarded_client(path, "account health check (SpamBot)", wait_timeout=10, expected_sec=45)
         await client.connect()
         try:
             if not await client.is_user_authorized():
-                return name, "UNKNOWN"
+                return name, SPAM_UNAUTHORIZED, "Session is not authorized (logged out)."
             try:
                 await client.send_message("SpamBot", "/start")
                 await asyncio.sleep(1.5)
                 async for msg in client.iter_messages("SpamBot", limit=3):
                     if msg.text:
-                        return name, classify_spambot_response(msg.text)
+                        status, details = classify_spambot_response_detailed(msg.text)
+                        return name, status, details
             except Exception as e:
                 logger.debug("SpamBot check failed for %s: %s", name, e)
+                return name, SPAM_FAILED, str(e)[:200]
         finally:
             await client.disconnect()
     except SessionBusyError as e:
         logger.info("SpamBot check skipped for %s: %s", name, e)
+        return name, SPAM_FAILED, str(e)[:200]
     except Exception as e:
         logger.debug("Session connect failed for %s: %s", name, e)
-    return name, SPAM_UNKNOWN
+        from .utils import _session_failure_reason
+        reason = _session_failure_reason(e)
+        if reason == "FROZEN":
+            return name, SPAM_FROZEN, str(e)[:200]
+        if reason == "UNAUTHORIZED":
+            return name, SPAM_UNAUTHORIZED, str(e)[:200]
+        if reason == "revoked":
+            return name, SPAM_DEAD, str(e)[:200]
+        return name, SPAM_FAILED, str(e)[:200]
+    return name, SPAM_UNKNOWN, None
 
 
-async def check_sessions_health_parallel(session_files: list[str]) -> dict[str, str]:
-    """Run SpamBot health check for sessions in parallel. Returns {session_file: status}."""
+async def check_sessions_health_detailed_parallel(session_files: list[str]) -> dict[str, dict[str, str | None]]:
+    """Run health checks concurrently and preserve status details for API/UI callers."""
     tasks: list[tuple[str, asyncio.Task]] = []
+    out: dict[str, dict[str, str | None]] = {}
     for fn in session_files:
         path = config.resolve_session_path(fn)
         if path.is_file():
             tasks.append((fn, asyncio.create_task(_check_session_spambot(path))))
-    if not tasks:
-        return {fn: SPAM_UNKNOWN for fn in session_files}
-    out: dict[str, str] = {}
+        else:
+            out[fn] = {"status": SPAM_DEAD, "details": "Session file not found."}
     for fn, task in tasks:
         try:
-            _, status = await task
-            out[fn] = status
-        except Exception:
-            out[fn] = SPAM_UNKNOWN
-    for fn in session_files:
-        if fn not in out:
-            out[fn] = SPAM_UNKNOWN
+            _, status, details = await task
+            out[fn] = {"status": status, "details": details}
+        except Exception as exc:
+            out[fn] = {"status": SPAM_FAILED, "details": str(exc)[:200]}
     return out
+
+
+async def check_sessions_health_parallel(session_files: list[str]) -> dict[str, str]:
+    """Backward-compatible status-only view of the detailed health check."""
+    detailed = await check_sessions_health_detailed_parallel(session_files)
+    return {fn: str(result["status"]) for fn, result in detailed.items()}
 
 
 def _get_session_dest_dir(status: str) -> Path:
@@ -339,8 +377,10 @@ async def repair_fix_sessions(
         return {"error": "Config not found", "sessions": {}}
     sessions = cfg.get("sessions", [])
     files = [s.get("file") for s in sessions if s.get("file")]
-    statuses = await check_sessions_health_parallel(files)
-    return {"sessions": statuses, "cfg": cfg, "name": name}
+    checks = await check_sessions_health_detailed_parallel(files)
+    statuses = {fn: str(check["status"]) for fn, check in checks.items()}
+    details = {fn: check.get("details") for fn, check in checks.items() if check.get("details")}
+    return {"sessions": statuses, "details": details, "cfg": cfg, "name": name}
 
 
 async def repair_replace_session(

@@ -322,7 +322,8 @@ def _build_overview(range_key: str) -> dict:
             "last_validated_at": (meta.get("last_checked") or (entry.get("last_validated_at") if assign else None) or None),
             "last_checked": meta.get("last_checked") or None,
             "spam_status": spam_status or None,
-            "last_spambot_check_at": (entry.get("last_spambot_check_at") or None) if assign else None,
+            "spam_details": (meta.get("spam_details") or (entry.get("spam_details") if assign else None) or None),
+            "last_spambot_check_at": (meta.get("last_spambot_check_at") or (entry.get("last_spambot_check_at") if assign else None) or None),
             "last_released_from": meta.get("last_released_from") or None,
             "last_released_at": meta.get("last_released_at") or None,
 
@@ -845,7 +846,7 @@ async def spambot_check(body: dict = None):
     the matching pool. Assigned sessions are skipped (never move a file out from under a
     running bot) — disable or unassign them first, then check from the AdBot page."""
     from code.repair import (
-        check_sessions_health_parallel, SPAM_ACTIVE,
+        check_sessions_health_detailed_parallel, SPAM_ACTIVE,
         SPAM_TEMP_LIMITED, SPAM_HARD_LIMITED, SPAM_FROZEN,
     )
 
@@ -868,7 +869,7 @@ async def spambot_check(body: dict = None):
         return {"sessions": [], "total": 0, "skipped": skipped,
                 "summary": {"requested": len(requested), "checked": 0, "skipped": len(skipped)}}
 
-    statuses = await check_sessions_health_parallel(to_check)
+    checks = await check_sessions_health_detailed_parallel(to_check)
     results: list[dict] = []
     moved_limited: list[str] = []
     moved_frozen: list[str] = []
@@ -876,11 +877,14 @@ async def spambot_check(body: dict = None):
     from code.utils import record_session_meta
 
     for fn in to_check:
-        st = statuses.get(fn, "UNKNOWN")
-        results.append({"file": fn, "spambot_status": st})
+        check = checks.get(fn) or {"status": "FAILED", "details": "No check result."}
+        st = str(check["status"])
+        details = check.get("details")
+        results.append({"file": fn, "spambot_status": st, "details": details})
         # Cache the SpamBot outcome so the dashboard shows health without reconnecting.
         if st and st != "UNKNOWN":
-            await asyncio.to_thread(record_session_meta, fn, None, spam_status=st)
+            await asyncio.to_thread(record_session_meta, fn, None, spam_status=st,
+                                    spam_details=details, last_spambot_check_at=time.time())
         if st in (SPAM_TEMP_LIMITED, SPAM_HARD_LIMITED):
             await asyncio.to_thread(_spambot_apply, fn, "limited")
             moved_limited.append(fn)

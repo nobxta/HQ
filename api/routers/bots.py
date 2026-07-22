@@ -1528,7 +1528,7 @@ async def spambot_check_sessions(name: str):
         raise HTTPException(404, f"Bot '{name}' not found")
 
     from code.repair import (
-        check_sessions_health_parallel, SPAM_ACTIVE,
+        check_sessions_health_detailed_parallel, SPAM_ACTIVE,
         SPAM_TEMP_LIMITED, SPAM_HARD_LIMITED, SPAM_FROZEN,
     )
 
@@ -1537,32 +1537,42 @@ async def spambot_check_sessions(name: str):
     if not session_files:
         return {"sessions": [], "total": 0}
 
-    statuses = await check_sessions_health_parallel(session_files)
+    checks = await check_sessions_health_detailed_parallel(session_files)
 
     flagged_limited = []
     flagged_frozen = []
     changed = False
 
     results = []
+    from code.utils import record_session_meta
     for s in cfg.get("sessions", []):
         fn = s.get("file", "")
-        spam_status = statuses.get(fn, "UNKNOWN")
+        check = checks.get(fn) or {"status": "FAILED", "details": "No check result."}
+        spam_status = str(check["status"])
+        spam_details = check.get("details")
         results.append({
             "file": fn,
             "real_name": s.get("real_name", ""),
             "user_id": s.get("user_id"),
             "spambot_status": spam_status,
+            "details": spam_details,
         })
+        if spam_status not in ("UNKNOWN", "FAILED"):
+            await asyncio.to_thread(record_session_meta, fn, None,
+                                    spam_status=spam_status, spam_details=spam_details,
+                                    last_spambot_check_at=time.time())
 
         # Flag health on the entry itself — never touch pool bucket or file location
         # while the session stays assigned.
         if spam_status in (SPAM_TEMP_LIMITED, SPAM_HARD_LIMITED):
-            s["spam_status"] = "limited"
+            s["spam_status"] = spam_status
+            s["spam_details"] = spam_details
             s["last_spambot_check_at"] = time.time()
             flagged_limited.append(fn)
             changed = True
         elif spam_status == SPAM_FROZEN:
-            s["spam_status"] = "frozen"
+            s["spam_status"] = spam_status
+            s["spam_details"] = spam_details
             s["last_spambot_check_at"] = time.time()
             flagged_frozen.append(fn)
             changed = True
@@ -1570,6 +1580,7 @@ async def spambot_check_sessions(name: str):
             # Self-heal: no longer limited/frozen, clear any stale attention flag.
             if s.get("spam_status"):
                 s["spam_status"] = None
+                s["spam_details"] = None
                 changed = True
             s["last_spambot_check_at"] = time.time()
             changed = True

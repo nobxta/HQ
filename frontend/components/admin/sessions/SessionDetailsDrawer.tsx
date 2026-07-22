@@ -163,6 +163,7 @@ export default function SessionDetailsDrawer({
                   {isAssigned(s) && (
                     <>
                       <Field label="SpamBot flag" value={s.spam_status ? s.spam_status[0].toUpperCase() + s.spam_status.slice(1) : "None"} />
+                      <Field label="SpamBot details" value={s.spam_details || "None"} />
                       <Field label="Last SpamBot check" value={s.last_spambot_check_at ? timeAgo(now - s.last_spambot_check_at) : "Never"} />
                     </>
                   )}

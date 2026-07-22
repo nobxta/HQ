@@ -450,6 +450,7 @@ async def portal_get_bot(bot_name: str, telegram_id: int = Query(...)):
         _m = _meta_all.get((_s.get("file") or "").strip()) or {}
         _s["health"] = portal_health(_m)
         _s["spam_status"] = _m.get("spam_status") or None
+        _s["spam_details"] = _m.get("spam_details") or None
         _s["validation_status"] = _m.get("validation_status") or None
         _s["last_checked"] = _m.get("last_checked") or None
         _s["full_name"] = _m.get("full_name") or (_s.get("real_name") or None)
@@ -1089,7 +1090,7 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
 
     bot_token, cfg = await _get_user_bot(telegram_id, bot_name)
     _ensure_not_frozen(cfg)
-    from code.repair import check_sessions_health_parallel, SPAM_ACTIVE, SPAM_TEMP_LIMITED, SPAM_HARD_LIMITED, SPAM_FROZEN
+    from code.repair import check_sessions_health_detailed_parallel, SPAM_ACTIVE, SPAM_TEMP_LIMITED, SPAM_HARD_LIMITED, SPAM_FROZEN
     from code.utils import load_stats, save_stats, get_name_by_token
     from code import config as app_config
 
@@ -1173,18 +1174,22 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
     if alive_files:
         _log.info("  Step 2: SpamBot check on %d alive session(s) (25s timeout)...", len(alive_files))
         try:
-            statuses = await asyncio.wait_for(
-                check_sessions_health_parallel(alive_files),
+            detailed_checks = await asyncio.wait_for(
+                check_sessions_health_detailed_parallel(alive_files),
                 timeout=25.0
             )
+            statuses = {fn: str(check["status"]) for fn, check in detailed_checks.items()}
             _log.info("  SpamBot results: %s", statuses)
         except asyncio.TimeoutError:
             _log.warning("  SpamBot check TIMED OUT after 25s")
             statuses = {fn: "UNKNOWN" for fn in alive_files}
+            detailed_checks = {}
         except Exception as e:
             _log.error("  SpamBot check FAILED: %s", e, exc_info=True)
             statuses = {fn: "UNKNOWN" for fn in alive_files}
+            detailed_checks = {}
     else:
+        detailed_checks = {}
         _log.info("  Step 2: skipped (no alive sessions)")
 
     # ── STEP 3: Stats fallback for UNKNOWN results ──
@@ -1225,6 +1230,7 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
         if "busy" in low or "in use" in low or "locked" in low:
             continue  # in use by a worker — leave the cached record untouched
         status_val = statuses.get(fn, "")
+        status_details = (detailed_checks.get(fn) or {}).get("details")
         if not val_ok:
             spam = ("FROZEN" if val_reason == "FROZEN"
                     else "UNAUTHORIZED" if val_reason == "UNAUTHORIZED" else "DEAD")
@@ -1233,7 +1239,8 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
                                     validation_reason=(val_reason or None))
         elif status_val and status_val != "UNKNOWN":
             await asyncio.to_thread(record_session_meta, fn, None,
-                                    validation_status="valid", spam_status=status_val)
+                                    validation_status="valid", spam_status=status_val,
+                                    spam_details=status_details, last_spambot_check_at=time.time())
         else:
             await asyncio.to_thread(record_session_meta, fn, None, validation_status="valid")
 
@@ -1247,7 +1254,7 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
     _DEAD_REASONS = {
         "FROZEN": {"spam_status": "FROZEN", "reason": "Session is frozen/banned by Telegram. Replace immediately.", "action": "replace", "severity": "critical"},
         "revoked": {"spam_status": "DEAD", "reason": "Session key was revoked. The account logged out or was banned. Replace immediately.", "action": "replace", "severity": "critical"},
-        "UNAUTHORIZED": {"spam_status": "DEAD", "reason": "Session is no longer authorized. It may have been logged out. Replace immediately.", "action": "replace", "severity": "critical"},
+        "UNAUTHORIZED": {"spam_status": "UNAUTHORIZED", "reason": "Session is no longer authorized (logged out). Replace or log in again.", "action": "replace", "severity": "critical"},
         "file missing": {"spam_status": "DEAD", "reason": "Session file not found on server. It may have been removed. Contact admin.", "action": "replace", "severity": "critical"},
         "in use by posting": {"spam_status": "BUSY", "reason": "Session is currently being used for posting. Try checking again in a few minutes.", "action": "none", "severity": "ok"},
     }
@@ -1256,6 +1263,7 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
     for fn in valid_files:
         val_ok, val_reason = validation_results.get(fn, (True, ""))
         spam_status = statuses.get(fn, "UNKNOWN")
+        spam_details = (detailed_checks.get(fn) or {}).get("details")
 
         # Find real_name
         real_name = fn
@@ -1287,11 +1295,15 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
         # Alive session — use SpamBot result
         info = _REASON_MAP.get(spam_status, None)
         if info:
+            reason = info["reason"]
+            if spam_status == SPAM_TEMP_LIMITED and spam_details:
+                reason = f"Temporarily limited by Telegram until {spam_details}."
             results.append({
                 "session_file": fn,
                 "real_name": (real_name or fn).replace(".session", ""),
                 "spam_status": spam_status,
-                "reason": info["reason"],
+                "reason": reason,
+                "details": spam_details,
                 "action": info["action"],
                 "severity": info["severity"],
                 "validation": "ok",

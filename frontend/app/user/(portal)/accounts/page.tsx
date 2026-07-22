@@ -36,6 +36,7 @@ interface DiagResult {
   source: "spambot" | "stats";
   validation?: "ok" | "failed";
   severity?: "ok" | "warning" | "critical" | "unknown";
+  details?: string | null;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -137,13 +138,16 @@ const _ACTION_FOR: Record<string, "replace" | "wait" | "ok" | "unknown"> = {
 // Turn the persisted per-session health (session_meta cache, served by the bot endpoint) into
 // the same DiagResult shape a live "Check health" produces — so the card renders the saved
 // status on load and it survives refresh. A live in-session check always takes precedence.
-function cacheDiag(health?: string): DiagResult | null {
+function cacheDiag(health?: string, details?: string | null): DiagResult | null {
   if (!health || health === "UNKNOWN" || health === "BUSY") return null;
   const cfg = STATUS_CFG[health] || STATUS_CFG.UNKNOWN;
   const action = _ACTION_FOR[health] || "unknown";
   return {
     status: health,
-    reason: cfg.desc || "Saved from last check",
+    reason: health === "TEMP_LIMITED" && details
+      ? `Temporarily limited by Telegram until ${details}.`
+      : cfg.desc || "Saved from last check",
+    details,
     action,
     source: "spambot",
     severity: action === "ok" ? "ok" : action === "wait" ? "warning" : "critical",
@@ -361,7 +365,7 @@ export default function AccountsPage() {
       if (res?.length > 0) {
         const d = res[0];
         const action = d.action === "replace" ? "replace" as const : d.action === "wait_or_replace" ? "wait" as const : d.action === "none" ? "ok" as const : "unknown" as const;
-        const diag: DiagResult = { status: d.spam_status || "UNKNOWN", reason: d.reason || "Check complete", action, source: "spambot", validation: d.validation || "ok", severity: d.severity || "unknown" };
+        const diag: DiagResult = { status: d.spam_status || "UNKNOWN", reason: d.reason || "Check complete", action, source: "spambot", validation: d.validation || "ok", severity: d.severity || "unknown", details: d.details || null };
         setDiagResults((p) => ({ ...p, [file]: diag }));
         const cfg = STATUS_CFG[diag.status] || STATUS_CFG.UNKNOWN;
         showToast(`${cfg.label}: ${diag.reason}`, diag.severity === "ok" ? "ok" : diag.severity === "critical" ? "err" : "warn");
@@ -403,7 +407,7 @@ export default function AccountsPage() {
         let critCount = 0, warnCount = 0, okCount = 0;
         for (const d of res) {
           const action = d.action === "replace" ? "replace" as const : d.action === "wait_or_replace" ? "wait" as const : d.action === "none" ? "ok" as const : "unknown" as const;
-          nd[d.session_file] = { status: d.spam_status || "UNKNOWN", reason: d.reason || "Check complete", action, source: "spambot", validation: d.validation || "ok", severity: d.severity || "unknown" };
+          nd[d.session_file] = { status: d.spam_status || "UNKNOWN", reason: d.reason || "Check complete", action, source: "spambot", validation: d.validation || "ok", severity: d.severity || "unknown", details: d.details || null };
           if (d.severity === "critical") critCount++;
           else if (d.severity === "warning") warnCount++;
           else if (d.severity === "ok") okCount++;
@@ -571,7 +575,7 @@ export default function AccountsPage() {
 
   const sessions: Array<{
     file: string; real_name: string; user_id?: number;
-    health?: string; spam_status?: string | null; last_checked?: number | null;
+    health?: string; spam_status?: string | null; spam_details?: string | null; last_checked?: number | null;
     full_name?: string | null; username?: string | null; phone?: string | null;
   }> = bot.sessions || [];
   const sessionStats = stats?.session_stats as Record<string, any> | undefined;
@@ -586,7 +590,7 @@ export default function AccountsPage() {
     if (fi) { failMap[s.file] = fi; failFiles.push(s.file); }
     // Also count sessions the cache (or a live check) flags as bad, even with zero stats.
     else {
-      const diag = diagResults[s.file] || cacheDiag(s.health);
+      const diag = diagResults[s.file] || cacheDiag(s.health, s.spam_details);
       if (diag && _BAD_DIAG_STATUSES.has(diag.status)) {
         failFiles.push(s.file);
         diagBadFiles.add(s.file);
@@ -600,7 +604,7 @@ export default function AccountsPage() {
 
   // Per-session tier (critical / attention / healthy / unknown) from the resolved health.
   const tierOf = (sess: typeof sessions[number]): "critical" | "attention" | "healthy" | "unknown" => {
-    const st = (diagResults[sess.file] || cacheDiag(sess.health))?.status;
+    const st = (diagResults[sess.file] || cacheDiag(sess.health, sess.spam_details))?.status;
     if (st && CRITICAL_STATUSES.has(st)) return "critical";
     if ((st && WARNING_STATUSES.has(st)) || failMap[sess.file]) return "attention";
     if (st === "ACTIVE") return "healthy";
@@ -807,7 +811,7 @@ export default function AccountsPage() {
           const fi = failMap[file];
           const isChk = !!diagLoading[file];
           const liveDiag = diagResults[file];                 // in-session "Check health" result
-          const diag = liveDiag || cacheDiag(sess.health);    // else the persisted cache status
+          const diag = liveDiag || cacheDiag(sess.health, sess.spam_details);    // else the persisted cache status
           const diagCfg = diag ? STATUS_CFG[diag.status] || STATUS_CFG.UNKNOWN : null;
           const tier = tierByFile[file];
           const isPendingRepl = pendingFiles.has(file);

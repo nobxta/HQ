@@ -1625,7 +1625,7 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
   const [freeFilter, setFreeFilter] = useState("");
   const [bulkAction, setBulkAction] = useState<"" | "validating" | "spambot" | "info">("");
   const [bulkResult, setBulkResult] = useState<any>(null);
-  const [spambotResults, setSpambotResults] = useState<Record<string, string>>({});
+  const [spambotResults, setSpambotResults] = useState<Record<string, { status: string; details?: string | null }>>({});
 
   // Real, backend-backed session view (no mock data, no live Telethon on load).
   const [range, setRange] = useState<"1h" | "6h" | "24h" | "7d" | "all">("24h");
@@ -1663,8 +1663,8 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
     setBulkResult(null);
     try {
       const { data } = await api.post(`/api/bots/${encodeURIComponent(name)}/sessions/spambot-check`);
-      const map: Record<string, string> = {};
-      for (const s of data.sessions) map[s.file] = s.spambot_status;
+      const map: Record<string, { status: string; details?: string | null }> = {};
+      for (const s of data.sessions) map[s.file] = { status: s.spambot_status, details: s.details };
       setSpambotResults(map);
       reloadOverview();
       const flaggedCount = (data.flagged_limited?.length || 0) + (data.flagged_frozen?.length || 0);
@@ -1844,6 +1844,9 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
       TEMP_LIMITED: ["bg-hq-warning/10 text-hq-warning", "Temp Limited"],
       HARD_LIMITED: ["bg-hq-danger/10 text-hq-danger", "Hard Limited"],
       FROZEN: ["bg-hq-danger/10 text-hq-danger", "Frozen"],
+      UNAUTHORIZED: ["bg-hq-danger/10 text-hq-danger", "Logged Out"],
+      DEAD: ["bg-hq-danger/10 text-hq-danger", "Dead"],
+      FAILED: ["bg-hq-warning/10 text-hq-warning", "Check Failed"],
     };
     const [cls, label] = map[status] || ["bg-white/[0.05] text-hq-muted", "Unknown"];
     return <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium ${cls}`}>{label}</span>;
@@ -2033,7 +2036,7 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
                       {s.last_validated_at ? ` · ${relTime(s.last_validated_at)}` : ""}
                     </span>
                   </div>
-                  {spambot && <div className="flex justify-between gap-2"><span className="text-hq-muted">SpamBot</span>{spambotBadge(spambot)}</div>}
+                  {spambot && <div className="flex justify-between gap-2"><span className="text-hq-muted">SpamBot</span><span className="text-right" title={spambot.details || undefined}>{spambotBadge(spambot.status)}{spambot.status === "TEMP_LIMITED" && spambot.details && <span className="block text-[10px] text-hq-warning mt-0.5">until {spambot.details}</span>}</span></div>}
                   {s.phone_from_file && <div className="flex justify-between gap-2"><span className="text-hq-muted">Session file number</span><span className="text-hq-sub font-mono">{s.phone_from_file}</span></div>}
                 </div>
 
