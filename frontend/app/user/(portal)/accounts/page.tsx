@@ -10,7 +10,7 @@ import {
   User, AlertOctagon, Search, Skull, Ban,
   Timer, HelpCircle, CircleDollarSign, Gift,
   CreditCard, WifiOff, Activity, ShieldCheck, Info,
-  Clock, ChevronRight, ChevronDown, Zap, Send,
+  Clock, ChevronRight, ChevronDown, Zap, Send, Eye, Settings,
 } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import CryptoPaymentModal from "@/components/portal/CryptoPaymentModal";
@@ -156,6 +156,19 @@ const AVATAR_COLORS = [
   "from-pink-400 to-rose-700", "from-cyan-400 to-cyan-700",
 ];
 
+// Status → tier (drives the summary counts, filter, and card accent).
+const CRITICAL_STATUSES = new Set(["FROZEN", "DEAD", "HARD_LIMITED", "UNAUTHORIZED", "STATS_ONLY"]);
+const WARNING_STATUSES = new Set(["TEMP_LIMITED", "STATS_FAILING"]);
+
+// Partially mask a phone for privacy: "+919876543124" → "+919876••••24".
+function maskPhone(p?: string | null): string | null {
+  if (!p) return null;
+  const raw = String(p).replace(/[^\d]/g, "");
+  if (!raw) return null;
+  if (raw.length < 7) return "+" + raw;
+  return "+" + raw.slice(0, raw.length - 6) + "••••" + raw.slice(-2);
+}
+
 /* ═══════════════════════════════════════════════════════
    TOAST
    ═══════════════════════════════════════════════════════ */
@@ -199,6 +212,9 @@ export default function AccountsPage() {
   const { data: stats } = usePortalStats();
 
   const [filter, setFilter] = useState<TimeFilter>("overall");
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "healthy" | "attention" | "critical">("all");
+  const [openMenu, setOpenMenu] = useState<string | null>(null); // per-card "Manage" dropdown
   const [toast, setToast] = useState<{ msg: string; type: "ok" | "err" | "warn" } | null>(null);
   const showToast = useCallback((msg: string, type: "ok" | "err" | "warn" = "ok") => setToast({ msg, type }), []);
 
@@ -558,100 +574,83 @@ export default function AccountsPage() {
   const pendingFiles = new Set(pendingReplacements.map((p: any) => p.session_file));
   const unresolvedFailFiles = failFiles.filter(f => !pendingFiles.has(f));
 
-  // Summary counts for header
-  const healthyCount = sessions.filter(s => !failMap[s.file] && !diagBadFiles.has(s.file) && !pendingFiles.has(s.file)).length;
-  const failingCount = unresolvedFailFiles.length;
-  const replacingCount = pendingReplacements.length;
+  // Per-session tier (critical / attention / healthy / unknown) from the resolved health.
+  const tierOf = (sess: typeof sessions[number]): "critical" | "attention" | "healthy" | "unknown" => {
+    const st = (diagResults[sess.file] || cacheDiag(sess.health))?.status;
+    if (st && CRITICAL_STATUSES.has(st)) return "critical";
+    if ((st && WARNING_STATUSES.has(st)) || failMap[sess.file]) return "attention";
+    if (st === "ACTIVE") return "healthy";
+    const s = sessionStats?.[sess.file];
+    const has = s && (Number(s.lifetime_sent || 0) + Number(s.lifetime_failed || 0)) > 0;
+    return has ? "healthy" : "unknown";
+  };
+  const tierByFile: Record<string, "critical" | "attention" | "healthy" | "unknown"> = {};
+  sessions.forEach((s) => { tierByFile[s.file] = tierOf(s); });
+
+  const healthyCount = sessions.filter(s => tierByFile[s.file] === "healthy").length;
+  const attentionCount = sessions.filter(s => tierByFile[s.file] === "attention").length;
+  const criticalCount = sessions.filter(s => tierByFile[s.file] === "critical").length;
+
+  // Search + status filter (client-side over existing data — no new fetch).
+  const q = search.trim().toLowerCase();
+  const visibleSessions = sessions.filter((s) => {
+    if (statusFilter !== "all" && tierByFile[s.file] !== statusFilter) return false;
+    if (!q) return true;
+    const hay = [s.full_name, s.real_name, s.username, s.phone, String(s.user_id || "")].join(" ").toLowerCase();
+    return hay.includes(q);
+  });
 
   return (
     <div className="space-y-5 animate-fade-in" suppressHydrationWarning>
       {toast && <Toast msg={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
 
-      {/* ══════ HEADER ══════ */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="p-2.5 rounded-2xl bg-accent/10 shrink-0">
-            <Users className="h-5 w-5 text-accent" />
+      {/* ══════ SUMMARY ══════ */}
+      <div className="flex items-stretch gap-1 rounded-2xl border border-white/[0.05] bg-[#171723] px-1.5 py-3">
+        {[
+          { label: "Accounts", value: sessions.length, tone: "text-white" },
+          { label: "Healthy", value: healthyCount, tone: "text-emerald-400" },
+          { label: "Need attention", value: attentionCount, tone: "text-amber-400" },
+          { label: "Critical", value: criticalCount, tone: "text-red-400" },
+        ].map((st, i) => (
+          <div key={st.label} className={`flex-1 flex flex-col items-center justify-center gap-1 min-w-0 ${i > 0 ? "border-l border-white/[0.05]" : ""}`}>
+            <span className={`text-[22px] leading-none font-extrabold tabular-nums ${st.tone}`}>{st.value}</span>
+            <span className="text-[10px] font-medium text-dark-500 text-center leading-tight px-0.5">{st.label}</span>
           </div>
-          <div className="min-w-0">
-            <h1 className="text-lg font-bold text-dark-50">Accounts</h1>
-            <div className="flex items-center gap-2 mt-0.5">
-              <span className="text-[11px] text-dark-500">{sessions.length} sessions</span>
-              {healthyCount > 0 && (
-                <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400 font-medium">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />{healthyCount} healthy
-                </span>
-              )}
-              {failingCount > 0 && (
-                <span className="inline-flex items-center gap-1 text-[10px] text-amber-400 font-medium">
-                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />{failingCount} needs attention
-                </span>
-              )}
-              {replacingCount > 0 && (
-                <span className="inline-flex items-center gap-1 text-[10px] text-accent font-medium">
-                  <span className="h-1.5 w-1.5 rounded-full bg-accent animate-pulse" />{replacingCount} replacing
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          <div className="hidden sm:flex gap-0.5 rounded-lg bg-dark-800/60 border border-white/[0.04] p-0.5">
-            {([
-              { k: "last_cycle" as TimeFilter, l: "Cycle" },
-              { k: "24h" as TimeFilter, l: "24h" },
-              { k: "overall" as TimeFilter, l: "All" },
-            ]).map((f) => (
-              <button key={f.k} type="button" onClick={() => setFilter(f.k)}
-                className={`px-2.5 py-1 rounded-md text-[10px] font-semibold transition-all cursor-pointer ${
-                  filter === f.k ? "bg-accent text-white" : "text-dark-500 hover:text-dark-300"
-                }`}>{f.l}</button>
-            ))}
-          </div>
-          <button type="button" onClick={() => { mutateBot(); fetchRepl(); }}
-            className="p-2 rounded-lg text-dark-500 hover:text-dark-300 hover:bg-dark-800/50 transition-all cursor-pointer" title="Refresh">
-            <RefreshCw className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      </div>
-
-      {/* Mobile filter */}
-      <div className="flex sm:hidden gap-0.5 rounded-lg bg-dark-800/60 border border-white/[0.04] p-0.5">
-        {([
-          { k: "last_cycle" as TimeFilter, l: "Last Cycle" },
-          { k: "24h" as TimeFilter, l: "24h" },
-          { k: "overall" as TimeFilter, l: "Overall" },
-        ]).map((f) => (
-          <button key={f.k} type="button" onClick={() => setFilter(f.k)}
-            className={`flex-1 px-2 py-1.5 rounded-md text-[10px] font-semibold text-center transition-all cursor-pointer ${
-              filter === f.k ? "bg-accent text-white" : "text-dark-500 hover:text-dark-300"
-            }`}>{f.l}</button>
         ))}
+        <button type="button" onClick={() => { mutateBot(); fetchRepl(); }} aria-label="Refresh accounts"
+          className="ml-1 self-center flex h-11 w-11 items-center justify-center rounded-xl border border-white/[0.06] bg-white/[0.02] text-dark-400 hover:text-dark-100 hover:bg-white/[0.05] active:scale-95 transition-all shrink-0">
+          <RefreshCw className="h-4 w-4" />
+        </button>
       </div>
 
-      {/* ══════ REPLACEMENT PLAN INFO — slim always-on strip ══════ */}
-      <div className="flex items-center gap-2 rounded-xl border border-white/[0.06] bg-dark-850 px-3 py-2 text-[11px]">
-        <span className={`inline-flex items-center gap-1.5 font-semibold ${freeRem > 0 ? "text-emerald-400" : "text-dark-500"}`}>
-          <Gift className="h-3.5 w-3.5" />
-          <span className="tabular-nums">{freeRem}</span>
-          <span className="font-medium text-dark-500">free</span>
-        </span>
-        <span className="h-3 w-px bg-white/[0.08]" />
-        <span className="inline-flex items-center gap-1.5 font-semibold text-dark-300">
-          <CreditCard className="h-3.5 w-3.5 text-accent" />
-          <span className="tabular-nums">${pricePer.toFixed(2)}</span>
-          <span className="font-medium text-dark-500">/ replace</span>
-        </span>
-        {pendingReplacements.length > 0 && (
-          <>
-            <span className="h-3 w-px bg-white/[0.08]" />
-            <span className="inline-flex items-center gap-1.5 font-semibold text-amber-400">
-              <ArrowRightLeft className="h-3.5 w-3.5" />
-              <span className="tabular-nums">{pendingReplacements.length}</span>
-              <span className="font-medium text-dark-500">in queue</span>
-            </span>
-          </>
-        )}
+      {/* ══════ TIME + STATUS FILTER ══════ */}
+      <div className="flex items-center gap-2">
+        <div className="flex gap-0.5 rounded-xl bg-[#171723] border border-white/[0.06] p-0.5 shrink-0">
+          {([{ k: "24h" as TimeFilter, l: "24h" }, { k: "overall" as TimeFilter, l: "Overall" }]).map((f) => (
+            <button key={f.k} type="button" onClick={() => setFilter(f.k)}
+              className={`h-9 px-3.5 rounded-lg text-[12px] font-semibold transition-all ${
+                filter === f.k ? "bg-accent text-white shadow-[0_2px_12px_rgba(108,92,231,0.35)]" : "text-dark-400 hover:text-dark-200"
+              }`}>{f.l}</button>
+          ))}
+        </div>
+        <div className="relative flex-1 min-w-0">
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
+            className="w-full h-10 appearance-none rounded-xl bg-[#171723] border border-white/[0.06] pl-3 pr-8 text-[12px] font-medium text-dark-300 outline-none focus:border-accent/40 cursor-pointer">
+            <option value="all">All status</option>
+            <option value="healthy">Healthy</option>
+            <option value="attention">Needs attention</option>
+            <option value="critical">Critical</option>
+          </select>
+          <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-dark-500 pointer-events-none" />
+        </div>
+      </div>
+
+      {/* ══════ SEARCH ══════ */}
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-dark-500 pointer-events-none" />
+        <input value={search} onChange={(e) => setSearch(e.target.value)} inputMode="search"
+          placeholder="Search name, @username, phone…"
+          className="w-full h-10 rounded-xl bg-[#171723] border border-white/[0.06] pl-9 pr-3 text-[13px] text-dark-200 placeholder:text-dark-600 outline-none focus:border-accent/40" />
       </div>
 
       {/* ══════ ACTION BAR — compact alert + actions ══════ */}
@@ -732,236 +731,169 @@ export default function AccountsPage() {
       )}
 
       {/* ══════ SESSION CARDS ══════ */}
-      <div className="space-y-2.5">
-        {sessions.map((sess, idx) => {
+      <div className="space-y-3">
+        {visibleSessions.map((sess, idx) => {
           const file = sess.file;
           const s = sessionStats?.[file];
           const fi = failMap[file];
-          const isFail = !!fi || diagBadFiles.has(file);
           const isChk = !!diagLoading[file];
           const liveDiag = diagResults[file];                 // in-session "Check health" result
           const diag = liveDiag || cacheDiag(sess.health);    // else the persisted cache status
           const diagCfg = diag ? STATUS_CFG[diag.status] || STATUS_CFG.UNKNOWN : null;
+          const tier = tierByFile[file];
           const isPendingRepl = pendingFiles.has(file);
+          const replaceAllowed = (tier === "critical" || tier === "attention") && !isPendingRepl;
+          const menuOpen = openMenu === file;
 
-          let sent = 0, failed = 0, lbl = "";
-          if (filter === "last_cycle") { sent = Number(s?.last_cycle_success || 0); failed = Number(s?.last_cycle_failed || 0); lbl = "Last Cycle"; }
-          else if (filter === "24h") { sent = Number(s?.last24h_sent || 0); failed = Number(s?.last24h_failed || 0); lbl = "24h"; }
-          else { sent = Number(s?.lifetime_sent || 0); failed = Number(s?.lifetime_failed || 0); lbl = "Overall"; }
+          let sent = 0, failed = 0;
+          if (filter === "24h") { sent = Number(s?.last24h_sent || 0); failed = Number(s?.last24h_failed || 0); }
+          else { sent = Number(s?.lifetime_sent || 0); failed = Number(s?.lifetime_failed || 0); }
           const total = sent + failed;
           const pct = total > 0 ? Math.round((sent / total) * 100) : 0;
           const hasData = total > 0;
           const name = (sess.full_name || sess.real_name)?.replace(".session", "") || file.replace(".session", "");
+          const masked = maskPhone(sess.phone);
           const checkedAgo = sess.last_checked
             ? (() => { const m = Math.floor((Date.now() / 1000 - sess.last_checked!) / 60);
                        return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.floor(m / 60)}h ago` : `${Math.floor(m / 1440)}d ago`; })()
             : null;
 
-          // Determine card accent
-          const cardState = isPendingRepl ? "replacing" : isFail ? "failing" : "normal";
+          const dotTone = isPendingRepl ? "bg-accent" : tier === "critical" ? "bg-red-500" : tier === "attention" ? "bg-amber-400" : tier === "healthy" ? "bg-emerald-400" : "bg-dark-600";
+          const pctTone = pct >= 70 ? "text-emerald-400" : pct >= 40 ? "text-amber-400" : "text-red-400";
+          const barColor = pct >= 70 ? "bg-emerald-500" : pct >= 40 ? "bg-amber-500" : "bg-red-500";
+
+          let badgeLabel: string, badgeCls: string, BadgeIcon: any, badgeSpin = false;
+          if (isPendingRepl) { badgeLabel = "Replacing"; badgeCls = "bg-accent/10 border-accent/20 text-accent"; BadgeIcon = Clock; }
+          else if (isChk && !liveDiag) { badgeLabel = "Checking"; badgeCls = "bg-sky-500/10 border-sky-500/20 text-sky-400"; BadgeIcon = Loader2; badgeSpin = true; }
+          else if (diagCfg) { badgeLabel = diagCfg.label; badgeCls = `${diagCfg.bg} ${diagCfg.border} ${diagCfg.text}`; BadgeIcon = diagCfg.Icon; }
+          else if (tier === "attention") { badgeLabel = "Needs attention"; badgeCls = "bg-amber-500/10 border-amber-500/20 text-amber-400"; BadgeIcon = AlertTriangle; }
+          else if (tier === "healthy") { badgeLabel = "Healthy"; badgeCls = "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"; BadgeIcon = CheckCircle; }
+          else { badgeLabel = "Unchecked"; badgeCls = "bg-dark-700/30 border-white/[0.06] text-dark-400"; BadgeIcon = HelpCircle; }
 
           return (
-            <div key={file} className="rounded-2xl border border-white/[0.06] bg-dark-850 overflow-hidden transition-all hover:border-white/[0.1]">
-              <div className="p-4">
-                {/* ─── Top row: avatar + name + status + actions ─── */}
-                <div className="flex items-center gap-3">
-                  {/* Avatar */}
-                  <div className={`flex items-center justify-center h-10 w-10 rounded-xl text-sm font-bold shrink-0 ${
-                    cardState === "failing"
-                      ? "bg-gradient-to-br from-amber-500 to-amber-700 text-white"
-                      : cardState === "replacing"
-                      ? "bg-gradient-to-br from-accent to-accent/70 text-white"
-                      : `bg-gradient-to-br ${AVATAR_COLORS[idx % AVATAR_COLORS.length]} text-white`
-                  }`}>
+            <div key={file} className="rounded-2xl border border-white/[0.06] bg-[#171723] p-4 shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
+              {/* Row 1 — avatar + identity + status */}
+              <div className="flex items-start gap-3">
+                <div className="relative shrink-0">
+                  <div className={`flex items-center justify-center h-11 w-11 rounded-xl text-[15px] font-bold text-white bg-gradient-to-br ${AVATAR_COLORS[idx % AVATAR_COLORS.length]}`}>
                     {name.charAt(0).toUpperCase()}
                   </div>
-
-                  {/* Name + meta */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[13px] font-bold text-dark-50 truncate">{name}</span>
-                      {/* Inline status pill */}
-                      {isPendingRepl && (
-                        <span className="text-[8px] font-semibold rounded-full bg-accent/10 border border-accent/20 px-1.5 py-0.5 text-accent whitespace-nowrap">
-                          Replacing
-                        </span>
-                      )}
-                      {diag && diagCfg && !isPendingRepl && (
-                        <span className={`text-[8px] font-semibold rounded-full ${diagCfg.bg} border ${diagCfg.border} px-1.5 py-0.5 ${diagCfg.text} whitespace-nowrap`}>
-                          {diagCfg.label}
-                        </span>
-                      )}
-                      {isFail && !diag && !isPendingRepl && (
-                        <span className="text-[8px] font-semibold rounded-full bg-amber-500/10 border border-amber-500/15 px-1.5 py-0.5 text-amber-400 whitespace-nowrap">
-                          {fi ? Math.round(fi.failRate * 100) : 0}% failing
-                        </span>
-                      )}
-                      {!isFail && !isPendingRepl && hasData && !diag && (
-                        <span className="text-[8px] font-semibold rounded-full bg-emerald-500/10 border border-emerald-500/15 px-1.5 py-0.5 text-emerald-400 whitespace-nowrap">
-                          Healthy
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-[10px] text-dark-600 mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                      {sess.username ? <span className="text-sky-400/80">@{sess.username}</span> : null}
-                      {sess.phone ? <span className="font-mono">{sess.phone}</span> : null}
-                      {sess.user_id ? <span>ID: {sess.user_id}</span> : null}
-                      {checkedAgo ? <span className="inline-flex items-center gap-1"><Clock className="h-2.5 w-2.5" />checked {checkedAgo}</span> : <span className="text-dark-600">not checked yet</span>}
-                    </div>
+                  <span className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ring-2 ring-[#171723] ${dotTone}`} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[14px] font-bold text-white truncate max-w-[52%]">{name}</span>
+                    {sess.username ? <span className="text-[12px] text-sky-400/80 truncate">@{sess.username}</span> : null}
+                    <span className={`inline-flex items-center gap-1 text-[10px] font-semibold rounded-full border px-2 py-0.5 whitespace-nowrap ${badgeCls}`}>
+                      <BadgeIcon className={`h-2.5 w-2.5 ${badgeSpin ? "animate-spin" : ""}`} /> {badgeLabel}
+                    </span>
                   </div>
+                  {masked && <p className="text-[12.5px] font-mono text-dark-300 mt-1">{masked}</p>}
+                  <p className="text-[10px] text-dark-500 mt-0.5 flex flex-wrap items-center gap-x-2">
+                    {sess.user_id ? <span>ID: {sess.user_id}</span> : null}
+                    <span className="inline-flex items-center gap-1">
+                      <Clock className="h-2.5 w-2.5" />{checkedAgo ? `Last checked: ${checkedAgo}` : "Not checked yet"}
+                    </span>
+                  </p>
+                </div>
+              </div>
 
-                  {/* Right side: actions */}
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <button type="button" onClick={() => openEdit(file)}
-                      className="p-2 rounded-lg text-dark-500 hover:text-dark-300 hover:bg-dark-800/60 transition-all cursor-pointer" title="Edit profile">
-                      <Pencil className="h-3.5 w-3.5" />
-                    </button>
-                    {!isPendingRepl && (
-                      <button type="button" onClick={() => doCheckWhy(file)} disabled={isChk}
-                        className="p-2 rounded-lg text-dark-500 hover:text-dark-300 hover:bg-dark-800/60 disabled:opacity-50 transition-all cursor-pointer" title="Check health">
-                        {isChk ? <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" /> : <Search className="h-3.5 w-3.5" />}
-                      </button>
-                    )}
-                    {isFail && !isPendingRepl && (
-                      <button type="button" onClick={() => openReplace([file])}
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-semibold bg-accent/10 text-accent border border-accent/15 hover:bg-accent/20 transition-all cursor-pointer">
-                        <ArrowRightLeft className="h-3 w-3" /> Replace
-                      </button>
-                    )}
+              {/* Row 2 — metrics */}
+              <div className="mt-3 grid grid-cols-3 rounded-xl bg-white/[0.02] border border-white/[0.05]">
+                <div className="flex items-center gap-2 px-3 py-2.5 min-w-0">
+                  <Send className="h-4 w-4 text-emerald-400 shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-[13px] font-bold text-white tabular-nums leading-none truncate">{sent.toLocaleString()}</p>
+                    <p className="text-[9px] text-dark-500 mt-1">Sent</p>
                   </div>
                 </div>
+                <div className="flex items-center gap-2 px-3 py-2.5 border-x border-white/[0.05] min-w-0">
+                  <XCircle className={`h-4 w-4 shrink-0 ${failed > 0 ? "text-red-400" : "text-dark-600"}`} />
+                  <div className="min-w-0">
+                    <p className={`text-[13px] font-bold tabular-nums leading-none truncate ${failed > 0 ? "text-white" : "text-dark-400"}`}>{failed.toLocaleString()}</p>
+                    <p className="text-[9px] text-dark-500 mt-1">Failed</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 px-3 py-2.5 min-w-0">
+                  <Activity className={`h-4 w-4 shrink-0 ${pctTone}`} />
+                  <div className="min-w-0">
+                    <p className={`text-[13px] font-bold tabular-nums leading-none ${pctTone}`}>{hasData ? `${pct}%` : "—"}</p>
+                    <p className="text-[9px] text-dark-500 mt-1">Success</p>
+                  </div>
+                </div>
+              </div>
 
-                {/* ─── Stats row ─── */}
-                {hasData ? (
-                  <div className="mt-3 flex items-center gap-3">
-                    {/* Stats chips */}
-                    <div className="flex-1 flex items-center gap-2">
-                      <div className="flex items-center gap-4 text-[11px]">
-                        <span className="text-dark-400">
-                          <span className="font-bold text-emerald-400 tabular-nums">{sent.toLocaleString()}</span> sent
-                        </span>
-                        <span className="text-dark-400">
-                          <span className={`font-bold tabular-nums ${failed > 0 ? "text-red-400" : "text-dark-500"}`}>{failed.toLocaleString()}</span> failed
-                        </span>
-                        <span className={`font-bold tabular-nums ${pct >= 70 ? "text-emerald-400" : pct >= 40 ? "text-amber-400" : "text-red-400"}`}>
-                          {pct}%
-                        </span>
-                      </div>
-                    </div>
-                    {/* Mini progress bar */}
-                    <div className="w-20 h-1 rounded-full bg-white/[0.04] overflow-hidden shrink-0">
-                      <div className={`h-full rounded-full transition-all duration-700 ${
-                        pct >= 70 ? "bg-emerald-500" : pct >= 40 ? "bg-amber-500" : "bg-red-500"
-                      }`} style={{ width: `${Math.max(pct, 3)}%` }} />
-                    </div>
-                    <span className="text-[9px] text-dark-600 shrink-0">{lbl}</span>
-                  </div>
-                ) : (
-                  <div className="mt-3 flex items-center gap-2 text-[10px] text-dark-600">
-                    <WifiOff className="h-3 w-3 opacity-40" /> No activity yet
-                  </div>
-                )}
+              {/* Row 3 — session health bar */}
+              <div className="mt-3 flex items-center gap-2.5">
+                <span className="text-[10px] font-medium text-dark-500 shrink-0">Session health</span>
+                <div className="flex-1 h-1.5 rounded-full bg-white/[0.05] overflow-hidden">
+                  <div className={`h-full rounded-full transition-all duration-700 ${barColor}`} style={{ width: `${hasData ? Math.max(pct, 3) : 0}%` }} />
+                </div>
+                <span className={`text-[11px] font-bold tabular-nums shrink-0 ${pctTone}`}>{hasData ? `${pct}%` : "—"}</span>
+              </div>
 
-                {/* ─── Diagnosis check loading ─── */}
-                {isChk && !liveDiag && (
-                  <div className="mt-3 flex items-center gap-2.5 rounded-xl bg-accent/[0.04] border border-accent/10 px-3 py-2.5">
-                    <Loader2 className="h-4 w-4 text-accent animate-spin shrink-0" />
-                    <div>
-                      <p className="text-[11px] font-medium text-accent">Checking session health...</p>
-                      <p className="text-[9px] text-dark-500">Validating + SpamBot check (10-30s)</p>
-                    </div>
-                  </div>
-                )}
+              {/* Reason line for non-healthy states */}
+              {diag && diagCfg && tier !== "healthy" && !isPendingRepl && (
+                <p className="mt-2 text-[10.5px] text-dark-400 leading-snug">{diag.reason}</p>
+              )}
+              {isPendingRepl && (
+                <p className="mt-2 inline-flex items-center gap-1 text-[10.5px] text-accent font-medium"><Clock className="h-3 w-3" /> Replacement in progress</p>
+              )}
 
-                {/* ─── Diagnosis result (only when action needed, or a live check just ran) ─── */}
-                {diag && diagCfg && (liveDiag || diag.action !== "ok") && (() => {
-                  const healthyButFailing = diag.action === "ok" && isFail;
-                  const displayLabel = healthyButFailing ? "Session OK — But Failing in Stats" : diagCfg.label;
-                  const displayReason = healthyButFailing
-                    ? `SpamBot says account is healthy, but stats show ${fi ? Math.round(fi.failRate * 100) : 0}% failure. This may be a group/permission issue — contact support.`
-                    : diag.reason;
-                  const displayBorder = healthyButFailing ? "border-amber-500/15" : diagCfg.border;
-                  const displayBg = healthyButFailing ? "bg-amber-500/[0.06]" : diagCfg.bg;
-                  const displayText = healthyButFailing ? "text-amber-400" : diagCfg.text;
-                  const displayIconBg = healthyButFailing ? "bg-amber-500/15" : diagCfg.iconBg;
-                  const DisplayIcon = healthyButFailing ? AlertTriangle : diagCfg.Icon;
-                  return (
-                  <div className={`mt-3 rounded-xl border ${displayBorder} ${displayBg} p-3`}>
-                    <div className="flex items-start gap-2.5">
-                      <div className={`p-1.5 rounded-lg ${displayIconBg} shrink-0 mt-0.5`}>
-                        <DisplayIcon className={`h-3.5 w-3.5 ${displayText}`} />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className={`text-[11px] font-bold ${displayText}`}>{displayLabel}</p>
-                        <p className="text-[10px] text-dark-400 mt-0.5">{displayReason}</p>
-                        <div className="flex items-center gap-2 mt-2">
-                          {(diag.action === "replace" || diag.action === "wait") && !isPendingRepl && (
-                            <button type="button" onClick={() => openReplace([file])}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-semibold bg-accent text-white hover:bg-accent/90 transition-all cursor-pointer">
-                              <ArrowRightLeft className="h-3 w-3" /> Replace
-                            </button>
-                          )}
-                          {diag.action === "wait" && <span className="text-[9px] text-dark-500">or wait 24-48h</span>}
-                          {diag.action === "ok" && !isFail && (
-                            <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400 font-medium">
-                              <CheckCircle className="h-3 w-3" /> No action needed
-                            </span>
-                          )}
-                          {diag.action === "ok" && isFail && (
-                            <button type="button"
-                              onClick={() => openSupportModal(file, name, diag, fi ? fi.failRate : 0)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/15 hover:bg-amber-500/20 transition-all cursor-pointer">
-                              <HelpCircle className="h-3 w-3" /> Contact Support
-                            </button>
-                          )}
-                          {diag.action === "unknown" && !isPendingRepl && (
-                            <>
-                              <button type="button" onClick={() => doCheckWhy(file)} disabled={isChk}
-                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[9px] font-medium bg-dark-800 text-dark-300 border border-white/[0.06] hover:bg-dark-700 cursor-pointer">
-                                <RefreshCw className="h-2.5 w-2.5" /> Retry
-                              </button>
-                              <button type="button" onClick={() => openReplace([file])}
-                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[9px] font-semibold bg-accent/10 text-accent hover:bg-accent/20 cursor-pointer">
-                                <ArrowRightLeft className="h-2.5 w-2.5" /> Replace
-                              </button>
-                            </>
-                          )}
-                          {isPendingRepl && (
-                            <span className="inline-flex items-center gap-1 text-[10px] text-accent font-medium">
-                              <Clock className="h-3 w-3" /> Replacement in progress
-                            </span>
-                          )}
-                        </div>
-                      </div>
+              {/* Row 4 — actions */}
+              <div className="mt-3 flex items-center gap-2">
+                <button type="button" onClick={() => openEdit(file)}
+                  className="flex-1 inline-flex items-center justify-center gap-1.5 h-11 rounded-xl border border-white/[0.08] bg-white/[0.02] text-[12px] font-semibold text-dark-200 hover:bg-white/[0.05] active:scale-[0.98] transition-all">
+                  <Eye className="h-4 w-4 text-accent" /> View Details
+                </button>
+                <div className="relative flex-1">
+                  <button type="button" onClick={() => setOpenMenu(menuOpen ? null : file)} aria-haspopup="menu" aria-expanded={menuOpen}
+                    className="w-full inline-flex items-center justify-center gap-1.5 h-11 rounded-xl border border-white/[0.08] bg-white/[0.02] text-[12px] font-semibold text-dark-200 hover:bg-white/[0.05] active:scale-[0.98] transition-all">
+                    <Settings className="h-4 w-4 text-accent" /> Manage <ChevronDown className={`h-3.5 w-3.5 transition-transform ${menuOpen ? "rotate-180" : ""}`} />
+                  </button>
+                  {menuOpen && (
+                    <div className="absolute right-0 bottom-full mb-2 z-40 w-56 rounded-xl border border-white/[0.08] bg-[#1c1c2b] p-1 shadow-xl shadow-black/50">
+                      <button type="button" onClick={() => { setOpenMenu(null); doCheckWhy(file); }} disabled={isChk}
+                        className="w-full flex items-center gap-2.5 px-3 h-11 rounded-lg text-[12.5px] text-dark-100 hover:bg-white/[0.06] disabled:opacity-50 transition-colors">
+                        <Search className="h-4 w-4 text-dark-400" /> Run health check
+                      </button>
+                      <button type="button" onClick={() => { setOpenMenu(null); openEdit(file); }}
+                        className="w-full flex items-center gap-2.5 px-3 h-11 rounded-lg text-[12.5px] text-dark-100 hover:bg-white/[0.06] transition-colors">
+                        <Pencil className="h-4 w-4 text-dark-400" /> Edit session name
+                      </button>
+                      {replaceAllowed && (
+                        <button type="button" onClick={() => { setOpenMenu(null); openReplace([file]); }}
+                          className="w-full flex items-center gap-2.5 px-3 h-11 rounded-lg text-[12.5px] text-accent hover:bg-accent/10 transition-colors">
+                          <ArrowRightLeft className="h-4 w-4" /> Replace session
+                        </button>
+                      )}
+                      <button type="button" onClick={() => { setOpenMenu(null); openSupportModal(file, name, diag, fi ? fi.failRate : 0); }}
+                        className="w-full flex items-center gap-2.5 px-3 h-11 rounded-lg text-[12.5px] text-dark-100 hover:bg-white/[0.06] transition-colors">
+                        <HelpCircle className="h-4 w-4 text-dark-400" /> Contact support
+                      </button>
                     </div>
-                  </div>
-                  ); })()}
-
-                {/* ─── Failing hint (no diagnosis yet) ─── */}
-                {isFail && !diag && !isChk && fi && !isPendingRepl && (
-                  <div className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-amber-500/[0.04] border border-amber-500/10 px-3 py-2.5">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <AlertTriangle className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-                      <p className="text-[10px] text-dark-400">
-                        <span className="text-amber-400 font-semibold">{Math.round(fi.failRate * 100)}%</span> failure rate — last cycle {fi.lcFailed}/{fi.attempted} failed
-                      </p>
-                    </div>
-                    <button type="button" onClick={() => doCheckWhy(file)}
-                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[9px] font-semibold bg-dark-800 text-dark-300 border border-white/[0.06] hover:bg-dark-700 transition-all cursor-pointer shrink-0">
-                      <Search className="h-3 w-3" /> Check
-                    </button>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             </div>
           );
         })}
       </div>
 
+      {/* click-away layer to dismiss any open Manage menu */}
+      {openMenu && <div className="fixed inset-0 z-30" onClick={() => setOpenMenu(null)} />}
+
       {sessions.length === 0 && (
-        <div className="rounded-2xl border border-white/[0.06] bg-dark-850 flex flex-col items-center justify-center py-16">
+        <div className="rounded-2xl border border-white/[0.06] bg-[#171723] flex flex-col items-center justify-center py-16">
           <Users className="h-10 w-10 text-dark-600 mb-2" />
           <p className="text-sm font-medium text-dark-400">No sessions assigned</p>
+        </div>
+      )}
+      {sessions.length > 0 && visibleSessions.length === 0 && (
+        <div className="rounded-2xl border border-white/[0.06] bg-[#171723] flex flex-col items-center justify-center py-12">
+          <Search className="h-8 w-8 text-dark-600 mb-2" />
+          <p className="text-[13px] font-medium text-dark-400">No accounts match your filters</p>
+          <button type="button" onClick={() => { setSearch(""); setStatusFilter("all"); }} className="mt-2 text-[11px] font-semibold text-accent">Clear filters</button>
         </div>
       )}
 

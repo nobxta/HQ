@@ -31,12 +31,16 @@ export default function MobileBottomNav() {
           );
         })}
 
-        {/* center FAB */}
-        <Link href="/user/campaign" className="flex flex-1 flex-col items-center justify-start -mt-6" aria-label="Campaign">
-          <span className="flex h-14 w-14 items-center justify-center rounded-full text-white shadow-lg"
-            style={{ background: "linear-gradient(135deg, #8b6cff, #6c5ce7)", boxShadow: "0 8px 22px rgba(108,92,231,0.45)" }}>
-            <Send className="h-6 w-6" />
+        {/* center FAB — Advertise */}
+        <Link href="/user/campaign" className="flex flex-1 flex-col items-center justify-start -mt-5" aria-label="Advertise">
+          <span className={cn(
+            "flex h-14 w-14 items-center justify-center rounded-full text-white transition-transform active:scale-95",
+            isActive("/user/campaign") && "ring-2 ring-accent/40 ring-offset-2 ring-offset-dark-950",
+          )}
+            style={{ background: "linear-gradient(135deg, #8b6cff, #6c5ce7)", boxShadow: "0 6px 18px rgba(108,92,231,0.4)" }}>
+            <Send className="h-[22px] w-[22px]" strokeWidth={2.2} />
           </span>
+          <span className={cn("mt-1 text-[10px] font-semibold", isActive("/user/campaign") ? "text-accent" : "text-dark-400")}>Advertise</span>
         </Link>
 
         {/* right two */}
