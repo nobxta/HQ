@@ -90,7 +90,13 @@ def serialize_bot_detail(token: str, cfg: dict) -> dict:
             }
             for s in cfg.get("sessions", [])
         ],
-        "authorized": cfg.get("authorized", []),
+        # Zero was historically written for admin-created bots with no Telegram
+        # owner.  It is not a Telegram user ID and must never be presented as an
+        # authorized user.
+        "authorized": [
+            user_id for user_id in (cfg.get("authorized") or [])
+            if isinstance(user_id, int) and not isinstance(user_id, bool) and user_id > 0
+        ],
         "excluded_groups": cfg.get("excluded_groups", []),
         "excluded_sessions": cfg.get("excluded_sessions", []),
         "disabled_sessions": cfg.get("disabled_sessions", []),

@@ -708,11 +708,26 @@ async def portal_update_auth(bot_name: str, telegram_id: int = Query(...), body:
     _ensure_not_frozen(cfg)
     name = cfg.get("name", bot_name)
     full_cfg = await wrappers.load_user_data(name)
-    if telegram_id not in body.authorized:
-        body.authorized.append(telegram_id)
-    full_cfg["authorized"] = body.authorized[:10]
+
+    # Telegram user IDs are positive integers. In particular, never persist the
+    # legacy portal sentinel `0` used by admin-created bots without an owner.
+    authorized: list[int] = []
+    for user_id in body.authorized:
+        if isinstance(user_id, bool) or user_id <= 0:
+            raise HTTPException(400, "Authorized users must have a valid positive Telegram user ID")
+        if user_id not in authorized:
+            authorized.append(user_id)
+
+    # Keep a real signed-in Telegram user authorized. A web-token session for an
+    # unassigned legacy bot has telegram_id=0 and is deliberately not added.
+    if telegram_id > 0 and telegram_id not in authorized:
+        authorized.append(telegram_id)
+    if len(authorized) > 10:
+        raise HTTPException(400, "A bot can have at most 10 authorized users")
+
+    full_cfg["authorized"] = authorized
     await wrappers.save_user_data(name, full_cfg)
-    return {"status": "updated", "message": f"{len(body.authorized)} authorized users saved"}
+    return {"status": "updated", "message": f"{len(authorized)} authorized users saved"}
 
 
 @router.get("/bot/{bot_name}/groups")

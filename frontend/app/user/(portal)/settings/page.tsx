@@ -57,7 +57,11 @@ export default function UserSettingsPage() {
 
   useEffect(() => {
     if (bot) {
-      setAuthIds(bot.authorized || []);
+      setAuthIds(
+        (bot.authorized || []).filter(
+          (id: unknown): id is number => Number.isSafeInteger(id) && Number(id) > 0
+        )
+      );
     }
   }, [bot]);
 
@@ -211,8 +215,16 @@ export default function UserSettingsPage() {
 
   // Auth user management
   const addAuthId = () => {
-    const id = Number(newAuthId.trim());
-    if (!id || isNaN(id)) return;
+    const rawId = newAuthId.trim();
+    if (!/^[1-9]\d*$/.test(rawId)) {
+      toast.error("Enter a valid positive Telegram user ID");
+      return;
+    }
+    const id = Number(rawId);
+    if (!Number.isSafeInteger(id)) {
+      toast.error("Telegram user ID is too large");
+      return;
+    }
     if (authIds.includes(id)) { toast.error("Already added"); return; }
     if (authIds.length >= 10) { toast.error("Max 10 authorized users"); return; }
     setAuthIds([...authIds, id]);
@@ -220,6 +232,7 @@ export default function UserSettingsPage() {
   };
 
   const removeAuthId = (id: number) => {
+    if (id === bot.owner_id) { toast.error("The owner cannot be removed"); return; }
     if (id === session?.telegram_id) { toast.error("Cannot remove yourself"); return; }
     setAuthIds(authIds.filter((a) => a !== id));
   };
@@ -617,8 +630,16 @@ export default function UserSettingsPage() {
         </CardHeader>
         <div className="space-y-4">
           <p className="text-xs text-dark-500">
-            Telegram user IDs that can control this bot. You cannot remove yourself.
+            The owner is permanent and receives renewal and direct Telegram alerts. Other
+            authorized users can control the bot and see its shared portal notifications.
           </p>
+
+          {!bot.owner_id && (
+            <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+              No Telegram owner is assigned. Authorized users can control the bot, but renewal
+              and direct Telegram alerts have no owner recipient until an admin assigns one.
+            </div>
+          )}
 
           {authIds.length === 0 ? (
             <p className="text-sm text-dark-500">No authorized users</p>
@@ -632,10 +653,13 @@ export default function UserSettingsPage() {
                     {id === session?.telegram_id && (
                       <span className="text-[10px] bg-accent/10 text-accent px-1.5 py-0.5 rounded shrink-0">You</span>
                     )}
+                    {id === bot.owner_id && (
+                      <span className="text-[10px] bg-amber-500/10 text-amber-300 px-1.5 py-0.5 rounded shrink-0">Owner</span>
+                    )}
                   </div>
                   <button
                     onClick={() => removeAuthId(id)}
-                    disabled={id === session?.telegram_id}
+                    disabled={id === session?.telegram_id || id === bot.owner_id}
                     className="text-dark-500 hover:text-danger transition-colors disabled:opacity-30 disabled:cursor-not-allowed shrink-0 p-1"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
