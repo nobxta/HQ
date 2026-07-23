@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import time
 
 # Grace window after a plan's valid_till passes before the bot is purged. Mirrors
-# GRACE_PERIOD_HOURS in code/shop/workers.py — kept in sync intentionally.
+# GRACE_PERIOD_HOURS in code/shop/workers.py â€” kept in sync intentionally.
 _GRACE_HOURS = 48
 
 
@@ -27,7 +27,7 @@ def _expiry_fields(cfg: dict) -> dict:
     in_grace = False
     # Grace countdown. Normally anchored at expired_at (stamped in UTC when posting stops).
     # But there is a window between valid_till passing and the hourly backstop worker
-    # stamping expired_at — during it, fall back to anchoring at valid_till so the portal
+    # stamping expired_at â€” during it, fall back to anchoring at valid_till so the portal
     # shows "grace just started / ~48h left" instead of wrongly implying grace has ended.
     try:
         left = None
@@ -168,12 +168,15 @@ def serialize_order(order: dict) -> dict:
         "created_at": order.get("created_at", ""),
         "paid_at": order.get("paid_at", ""),
         "bot_username": order.get("created_bot_username", ""),
-        # Live Shop Bot invoice (still in temppay.json, not yet a real order) — admin
+        # Live Shop Bot invoice (still in temppay.json, not yet a real order) â€” admin
         # actions like sync/mark-paid/cancel don't apply until payment confirms.
         "is_temppay": bool(order.get("is_temppay")),
         # Paid session-replacement request surfaced from the replacement queue (read-only row).
         "is_replacement": bool(order.get("is_replacement")),
         "real_name": order.get("real_name", ""),
+        "session_names": order.get("session_names", []),
+        "replacement_count": order.get("replacement_count", 0),
+        "job_id": order.get("job_id", ""),
         "session_file": order.get("session_file", ""),
     }
 
@@ -232,3 +235,4 @@ def paginate(items: list, page: int, per_page: int) -> dict:
         "per_page": per_page,
         "pages": pages,
     }
+

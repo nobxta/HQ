@@ -25,8 +25,8 @@ def _temppay_as_order_rows() -> list[dict]:
     return rows
 
 
-# Replacement-queue statuses → order-like display status so the payments UI can render them
-# with the same Badge/filters as real orders (money-in → "paid", still-owed → "payment_waiting").
+# Replacement-queue statuses â†’ order-like display status so the payments UI can render them
+# with the same Badge/filters as real orders (money-in â†’ "paid", still-owed â†’ "payment_waiting").
 _REPLACEMENT_STATUS_MAP = {
     "pending_payment": "payment_waiting",
     "ready": "paid",
@@ -38,35 +38,68 @@ _REPLACEMENT_STATUS_MAP = {
 
 
 def _replacement_as_order_rows() -> list[dict]:
-    """Paid session-replacement requests live on the replacement queue (not orders.json), so
-    the payments dashboard never saw that money. Surface each PAID (non-free) entry as an
-    order-like, read-only row tagged order_type="replacement"."""
+    """Surface one read-only payment row per replacement invoice.
+
+    A grouped replacement stores the same blockchain payment id on every covered
+    queue entry. The admin payments screen must represent that as one transaction,
+    not one row per session.
+    """
     from code.replacement import load_replacement_queue
     rows: list[dict] = []
+    grouped: dict[str, list[dict]] = {}
     for e in load_replacement_queue():
-        # Only entries that represent actual money (skip free replacements).
         if e.get("free_replacement") or float(e.get("price_usd") or 0) <= 0:
             continue
-        inv = e.get("invoice_data") or {}
-        real_name = (e.get("real_name") or e.get("session_file") or "").replace(".session", "")
+        payment_id = str(e.get("payment_id") or (e.get("invoice_data") or {}).get("payment_id") or "").strip()
+        # Replacement requests belong in the queue until a real provider invoice
+        # exists; the payments ledger should only contain actual invoices.
+        if not payment_id:
+            continue
+        group_key = f"payment:{payment_id}" if payment_id else f"job:{e.get('job_id') or e.get('id')}"
+        grouped.setdefault(group_key, []).append(e)
+
+    status_rank = {
+        "pending_payment": 0, "ready": 1, "processing": 1, "awaiting_session": 1,
+        "needs_admin": 1, "completed": 2, "cancelled": 3,
+    }
+    for entries in grouped.values():
+        first = entries[0]
+        inv = first.get("invoice_data") or {}
+        names = [
+            (e.get("real_name") or e.get("session_file") or "").replace(".session", "")
+            for e in entries
+        ]
+        statuses = [str(e.get("status") or "") for e in entries]
+        if "pending_payment" in statuses:
+            queue_status = "pending_payment"
+        elif statuses and all(status == "completed" for status in statuses):
+            queue_status = "completed"
+        elif statuses and all(status == "cancelled" for status in statuses):
+            queue_status = "cancelled"
+        else:
+            queue_status = min(statuses, key=lambda status: status_rank.get(status, 1), default="")
+        payment_id = str(first.get("payment_id") or inv.get("payment_id") or "").strip()
         rows.append({
-            "order_id": e.get("id", ""),
-            "user_id": e.get("owner_id"),
-            "status": _REPLACEMENT_STATUS_MAP.get(e.get("status", ""), e.get("status", "")),
+            "order_id": first.get("job_id") or first.get("id", ""),
+            "job_id": first.get("job_id") or first.get("id", ""),
+            "user_id": first.get("owner_id"),
+            "status": _REPLACEMENT_STATUS_MAP.get(queue_status, queue_status),
             "order_type": "replacement",
             "source": "replacement",
-            "plan_name": "Session replacement",
-            "amount_usd": float(e.get("price_usd") or 0),
-            "bot_name": e.get("bot_name", ""),
-            "real_name": real_name,
-            "session_file": e.get("session_file", ""),
-            "payment_id": e.get("payment_id", "") or inv.get("payment_id", ""),
+            "plan_name": f"Session replacement Ã—{len(entries)}",
+            "amount_usd": sum(float(e.get("price_usd") or 0) for e in entries),
+            "bot_name": first.get("bot_name", ""),
+            "real_name": ", ".join(names),
+            "session_names": names,
+            "replacement_count": len(entries),
+            "session_file": first.get("session_file", ""),
+            "payment_id": payment_id,
             "pay_currency": inv.get("pay_currency", ""),
             "pay_amount": inv.get("pay_amount", ""),
             "pay_address": inv.get("pay_address", ""),
             "invoice_expires_at": inv.get("invoice_expires_at", ""),
-            "created_at": e.get("created_at", ""),
-            "paid_at": e.get("paid_at", ""),
+            "created_at": min((e.get("created_at", "") for e in entries), default=""),
+            "paid_at": max((e.get("paid_at", "") for e in entries), default=""),
             "is_replacement": True,
         })
     return rows
@@ -163,9 +196,9 @@ async def mark_paid(order_id: str):
     if not order:
         raise HTTPException(404, f"Order '{order_id}' not found")
     # Renewals must EXTEND the bot's validity, never trigger a new-bot build. order_mark_paid
-    # would wrongly push a renewal into "creating" (a provisioning state), stranding it — and
+    # would wrongly push a renewal into "creating" (a provisioning state), stranding it â€” and
     # "creating" can't be cancelled. apply_confirmed_payment runs the renewal branch
-    # (extend_valid_till_for_bot → paid → completed), is idempotent, and is the SAME path the
+    # (extend_valid_till_for_bot â†’ paid â†’ completed), is idempotent, and is the SAME path the
     # IPN webhook uses, so admin confirmation and automatic confirmation behave identically.
     if order.get("order_type") == "renewal" and order.get("status") in ("payment_waiting", "confirming"):
         from code.shop.workers import apply_confirmed_payment
@@ -173,9 +206,9 @@ async def mark_paid(order_id: str):
         if not ok:
             raise HTTPException(400, "Renewal is no longer awaiting payment")
         await wrappers.log_admin_action("web_admin", "order_mark_paid", target=f"{order_id} (renewal)")
-        return OrderActionResponse(success=True, message="Renewal confirmed — validity extended")
-    # Web orders must run the SAME provisioning the IPN webhook does — issue the web
-    # access code, reserve a pooled bot token, and submit the build — not just a status
+        return OrderActionResponse(success=True, message="Renewal confirmed â€” validity extended")
+    # Web orders must run the SAME provisioning the IPN webhook does â€” issue the web
+    # access code, reserve a pooled bot token, and submit the build â€” not just a status
     # flip, or the order strands in "creating" with no bot. apply_confirmed_payment is
     # idempotent and self-guards on status.
     if (order.get("source") or "") == "web" and order.get("status") in ("payment_waiting", "confirming"):
@@ -184,7 +217,7 @@ async def mark_paid(order_id: str):
         if not ok:
             raise HTTPException(400, "Order is no longer awaiting payment")
         await wrappers.log_admin_action("web_admin", "order_mark_paid", target=order_id)
-        return OrderActionResponse(success=True, message="Marked paid — provisioning started")
+        return OrderActionResponse(success=True, message="Marked paid â€” provisioning started")
     success, msg = await wrappers.order_mark_paid(order_id)
     if not success:
         raise HTTPException(400, msg)
@@ -234,7 +267,7 @@ async def sync_order(order_id: str):
 
     details = await asyncio.to_thread(get_payment_details, payment_id)
     if not details:
-        raise HTTPException(502, "Could not reach NOWPayments — try again")
+        raise HTTPException(502, "Could not reach NOWPayments â€” try again")
 
     pstatus = (details.get("payment_status") or "").lower()
     update_order(order_id, {
@@ -286,3 +319,4 @@ async def search_by_payment(payment_id: str):
 async def search_by_user(user_id: int):
     results = await wrappers.search_orders(user_id=user_id)
     return {"orders": [serialize_order(o) for o in results], "total": len(results)}
+

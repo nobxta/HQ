@@ -3,13 +3,13 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import Modal from "@/components/ui/Modal";
 import portalApi, { getPortalSession } from "@/lib/portal-api";
 import {
-  ArrowLeft, Copy, Check, Loader2, ExternalLink, Clock,
-  AlertTriangle, CheckCircle, Search, ChevronRight, XCircle,
+  Copy, Check, Loader2, ExternalLink, Clock,
+  AlertTriangle, CheckCircle, Search, ChevronRight, XCircle, X,
 } from "lucide-react";
 
-/* ═══════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    TYPES
-   ═══════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 interface CryptoCurrency {
   code: string;
@@ -31,6 +31,7 @@ interface InvoiceData {
   invoice_expires_at: string;
   entry_id: string;
   replacement_count?: number;
+  sessions?: string[];
 }
 
 interface PaymentStatusData {
@@ -90,9 +91,9 @@ interface Props {
   onPaymentConfirmed: () => void;
 }
 
-/* ═══════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    CATEGORY GROUPING
-   ═══════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 const MAIN_COINS = ["BTC", "ETH", "SOL", "BNB", "XMR", "LTC", "TRX", "DOGE", "TON", "ADA", "XRP", "MATIC"];
 
@@ -114,14 +115,14 @@ function groupCurrencies(currencies: CryptoCurrency[]) {
   return { main, usdt, usdc };
 }
 
-/* ═══════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    COMPONENT
-   ═══════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 export default function CryptoPaymentModal({
   open, onClose, entryId, sessionName, amountUsd, replacementCount = 1, onPaymentConfirmed,
 }: Props) {
-  // Steps: "select" → "paying" → "confirmed"
+  // Steps: "select" â†’ "paying" â†’ "confirmed"
   const [step, setStep] = useState<"select" | "paying" | "confirmed">("select");
   const [currencies, setCurrencies] = useState<CryptoCurrency[]>([]);
   const [loadingCurrencies, setLoadingCurrencies] = useState(false);
@@ -131,6 +132,7 @@ export default function CryptoPaymentModal({
   // Invoice / payment
   const [selectedCurrency, setSelectedCurrency] = useState<CryptoCurrency | null>(null);
   const [creatingInvoice, setCreatingInvoice] = useState(false);
+  const [resumingInvoice, setResumingInvoice] = useState(false);
   const [invoice, setInvoice] = useState<InvoiceData | null>(null);
   const [invoiceError, setInvoiceError] = useState("");
   const [copied, setCopied] = useState<"address" | "amount" | null>(null);
@@ -155,13 +157,40 @@ export default function CryptoPaymentModal({
       setInvoice(null);
       setInvoiceError("");
       setPaymentStatus(null);
+      setResumingInvoice(true);
       confirmationNotifiedRef.current = false;
       fetchCurrencies();
+      const s = getPortalSession();
+      if (s?.bot_name && s?.telegram_id != null && entryId) {
+        portalApi.get(
+          `/api/portal/bot/${s.bot_name}/replacement/${entryId}/invoice?telegram_id=${s.telegram_id}`
+        ).then((response) => {
+          const active = response.data;
+          if (!active?.active) return;
+          const payCurrency = String(active.pay_currency || "").toUpperCase();
+          setInvoice(active);
+          setSelectedCurrency({
+            code: payCurrency,
+            symbol: payCurrency.replace(/(TRC20|BEP20|ERC20|SOL|POLYGON)$/i, "") || payCurrency,
+            name: payCurrency,
+            network: "",
+            logo: "",
+            price_usd: 0,
+            is_stablecoin: false,
+          });
+          setStep("paying");
+          startPolling();
+        }).catch(() => {
+          // No active invoice: the user can choose a currency normally.
+        }).finally(() => setResumingInvoice(false));
+      } else {
+        setResumingInvoice(false);
+      }
     }
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [open]);
+  }, [open, entryId]);
 
-  /* ── Fetch currencies ── */
+  /* â”€â”€ Fetch currencies â”€â”€ */
   const fetchCurrencies = useCallback(async () => {
     setLoadingCurrencies(true);
     try {
@@ -173,7 +202,7 @@ export default function CryptoPaymentModal({
     setLoadingCurrencies(false);
   }, []);
 
-  /* ── Create invoice ── */
+  /* â”€â”€ Create invoice â”€â”€ */
   const selectCoin = useCallback(async (currency: CryptoCurrency) => {
     const s = getPortalSession();
     if (!s?.bot_name || s?.telegram_id == null) return;
@@ -206,7 +235,7 @@ export default function CryptoPaymentModal({
     setCreatingInvoice(false);
   }, [entryId, onPaymentConfirmed]);
 
-  /* ── Poll payment status ── */
+  /* â”€â”€ Poll payment status â”€â”€ */
   const startPolling = useCallback(() => {
     if (pollRef.current) clearInterval(pollRef.current);
     const poll = async () => {
@@ -267,7 +296,7 @@ export default function CryptoPaymentModal({
     };
   }, [open, paymentStatus?.job?.job_id]);
 
-  /* ── Countdown timer ── */
+  /* â”€â”€ Countdown timer â”€â”€ */
   useEffect(() => {
     if (!invoice?.invoice_expires_at) return;
     const tick = () => {
@@ -285,14 +314,14 @@ export default function CryptoPaymentModal({
     return () => clearInterval(iv);
   }, [invoice?.invoice_expires_at]);
 
-  /* ── Copy helper ── */
+  /* â”€â”€ Copy helper â”€â”€ */
   const copyText = useCallback((text: string, type: "address" | "amount") => {
     navigator.clipboard.writeText(text);
     setCopied(type);
     setTimeout(() => setCopied(null), 2000);
   }, []);
 
-  /* ── Filter currencies ── */
+  /* â”€â”€ Filter currencies â”€â”€ */
   const filteredCurrencies = currencies.filter((c) => {
     if (!search) return true;
     const q = search.toLowerCase();
@@ -303,14 +332,21 @@ export default function CryptoPaymentModal({
   });
   const groups = groupCurrencies(filteredCurrencies);
 
-  /* ═══════════════════════════════════════════════════════
+  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
      RENDER
-     ═══════════════════════════════════════════════════════ */
+     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
   return (
     <Modal open={open} onClose={onClose} title="" size="md">
-      {/* ── STEP 1: Select cryptocurrency ── */}
-      {step === "select" && (
+      {step === "select" && resumingInvoice && (
+        <div className="flex min-h-56 flex-col items-center justify-center">
+          <Loader2 className="h-6 w-6 animate-spin text-accent" />
+          <p className="mt-3 text-[12px] font-medium text-dark-300">Checking for an active invoiceâ€¦</p>
+          <p className="mt-1 text-[10px] text-dark-500">You will keep the same address if one already exists.</p>
+        </div>
+      )}
+      {/* â”€â”€ STEP 1: Select cryptocurrency â”€â”€ */}
+      {step === "select" && !resumingInvoice && (
         <div className="space-y-4">
           {/* Header */}
           <div className="text-center pb-2">
@@ -322,7 +358,7 @@ export default function CryptoPaymentModal({
             </div>
             <h3 className="text-base font-bold text-dark-100">Pay with Crypto</h3>
             <p className="text-[11px] text-dark-500 mt-1">
-              Replace <span className="text-dark-300 font-semibold">{replacementCount > 1 ? `${replacementCount} sessions` : sessionName}</span> — <span className="text-amber-400 font-bold">${(amountUsd * replacementCount).toFixed(2)}</span>
+              Replace <span className="text-dark-300 font-semibold">{replacementCount > 1 ? `${replacementCount} sessions` : sessionName}</span> â€” <span className="text-amber-400 font-bold">${(amountUsd * replacementCount).toFixed(2)}</span>
             </p>
           </div>
 
@@ -407,62 +443,70 @@ export default function CryptoPaymentModal({
         </div>
       )}
 
-      {/* ── STEP 2: Payment screen ── */}
+      {/* â”€â”€ STEP 2: Payment screen â”€â”€ */}
       {step === "paying" && invoice && selectedCurrency && (
-        <div className="space-y-4">
-          {/* Back button */}
-          <button
-            onClick={() => { setStep("select"); setInvoice(null); if (pollRef.current) clearInterval(pollRef.current); }}
-            className="flex items-center gap-1.5 text-[11px] text-dark-500 hover:text-dark-300 transition-colors"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" /> Choose different coin
-          </button>
+        <div className="space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-[15px] font-bold text-dark-100">Complete payment</h3>
+                <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[9px] font-semibold text-amber-300">Invoice active</span>
+              </div>
+              <p className="mt-1 text-[10px] text-dark-500">Closing this window will not cancel or change this invoice.</p>
+            </div>
+            <button type="button" onClick={onClose} aria-label="Close payment"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-dark-500 hover:bg-white/[0.05] hover:text-white">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
 
           {/* Coin header */}
-          <div className="flex items-center gap-3 rounded-xl bg-dark-800/40 border border-white/[0.04] p-3">
+          <div className="flex items-center gap-3 rounded-xl border border-white/[0.05] bg-dark-800/35 p-3">
             {selectedCurrency.logo ? (
-              <img src={selectedCurrency.logo} alt={selectedCurrency.symbol} className="h-10 w-10 rounded-full" />
+              <img src={selectedCurrency.logo} alt={selectedCurrency.symbol} className="h-9 w-9 rounded-full" />
             ) : (
-              <div className="h-10 w-10 rounded-full bg-accent/20 flex items-center justify-center text-accent font-bold text-sm">
+              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-amber-500/10 text-[11px] font-bold text-amber-300">
                 {selectedCurrency.symbol.slice(0, 2)}
               </div>
             )}
-            <div>
-              <p className="text-[14px] font-bold text-dark-100">
-                Send {selectedCurrency.symbol}
-                {selectedCurrency.network && (
-                  <span className="text-[10px] font-semibold text-dark-500 ml-1.5">({selectedCurrency.network})</span>
-                )}
+            <div className="min-w-0 flex-1">
+              <p className="text-[13px] font-bold text-dark-100">
+                {(invoice.pay_currency || selectedCurrency.symbol).toUpperCase()}
+                {selectedCurrency.network && <span className="ml-1.5 text-[9px] font-semibold text-dark-500">{selectedCurrency.network}</span>}
               </p>
-              <p className="text-[11px] text-dark-500">
-                For: {invoice.replacement_count && invoice.replacement_count > 1 ? `${invoice.replacement_count} sessions` : sessionName} — ${Number(invoice.amount_usd || amountUsd).toFixed(2)} USD
+              <p className="mt-0.5 text-[10px] text-dark-500">
+                ${Number(invoice.amount_usd || amountUsd).toFixed(2)} for {invoice.replacement_count || replacementCount} account{(invoice.replacement_count || replacementCount) === 1 ? "" : "s"}
               </p>
             </div>
+            <span className="text-[9px] font-mono text-dark-600">#{invoice.payment_id}</span>
           </div>
 
-          {/* Timer */}
-          <div className="flex items-center justify-between rounded-lg bg-amber-500/[0.06] border border-amber-500/15 px-3 py-2">
-            <div className="flex items-center gap-1.5">
-              <Clock className="h-3.5 w-3.5 text-amber-400" />
-              <span className="text-[10px] font-semibold text-amber-400">Time remaining</span>
+          {(invoice.sessions?.length || sessionName) && (
+            <div className="flex flex-wrap gap-1.5">
+              {(invoice.sessions?.length ? invoice.sessions : [sessionName]).map((name) => (
+                <span key={name} className="rounded-md border border-white/[0.05] bg-white/[0.025] px-2 py-1 text-[9px] font-medium text-dark-400">{name}</span>
+              ))}
             </div>
-            <span className={`text-[12px] font-bold tabular-nums ${timeLeft === "Expired" ? "text-red-400" : "text-amber-300"}`}>
-              {timeLeft || "—"}
-            </span>
+          )}
+
+          {/* Timer */}
+          <div className="flex items-center justify-between rounded-lg border border-amber-500/15 bg-amber-500/[0.055] px-3 py-2">
+            <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-amber-400"><Clock className="h-3.5 w-3.5" /> Invoice expires in</span>
+            <span className={`text-[11px] font-bold tabular-nums ${timeLeft === "Expired" ? "text-red-400" : "text-amber-200"}`}>{timeLeft || "â€”"}</span>
           </div>
 
           {/* Amount to send */}
-          <div className="rounded-xl bg-dark-800/60 border border-white/[0.06] p-4 space-y-3">
+          <div className="space-y-3 rounded-xl border border-white/[0.07] bg-dark-800/55 p-3.5">
             <div>
-              <p className="text-[9px] font-bold text-dark-500 uppercase tracking-wider mb-1">Amount to send</p>
-              <div className="flex items-center justify-between">
-                <span className="text-xl font-bold text-dark-50 tabular-nums">
+              <p className="mb-1.5 text-[9px] font-bold uppercase tracking-wider text-dark-500">Send exactly</p>
+              <div className="flex items-center justify-between gap-3">
+                <span className="min-w-0 break-all text-[20px] font-bold tabular-nums text-dark-50">
                   {invoice.pay_amount}
-                  <span className="text-sm text-dark-400 font-semibold ml-1.5">{invoice.pay_currency.toUpperCase()}</span>
+                  <span className="ml-1.5 text-[12px] font-semibold text-dark-400">{invoice.pay_currency.toUpperCase()}</span>
                 </span>
                 <button
                   onClick={() => copyText(String(invoice.pay_amount), "amount")}
-                  className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-semibold bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
+                  className="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg bg-accent/10 px-2.5 text-[10px] font-semibold text-accent hover:bg-accent/20"
                 >
                   {copied === "amount" ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
                   {copied === "amount" ? "Copied" : "Copy"}
@@ -470,15 +514,15 @@ export default function CryptoPaymentModal({
               </div>
             </div>
 
-            <div className="border-t border-white/[0.04] pt-3">
-              <p className="text-[9px] font-bold text-dark-500 uppercase tracking-wider mb-1">Send to address</p>
-              <div className="flex items-start gap-2">
-                <code className="flex-1 text-[11px] text-emerald-400 font-mono break-all bg-dark-900/50 rounded-lg px-2.5 py-2 border border-emerald-500/10">
+            <div className="border-t border-white/[0.05] pt-3">
+              <p className="mb-1.5 text-[9px] font-bold uppercase tracking-wider text-dark-500">One-time payment address</p>
+              <div className="rounded-lg border border-emerald-500/10 bg-dark-900/55 p-2.5">
+                <code className="block break-all font-mono text-[11px] leading-relaxed text-emerald-300">
                   {invoice.pay_address}
                 </code>
                 <button
                   onClick={() => copyText(invoice.pay_address, "address")}
-                  className="shrink-0 flex items-center gap-1 px-2.5 py-2 rounded-lg text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors border border-emerald-500/10"
+                  className="mt-2 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-emerald-500/10 bg-emerald-500/10 text-[10px] font-semibold text-emerald-300 hover:bg-emerald-500/15"
                 >
                   {copied === "address" ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
                   {copied === "address" ? "Copied!" : "Copy"}
@@ -511,7 +555,7 @@ export default function CryptoPaymentModal({
                 <p className="text-[12px] font-semibold text-dark-200">Waiting for payment...</p>
                 <p className="text-[10px] text-dark-500">
                   {paymentStatus?.amount_received && paymentStatus.amount_received > 0
-                    ? `Received: ${paymentStatus.amount_received} ${invoice.pay_currency.toUpperCase()} — confirming...`
+                    ? `Received: ${paymentStatus.amount_received} ${invoice.pay_currency.toUpperCase()} â€” confirming...`
                     : "We'll detect your payment automatically"}
                 </p>
               </div>
@@ -535,7 +579,7 @@ export default function CryptoPaymentModal({
         </div>
       )}
 
-      {/* ── STEP 3: Payment confirmed ── */}
+      {/* â”€â”€ STEP 3: Payment confirmed â”€â”€ */}
       {step === "confirmed" && (
         <div className="py-2 space-y-4">
           <div className="h-16 w-16 rounded-2xl bg-emerald-500/15 border border-emerald-500/20 flex items-center justify-center mx-auto">
@@ -586,7 +630,7 @@ function ReplacementProgress({ job }: { job: ReplacementJob }) {
           </p>
           <p className="text-[10px] text-dark-500">
             {job.completed} of {job.total} completed
-            {job.awaiting_inventory > 0 ? ` · ${job.awaiting_inventory} waiting for inventory` : ""}
+            {job.awaiting_inventory > 0 ? ` Â· ${job.awaiting_inventory} waiting for inventory` : ""}
           </p>
         </div>
         <span className="text-[12px] font-bold text-accent tabular-nums">{job.progress}%</span>
@@ -637,9 +681,9 @@ function ReplacementProgress({ job }: { job: ReplacementJob }) {
   );
 }
 
-/* ═══════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    SUB-COMPONENTS
-   ═══════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 function CoinButton({ coin, onClick, disabled }: { coin: CryptoCurrency; onClick: () => void; disabled: boolean }) {
   return (
@@ -690,7 +734,7 @@ function StablecoinGroup({
         )}
         <div className="flex-1 text-left">
           <p className="text-[12px] font-bold text-dark-200">{label}</p>
-          <p className="text-[9px] text-dark-500">{symbol} — {coins.length} networks</p>
+          <p className="text-[9px] text-dark-500">{symbol} â€” {coins.length} networks</p>
         </div>
         <ChevronRight className={`h-4 w-4 text-dark-500 transition-transform ${expanded ? "rotate-90" : ""}`} />
       </button>
@@ -711,3 +755,4 @@ function StablecoinGroup({
     </div>
   );
 }
+

@@ -146,6 +146,62 @@ class ReplacementJobTests(unittest.TestCase):
         saved = replacement.load_replacement_queue()
         self.assertEqual({"pay-group"}, {entry["payment_id"] for entry in saved})
 
+    def test_grouped_invoice_is_one_admin_payment_row(self):
+        from api.routers import orders
+        entries = replacement.create_replacement_request(
+            "token", "Example Bot", 42, self._sessions(), free_count=0
+        )
+        queue = replacement.load_replacement_queue()
+        for entry in queue:
+            entry["payment_id"] = "pay-group"
+            entry["invoice_data"] = {
+                "payment_id": "pay-group",
+                "pay_address": "one-address",
+                "pay_amount": 0.0001,
+                "pay_currency": "BTC",
+                "invoice_expires_at": "2099-01-01T00:00:00Z",
+            }
+        replacement.save_replacement_queue(queue)
+
+        rows = orders._replacement_as_order_rows()
+        self.assertEqual(1, len(rows))
+        self.assertEqual(entries[0]["job_id"], rows[0]["order_id"])
+        self.assertEqual(4.0, rows[0]["amount_usd"])
+        self.assertEqual(2, rows[0]["replacement_count"])
+        self.assertEqual(["Old A", "Old B"], rows[0]["session_names"])
+        self.assertEqual("pay-group", rows[0]["payment_id"])
+
+    def test_active_invoice_can_be_resumed_after_refresh(self):
+        from api.routers import user_portal
+        entries = replacement.create_replacement_request(
+            "token", "Example Bot", 42, self._sessions(), free_count=0
+        )
+        queue = replacement.load_replacement_queue()
+        for entry in queue:
+            entry["payment_id"] = "pay-resume"
+            entry["invoice_data"] = {
+                "payment_id": "pay-resume",
+                "pay_address": "same-address",
+                "pay_amount": 0.0001,
+                "pay_currency": "BTC",
+                "invoice_expires_at": "2099-01-01T00:00:00Z",
+            }
+        replacement.save_replacement_queue(queue)
+
+        with patch.object(
+            user_portal, "_get_user_bot",
+            new=unittest.mock.AsyncMock(return_value=("token", {})),
+        ):
+            active = asyncio.run(user_portal.portal_replacement_active_invoice(
+                "Example Bot", entries[1]["id"], telegram_id=42
+            ))
+        self.assertTrue(active["active"])
+        self.assertEqual("pay-resume", active["payment_id"])
+        self.assertEqual("same-address", active["pay_address"])
+        self.assertEqual(4.0, active["amount_usd"])
+        self.assertEqual(2, active["replacement_count"])
+        self.assertEqual(["Old A", "Old B"], active["sessions"])
+
     def test_legacy_entry_without_job_id_remains_readable(self):
         replacement.save_replacement_queue([{
             "id": "legacy-1",
@@ -164,6 +220,7 @@ class ReplacementJobTests(unittest.TestCase):
         paths = {getattr(route, "path", "") for route in app.routes}
         self.assertIn("/api/portal/bot/{bot_name}/replacement-jobs", paths)
         self.assertIn("/api/portal/bot/{bot_name}/replacement-jobs/{job_id}", paths)
+        self.assertIn("/api/portal/bot/{bot_name}/replacement/{entry_id}/invoice", paths)
         self.assertIn("/api/system/replacement-jobs", paths)
         self.assertIn("/api/system/replacement-jobs/{job_id}/continue", paths)
         self.assertIn("/ws/replacements/{job_id}", paths)
@@ -233,3 +290,4 @@ class ReplacementJobTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

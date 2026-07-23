@@ -23,9 +23,10 @@ interface OrderRow {
   bot_name?: string; web_token?: string; creation_step?: string; queued?: boolean;
   created_at?: string; paid_at?: string; bot_username?: string;
   is_temppay?: boolean; is_replacement?: boolean; real_name?: string; session_file?: string;
+  job_id?: string; replacement_count?: number; session_names?: string[];
 }
 
-// Payment kind → label, accent color and how to describe the purchased item. Every payment
+// Payment kind â†’ label, accent color and how to describe the purchased item. Every payment
 // (new AdBot purchase, renewal/extension, session replacement) is classified here so the table
 // is not hard-wired to "AdBot plan" any more.
 function paymentKind(o: OrderRow): { key: string; label: string; cls: string } {
@@ -37,13 +38,17 @@ function paymentKind(o: OrderRow): { key: string; label: string; cls: string } {
   return { key: "purchase", label: "New AdBot", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" };
 }
 
-// What the money bought — shown in the "Item" column, type-aware.
+// What the money bought â€” shown in the "Item" column, type-aware.
 function itemLabel(o: OrderRow): string {
   const kind = paymentKind(o).key;
-  if (kind === "replacement") return o.real_name ? `Session · ${o.real_name}` : "Session replacement";
+  if (kind === "replacement") {
+    const count = o.replacement_count || o.session_names?.length || 1;
+    const names = o.session_names?.length ? o.session_names.join(", ") : o.real_name;
+    return names ? `${count} session${count === 1 ? "" : "s"} Â· ${names}` : "Session replacement";
+  }
   if (kind === "renewal") {
     const dur = o.duration_days ? `${o.duration_days}d` : "";
-    return [`Renewal`, o.bot_name, dur].filter(Boolean).join(" · ");
+    return [`Renewal`, o.bot_name, dur].filter(Boolean).join(" Â· ");
   }
   const plan = o.plan_name || "AdBot";
   return o.plan_mode ? `${plan} (${o.plan_mode})` : plan;
@@ -98,7 +103,7 @@ export default function PaymentsPage() {
     setActionLoading(true);
     try {
       await api.post(`/api/orders/${orderId}/${action}`, body);
-      toast.success(`Order ${orderId} — ${action}`);
+      toast.success(`Order ${orderId} â€” ${action}`);
       mutate();
     } catch (e: any) {
       toast.error(e?.response?.data?.detail || `Failed: ${action}`);
@@ -127,7 +132,7 @@ export default function PaymentsPage() {
     try {
       const { data: r } = await api.post(`/api/orders/${orderId}/sync`);
       if (r.synced) {
-        toast.success(`Synced — provider says: ${r.provider_status || "?"}${r.confirmed ? " (confirmed)" : ""}`);
+        toast.success(`Synced â€” provider says: ${r.provider_status || "?"}${r.confirmed ? " (confirmed)" : ""}`);
         if (r.order) setDetail(r.order);
       } else {
         toast(r.reason || "Nothing to sync");
@@ -146,7 +151,7 @@ export default function PaymentsPage() {
   };
 
   const cryptoAmount = (o: OrderRow) =>
-    o.pay_amount ? `${o.pay_amount} ${(o.pay_currency || "").toUpperCase()}` : "—";
+    o.pay_amount ? `${o.pay_amount} ${(o.pay_currency || "").toUpperCase()}` : "â€”";
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -187,7 +192,7 @@ export default function PaymentsPage() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-dark-500" />
           <input
             className="w-full rounded-lg border border-dark-600 bg-dark-800 pl-9 pr-3 py-2 text-sm text-dark-100 placeholder:text-dark-500 focus:outline-none focus:ring-2 focus:ring-accent/40"
-            placeholder="Search by order ID, user ID, or payment ID…"
+            placeholder="Search by order ID, user ID, or payment IDâ€¦"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -205,7 +210,7 @@ export default function PaymentsPage() {
             </button>
           ))}
         </div>
-        {/* Payment-type filter — separates new AdBot purchases, renewals, and session replacements. */}
+        {/* Payment-type filter â€” separates new AdBot purchases, renewals, and session replacements. */}
         <div className="flex items-center gap-2">
           <span className="text-[11px] text-dark-500 uppercase tracking-wider shrink-0">Type</span>
           <div className="flex gap-1 rounded-lg bg-dark-800 p-0.5 overflow-x-auto">
@@ -268,11 +273,11 @@ export default function PaymentsPage() {
                     <Td className="text-right">
                       <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
                         {o.is_temppay ? (
-                          <span className="text-[10px] text-dark-500 whitespace-nowrap" title="Live Shop Bot invoice — becomes an order once payment confirms">
+                          <span className="text-[10px] text-dark-500 whitespace-nowrap" title="Live Shop Bot invoice â€” becomes an order once payment confirms">
                             Bot invoice
                           </span>
                         ) : o.is_replacement ? (
-                          <span className="text-[10px] text-dark-500 whitespace-nowrap" title="Session-replacement payment — managed from the AdBot's replacements, not here">
+                          <span className="text-[10px] text-dark-500 whitespace-nowrap" title="Session-replacement payment â€” managed from the AdBot's replacements, not here">
                             Replacement
                           </span>
                         ) : (
@@ -318,7 +323,7 @@ export default function PaymentsPage() {
         </>
       )}
 
-      {/* Detail panel — NOWPayments style */}
+      {/* Detail panel â€” NOWPayments style */}
       <Modal open={!!detail} onClose={() => setDetail(null)} title="Payment details" size="md">
         {detail && (
           <div className="space-y-4">
@@ -347,9 +352,9 @@ export default function PaymentsPage() {
               <Row label="Source" value={detail.source} />
               {detail.is_replacement ? (
                 <>
-                  <Row label="Item" value="Session replacement" />
+                  <Row label="Item" value={`${detail.replacement_count || detail.session_names?.length || 1} session replacement${(detail.replacement_count || detail.session_names?.length || 1) === 1 ? "" : "s"}`} />
                   <Row label="AdBot" value={detail.bot_name} />
-                  <Row label="Session" value={detail.real_name || detail.session_file} />
+                  <Row label={(detail.replacement_count || detail.session_names?.length || 1) === 1 ? "Session" : "Sessions"} value={detail.session_names?.length ? detail.session_names.join(", ") : (detail.real_name || detail.session_file)} />
                 </>
               ) : (
                 <>
@@ -420,7 +425,7 @@ export default function PaymentsPage() {
               </p>
             ) : detail.is_replacement ? (
               <p className="text-[11px] text-dark-500 text-center pt-1">
-                This is a session-replacement payment. It's processed automatically on confirmation and managed from the AdBot's replacements — no order actions here.
+                This is a session-replacement payment. It's processed automatically on confirmation and managed from the AdBot's replacements â€” no order actions here.
               </p>
             ) : (
               <>
@@ -466,7 +471,7 @@ export default function PaymentsPage() {
         loading={actionLoading}
       />
 
-      {/* Recreate modal — pick which steps to skip */}
+      {/* Recreate modal â€” pick which steps to skip */}
       <Modal open={!!recreateTarget} onClose={() => setRecreateTarget(null)} title="Recreate Bot" size="sm">
         {recreateTarget && (
           <div className="space-y-4">
@@ -515,3 +520,4 @@ export default function PaymentsPage() {
     </div>
   );
 }
+

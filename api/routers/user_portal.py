@@ -182,7 +182,7 @@ async def _get_user_bot(telegram_id: int, bot_name: str):
 
 def _ensure_not_expired(cfg: dict) -> None:
     """Reject operational actions when the plan has expired. The web blur-lock is only cosmetic and
-    can be removed from the DOM — THIS is the real gate: even then, an expired bot can't be started
+    can be removed from the DOM â€” THIS is the real gate: even then, an expired bot can't be started
     or reconfigured server-side. Renewal, stop, and read-only endpoints stay allowed so the user can
     still recover during the grace window."""
     from api.services.serializers import _expiry_fields
@@ -190,9 +190,9 @@ def _ensure_not_expired(cfg: dict) -> None:
         raise HTTPException(403, "Your plan has expired. Renew to continue.")
 
 
-# Stable marker the portal frontend matches to show the "frozen — read-only" popup
+# Stable marker the portal frontend matches to show the "frozen â€” read-only" popup
 # instead of a generic error toast. Keep this prefix in sync with the client check.
-FROZEN_ERROR = "BOT_FROZEN: This bot has been frozen by an administrator. It is read-only — you can view everything, but actions are disabled. Please contact support."
+FROZEN_ERROR = "BOT_FROZEN: This bot has been frozen by an administrator. It is read-only â€” you can view everything, but actions are disabled. Please contact support."
 
 # Login is refused outright for a suspended bot (unlike frozen, which allows read-only access).
 SUSPENDED_ERROR = "BOT_SUSPENDED: This account has been suspended and cannot be accessed. Please contact support."
@@ -200,7 +200,7 @@ SUSPENDED_ERROR = "BOT_SUSPENDED: This account has been suspended and cannot be 
 
 def _ensure_not_frozen(cfg: dict) -> None:
     """Hard server-side gate for a frozen bot. A frozen bot is fully viewable (logs, stats,
-    orders, sessions) but NO action may change its state — start/stop, posting content,
+    orders, sessions) but NO action may change its state â€” start/stop, posting content,
     groups/chatlist, health checks, replacements, profile edits or renewals are all rejected.
     Only an admin can unfreeze. This is the real enforcement; the portal also greys out the
     controls, but even a hand-crafted request fails closed here."""
@@ -223,7 +223,7 @@ async def _get_user_bots(telegram_id: int) -> list:
 @router.post("/login", response_model=PortalTokenResponse)
 async def portal_login(body: PortalLoginRequest):
     # DISABLED (security): this minted a portal token from only a telegram_id + bot
-    # name — both non-secret — so anyone could obtain another user's token and bypass
+    # name â€” both non-secret â€” so anyone could obtain another user's token and bypass
     # every access check. Login now requires the web access code via /unified-login
     # (or /login-token), which is a real per-bot secret. This endpoint is unused by
     # the frontend; kept as a hard 410 so any stale client fails closed.
@@ -333,7 +333,7 @@ async def unified_login(body: UnifiedLoginRequest, request: Request):
                 telegram_id=owner_id,
             )
 
-    # 3. Web order paid but the bot is still being built → let them in to a "work in progress" view.
+    # 3. Web order paid but the bot is still being built â†’ let them in to a "work in progress" view.
     try:
         from code.shop.storage import load_orders
         for o in load_orders():
@@ -441,7 +441,7 @@ async def portal_list_bots(telegram_id: int = Query(...)):
 async def portal_get_bot(bot_name: str, telegram_id: int = Query(...)):
     token, cfg = await _get_user_bot(telegram_id, bot_name)
     detail = serialize_bot_detail(token, cfg)
-    # Attach per-session health + verified identity from the unified session_meta cache — a pure
+    # Attach per-session health + verified identity from the unified session_meta cache â€” a pure
     # read, NO live Telethon. This is the single source of truth the admin Sessions page uses, so
     # a health check done anywhere persists and shows here on refresh.
     from code.utils import load_pool as _load_pool, portal_health
@@ -498,7 +498,7 @@ async def portal_get_analytics(
 
 @router.get("/bot/{bot_name}/logs")
 async def portal_get_logs(bot_name: str, telegram_id: int = Query(...), lines: int = Query(100, ge=0, le=1000000)):
-    # lines=0 (or a count >= the file size) returns the WHOLE log — used by the portal's
+    # lines=0 (or a count >= the file size) returns the WHOLE log â€” used by the portal's
     # "Load all" so the user can see every Successful/Failed entry, not just a recent tail.
     # The portal defaults to a small tail to stay light; the full read is opt-in.
     token, _cfg = await _get_user_bot(telegram_id, bot_name)
@@ -547,7 +547,7 @@ async def portal_start_bot(bot_name: str, telegram_id: int = Query(...)):
             reason_map = {
                 "already_running": "Bot is already running",
                 "no_cfg": "Bot configuration not found",
-                "suspended": "Bot is suspended — resume it first",
+                "suspended": "Bot is suspended â€” resume it first",
                 "no_sessions": "No sessions configured",
                 "no_valid_sessions": "No valid session files found",
                 "no_groups": "No groups assigned to any session",
@@ -937,7 +937,7 @@ async def portal_create_renewal(bot_name: str, telegram_id: int = Query(...), bo
         from datetime import datetime
         now = datetime.utcnow().isoformat() + "Z"
         if token and extend_valid_till_for_bot(token, body.duration_days, rev_order.get("order_id", ""), order=rev_order, details={"pay_currency": body.currency}):
-            # Respect the order state machine: payment_waiting → paid → completed.
+            # Respect the order state machine: payment_waiting â†’ paid â†’ completed.
             update_order_status(rev_order["order_id"], "paid", paid_at=now)
             update_order_status(rev_order["order_id"], "completed", paid_at=now)
             return {
@@ -1052,8 +1052,8 @@ async def portal_bot_replacements(bot_name: str, telegram_id: int = Query(...)):
     """Get failing sessions and pending replacement requests for user's bot.
 
     Returns both:
-    - failing_sessions: sessions detected failing ≥90% based on stats alone
-      (shown as popup on login — no SpamBot check required).
+    - failing_sessions: sessions detected failing â‰¥90% based on stats alone
+      (shown as popup on login â€” no SpamBot check required).
     - pending: replacement entries already queued (being processed / awaiting payment).
     """
     bot_token, cfg = await _get_user_bot(telegram_id, bot_name)
@@ -1063,13 +1063,13 @@ async def portal_bot_replacements(bot_name: str, telegram_id: int = Query(...)):
         get_free_replacements_remaining,
         get_session_replacement_price,
     )
-    # Pure stats-based detection (no cooldown gate — always fresh for portal)
+    # Pure stats-based detection (no cooldown gate â€” always fresh for portal)
     failing = detect_failing_sessions(bot_token, for_display=True)
     # Already-queued entries
     pending = get_pending_replacements_for_bot(bot_token)
     # Exclude sessions that already have a pending/completed queue entry
     queued_files = {e.get("session_file") for e in pending}
-    # Failing but not yet queued → user should see them
+    # Failing but not yet queued â†’ user should see them
     new_failing = [f for f in failing if f["session_file"] not in queued_files]
     free_remaining = get_free_replacements_remaining(cfg)
     price_per = get_session_replacement_price()
@@ -1159,7 +1159,7 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
         raise HTTPException(400, "None of the specified sessions belong to this bot")
     _log.info("  Valid files: %s", valid_files)
 
-    # ── STEP 1: Validate sessions (are they alive?) — NON-DESTRUCTIVE ──
+    # â”€â”€ STEP 1: Validate sessions (are they alive?) â€” NON-DESTRUCTIVE â”€â”€
     # We do NOT use validate_session_with_reason because it moves dead sessions to dead/ folder.
     # For diagnosis, we just want to check status without modifying anything.
     _log.info("  Step 1: Validating %d session(s)...", len(valid_files))
@@ -1167,7 +1167,7 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
     alive_files: list[str] = []
 
     async def _safe_validate(fn: str) -> tuple[str, bool, str]:
-        """Non-destructive session validation — checks if alive without moving files."""
+        """Non-destructive session validation â€” checks if alive without moving files."""
         path = app_config.SESSIONS_ACTIVE / fn
         if not path.is_file():
             return fn, False, "file missing"
@@ -1181,7 +1181,7 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
                 # Session is alive and authorized
                 return fn, True, ""
             except SessionBusyError as e:
-                # In use by another task → working, just can't be checked right now
+                # In use by another task â†’ working, just can't be checked right now
                 return fn, True, str(e)[:200]
             except Exception as e:
                 from code.utils import _session_failure_reason
@@ -1217,7 +1217,7 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
             validation_results[fn] = (False, f"CHECK_FAILED: {type(e).__name__}: {str(e)[:80]}")
             _log.warning("  Session %s: validation error: %s", fn, e)
 
-    # ── STEP 2: SpamBot check on alive sessions ──
+    # â”€â”€ STEP 2: SpamBot check on alive sessions â”€â”€
     statuses: dict[str, str] = {}
     if alive_files:
         _log.info("  Step 2: SpamBot check on %d alive session(s) (25s timeout)...", len(alive_files))
@@ -1240,7 +1240,7 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
         detailed_checks = {}
         _log.info("  Step 2: skipped (no alive sessions)")
 
-    # ── STEP 3: Stats fallback for UNKNOWN results ──
+    # â”€â”€ STEP 3: Stats fallback for UNKNOWN results â”€â”€
     name = get_name_by_token(bot_token)
     bot_stats = {}
     if name:
@@ -1268,7 +1268,7 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
         st["session_stats"] = session_stats
         save_stats(name, st)
 
-    # ── Mirror the health outcome into the shared per-session cache so a portal-driven
+    # â”€â”€ Mirror the health outcome into the shared per-session cache so a portal-driven
     # SpamBot/validation result shows up on the admin Sessions page too (unified health).
     # Runs off the event loop (to_thread) and never clobbers a busy session's good record.
     from code.utils import record_session_meta
@@ -1276,7 +1276,7 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
         val_ok, val_reason = validation_results.get(fn, (True, ""))
         low = (val_reason or "").lower()
         if is_inconclusive_validation_reason(val_reason):
-            continue  # in use by a worker — leave the cached record untouched
+            continue  # in use by a worker â€” leave the cached record untouched
         status_val = statuses.get(fn, "")
         status_details = (detailed_checks.get(fn) or {}).get("details")
         if not val_ok:
@@ -1292,11 +1292,11 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
         else:
             await asyncio.to_thread(record_session_meta, fn, None, validation_status="valid")
 
-    # ── Build response ──
+    # â”€â”€ Build response â”€â”€
     _REASON_MAP = {
         SPAM_ACTIVE: {"reason": "Account is active and healthy. No issues detected.", "action": "none", "severity": "ok"},
         SPAM_TEMP_LIMITED: {"reason": "Temporarily limited by Telegram. May recover in 24-48 hours, or replace now.", "action": "wait_or_replace", "severity": "warning"},
-        SPAM_HARD_LIMITED: {"reason": "Permanently limited by Telegram. This won't recover — replace immediately.", "action": "replace", "severity": "critical"},
+        SPAM_HARD_LIMITED: {"reason": "Permanently limited by Telegram. This won't recover â€” replace immediately.", "action": "replace", "severity": "critical"},
         SPAM_FROZEN: {"reason": "Account is frozen / dead by Telegram. Replace immediately.", "action": "replace", "severity": "critical"},
     }
     _DEAD_REASONS = {
@@ -1334,7 +1334,7 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
             })
             continue
 
-        # Proven-dead session — skip SpamBot, use validation result
+        # Proven-dead session â€” skip SpamBot, use validation result
         if not val_ok:
             dead_info = _DEAD_REASONS.get(val_reason, {
                 "spam_status": "DEAD",
@@ -1354,7 +1354,7 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
             })
             continue
 
-        # Alive session — use SpamBot result
+        # Alive session â€” use SpamBot result
         info = _REASON_MAP.get(spam_status, None)
         if info:
             reason = info["reason"]
@@ -1372,7 +1372,7 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
             })
             continue
 
-        # UNKNOWN — fall back to stats
+        # UNKNOWN â€” fall back to stats
         ss = bot_stats.get(fn, {})
         lt_sent = int(ss.get("lifetime_sent", 0))
         lt_failed = int(ss.get("lifetime_failed", 0))
@@ -1436,7 +1436,7 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
     """
     import logging as _logging
     _log = _logging.getLogger("api.portal.replace")
-    _log.info("▶ REPLACE called: bot=%s telegram_id=%s files=%s", bot_name, telegram_id, body.session_files)
+    _log.info("â–¶ REPLACE called: bot=%s telegram_id=%s files=%s", bot_name, telegram_id, body.session_files)
 
     bot_token, cfg = await _get_user_bot(telegram_id, bot_name)
     _ensure_not_frozen(cfg)
@@ -1477,14 +1477,14 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
     _BAD_STATUSES = {"FROZEN", "HARD_LIMITED", "TEMP_LIMITED", "DEAD"}
     sessions_cfg = cfg.get("sessions", [])
     valid_sessions = []
-    unchecked_sessions = []  # sessions with no diagnosis — we'll live-check them
+    unchecked_sessions = []  # sessions with no diagnosis â€” we'll live-check them
     for sf in body.session_files:
         if sf in failing_map:
             # Stats say it's failing
             valid_sessions.append(failing_map[sf])
         elif diag_statuses.get(sf, "") in _BAD_STATUSES:
             # Diagnosis says it's bad (even if stats haven't caught up)
-            _log.info("  Session %s: not stats-failing but diagnosed as %s — allowing replace", sf, diag_statuses[sf])
+            _log.info("  Session %s: not stats-failing but diagnosed as %s â€” allowing replace", sf, diag_statuses[sf])
             real_name = sf
             for s in sessions_cfg:
                 if isinstance(s, dict) and s.get("file") == sf:
@@ -1497,11 +1497,11 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
                 "spam_status": diag_statuses[sf],
             })
         else:
-            # No stats or diagnosis — collect for live check
+            # No stats or diagnosis â€” collect for live check
             unchecked_sessions.append(sf)
             _log.info("  Session %s: no stats/diagnosis, will live-check.", sf)
 
-    # ── Quick live validation for unchecked sessions ──
+    # â”€â”€ Quick live validation for unchecked sessions â”€â”€
     if unchecked_sessions:
         _log.info("  Live-checking %d unchecked sessions...", len(unchecked_sessions))
         for sf in unchecked_sessions:
@@ -1536,7 +1536,7 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
                         except Exception:
                             pass
                 except asyncio.TimeoutError:
-                    pass  # timeout — don't assume dead
+                    pass  # timeout â€” don't assume dead
                 except Exception:
                     pass
 
@@ -1552,8 +1552,8 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
                     "failure_rate": 1.0,
                     "spam_status": dead_reason or "DEAD",
                 })
-                _log.info("  Session %s: LIVE CHECK = DEAD (%s) — allowing replace", sf, dead_reason)
-                # Canonical failure status — unauthorized stays distinct from dead/revoked.
+                _log.info("  Session %s: LIVE CHECK = DEAD (%s) â€” allowing replace", sf, dead_reason)
+                # Canonical failure status â€” unauthorized stays distinct from dead/revoked.
                 _spam = ("FROZEN" if dead_reason == "FROZEN"
                          else "UNAUTHORIZED" if dead_reason == "UNAUTHORIZED" else "DEAD")
                 # Save diagnosis
@@ -1588,7 +1588,7 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
         sessions=valid_sessions,
         free_count=min(free_remaining, len(valid_sessions)),
     )
-    _log.info("  ✓ Created %d replacement entries: %s", len(entries),
+    _log.info("  âœ“ Created %d replacement entries: %s", len(entries),
               [(e["id"], e["session_file"], e["status"]) for e in entries])
 
     # Check if all were already queued (duplicate request)
@@ -1597,7 +1597,7 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
         pending = get_pending_replacements_for_bot(bot_token)
         pending_files = [e["session_file"] for e in pending if e["session_file"] in body.session_files]
         if pending_files:
-            _log.info("  ℹ All sessions already queued: %s", pending_files)
+            _log.info("  â„¹ All sessions already queued: %s", pending_files)
             return {
                 "queued": 0,
                 "already_queued": len(pending_files),
@@ -1615,7 +1615,7 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
                 e["status"] = "ready"  # reflect in response
                 _log.info("  [DEV] Auto-confirmed paid entry %s", e["id"])
 
-    # ── AUTO-PROCESS free replacements immediately ──
+    # â”€â”€ AUTO-PROCESS free replacements immediately â”€â”€
     # Don't make the user wait for admin or Telegram bot to process the queue.
     from code.replacement import process_ready_replacements
     processed = []
@@ -1627,8 +1627,8 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
             _log.info("  Processing results: %s",
                       [(r.get("session_file"), r.get("result")) for r in processed])
         except Exception as proc_err:
-            _log.error("  ✗ Auto-process failed: %s", proc_err, exc_info=True)
-            # Not fatal — entries stay in queue, admin/bot can process later
+            _log.error("  âœ— Auto-process failed: %s", proc_err, exc_info=True)
+            # Not fatal â€” entries stay in queue, admin/bot can process later
 
     completed = [r for r in processed if r.get("result") == "replaced"]
     queued_no_pool = [r for r in processed if r.get("result") == "queued_no_sessions"]
@@ -1661,7 +1661,7 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
     }
 
 
-# ── Account Profile Management ──────────────────────────────────────────────
+# â”€â”€ Account Profile Management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def _update_session_profile(
     session_file: str, *, first_name: str | None = None, last_name: str | None = None,
@@ -1825,7 +1825,7 @@ async def portal_get_account_info(
         await client.disconnect()
 
 
-# ── Portal Notifications ──────────────────────────────────────────────────────
+# â”€â”€ Portal Notifications â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 import time as _time
 import json as _json
@@ -1907,7 +1907,7 @@ async def portal_dismiss_notification(bot_name: str, notif_id: str, telegram_id:
     return {"dismissed": True}
 
 
-# ── Replacement Crypto Payment ───────────────────────────────────────────────
+# â”€â”€ Replacement Crypto Payment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class ReplacementPayRequest(BaseModel):
     entry_id: str
@@ -1991,6 +1991,10 @@ async def portal_replacement_create_invoice(
                     "entry_ids": payable_ids,
                     "job_id": job_id,
                     "replacement_count": len(payable_entries),
+                    "sessions": [
+                        (e.get("real_name") or e.get("session_file") or "").replace(".session", "")
+                        for e in payable_entries
+                    ],
                     "reused": True,
                 }
 
@@ -2021,9 +2025,17 @@ async def portal_replacement_create_invoice(
             if e.get("id") in payable_ids:
                 e["payment_id"] = invoice.get("payment_id", "")
                 e["invoice_data"] = {
+                    "payment_id": invoice.get("payment_id", ""),
                     "pay_address": invoice.get("pay_address", ""),
                     "pay_amount": invoice.get("pay_amount", 0),
                     "pay_currency": invoice.get("pay_currency", ""),
+                    "amount_usd": amount_usd,
+                    "replacement_count": len(payable_entries),
+                    "job_id": job_id,
+                    "sessions": [
+                        (item.get("real_name") or item.get("session_file") or "").replace(".session", "")
+                        for item in payable_entries
+                    ],
                     "invoice_expiry": invoice.get("invoice_expiry", ""),
                     "invoice_expires_at": invoice.get("invoice_expires_at", ""),
                 }
@@ -2042,6 +2054,72 @@ async def portal_replacement_create_invoice(
         "entry_ids": sorted(payable_ids),
         "job_id": job_id,
         "replacement_count": len(payable_entries),
+        "sessions": [
+            (e.get("real_name") or e.get("session_file") or "").replace(".session", "")
+            for e in payable_entries
+        ],
+    }
+
+
+@router.get("/bot/{bot_name}/replacement/{entry_id}/invoice")
+async def portal_replacement_active_invoice(
+    bot_name: str, entry_id: str, telegram_id: int = Query(...)
+):
+    """Return the active grouped invoice so a buyer can safely resume after refresh."""
+    await _get_user_bot(telegram_id, bot_name)
+    from code.replacement import load_replacement_queue, expire_replacement_invoice_by_id
+
+    queue = load_replacement_queue()
+    entry = next((e for e in queue if e.get("id") == entry_id), None)
+    if not entry:
+        raise HTTPException(404, "Replacement entry not found")
+    if str(entry.get("bot_name", "")).lower() != bot_name.lower():
+        raise HTTPException(403, "Entry does not belong to this bot")
+
+    payment_id = str(entry.get("payment_id") or "").strip()
+    invoice = entry.get("invoice_data") or {}
+    if not payment_id or not invoice:
+        return {"active": False, "entry_id": entry_id}
+
+    expires_raw = invoice.get("invoice_expires_at") or invoice.get("invoice_expiry") or ""
+    if expires_raw:
+        try:
+            from datetime import datetime, timezone
+            expires_at = datetime.fromisoformat(str(expires_raw).replace("Z", "+00:00"))
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at <= datetime.now(timezone.utc):
+                expire_replacement_invoice_by_id(payment_id)
+                return {"active": False, "expired": True, "entry_id": entry_id}
+        except (TypeError, ValueError):
+            pass
+
+    job_id = entry.get("job_id") or entry_id
+    covered = [
+        e for e in queue
+        if (e.get("job_id") or e.get("id")) == job_id
+        and str(e.get("payment_id") or "").strip() == payment_id
+    ]
+    sessions = [
+        (e.get("real_name") or e.get("session_file") or "").replace(".session", "")
+        for e in covered
+    ]
+    amount_usd = sum(float(e.get("price_usd") or 0) for e in covered)
+    return {
+        "active": True,
+        "payment_id": payment_id,
+        "pay_address": invoice.get("pay_address", ""),
+        "pay_amount": invoice.get("pay_amount", 0),
+        "pay_currency": invoice.get("pay_currency", ""),
+        "amount_usd": amount_usd,
+        "invoice_expiry": invoice.get("invoice_expiry", ""),
+        "invoice_expires_at": invoice.get("invoice_expires_at", ""),
+        "entry_id": entry_id,
+        "entry_ids": [e.get("id") for e in covered if e.get("id")],
+        "job_id": job_id,
+        "replacement_count": len(covered),
+        "sessions": sessions,
+        "reused": True,
     }
 
 
@@ -2121,7 +2199,7 @@ async def portal_replacement_payment_status(
         await confirm_replacement_payment_by_id(payment_id)
         add_portal_notification(
             bot_name,
-            title="Payment Confirmed ✓",
+            title="Payment Confirmed âœ“",
             message=f"Payment received for {entry.get('real_name', entry.get('session_file', ''))}. Replacement will be processed shortly.",
             type="success",
             icon="swap",
@@ -2169,7 +2247,7 @@ async def portal_replacement_payment_status(
 @router.get("/crypto/currencies")
 async def portal_get_crypto_currencies():
     """Return supported crypto currencies with CoinGecko logos and live prices.
-    No auth required — public endpoint for the payment UI."""
+    No auth required â€” public endpoint for the payment UI."""
     import requests as _requests
 
     from code.shop.payment_constants import SUPPORTED_PAY_CURRENCIES
@@ -2269,7 +2347,7 @@ async def portal_get_crypto_currencies():
     return {"currencies": currencies}
 
 
-# ─────────────── Pre-start session health check ───────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Pre-start session health check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @router.get("/bot/{bot_name}/session-locks")
 async def portal_session_locks(bot_name: str, telegram_id: int = Query(...)):
     """Which of this bot's sessions are currently held by a task, by whom, and the
@@ -2308,7 +2386,7 @@ async def portal_pre_start_check(bot_name: str, telegram_id: int = Query(...)):
         st = load_stats(name) or {}
         bot_stats = st.get("session_stats", {})
 
-    # ── Live validation: connect to Telegram for each session ──
+    # â”€â”€ Live validation: connect to Telegram for each session â”€â”€
     async def _validate_session(fn: str):
         """Non-destructive: connect + is_user_authorized, no file moves."""
         path = app_config.SESSIONS_ACTIVE / fn
@@ -2323,12 +2401,12 @@ async def portal_pre_start_check(bot_name: str, telegram_id: int = Query(...)):
                     return fn, False, "UNAUTHORIZED"
                 return fn, True, ""
             except SessionBusyError as e:
-                # Held by another task (chatlist sync, portal, …) — not dead, just busy.
+                # Held by another task (chatlist sync, portal, â€¦) â€” not dead, just busy.
                 return fn, None, str(e)[:200]
             except Exception as e:
                 err = str(e).lower()
                 if "database is locked" in err:
-                    return fn, None, "Session file is briefly locked (another task just used it) — try again in ~30s"
+                    return fn, None, "Session file is briefly locked (another task just used it) â€” try again in ~30s"
                 if "deactivated" in err or "banned" in err or "frozen" in err:
                     return fn, False, "FROZEN"
                 if "revoked" in err or "unregistered" in err or "authkey" in type(e).__name__.lower():
@@ -2365,14 +2443,14 @@ async def portal_pre_start_check(bot_name: str, telegram_id: int = Query(...)):
         # Parse validation result
         r = raw_results[i]
         if isinstance(r, Exception):
-            # Timeout or unexpected error — assume alive
+            # Timeout or unexpected error â€” assume alive
             alive, reason_str = True, "CHECK_FAILED: validation timed out"
             status, severity, reason = "busy", "warning", "Session check timed out; not marked dead"
             healthy_count += 1
         elif isinstance(r, tuple):
             _, alive, reason_str = r
             if alive is None:
-                # Busy: another task holds the session right now. It works — show
+                # Busy: another task holds the session right now. It works â€” show
                 # who has it and when to retry instead of marking it dead.
                 alive = True
                 status, severity, reason = "busy", "warning", reason_str
@@ -2395,7 +2473,7 @@ async def portal_pre_start_check(bot_name: str, telegram_id: int = Query(...)):
             status, severity, reason = "healthy", "ok", "Session appears healthy"
             healthy_count += 1
 
-        # Canonical failure status — unauthorized/logged-out stays distinct from dead.
+        # Canonical failure status â€” unauthorized/logged-out stays distinct from dead.
         _rs = (reason_str or "").upper()
         _fail_spam = ("FROZEN" if _rs == "FROZEN"
                       else "UNAUTHORIZED" if _rs == "UNAUTHORIZED" else "DEAD")
@@ -2443,9 +2521,9 @@ async def portal_pre_start_check(bot_name: str, telegram_id: int = Query(...)):
     }
 
 
-# ══════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 #  SUPPORT TICKETS
-# ══════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 SUPPORT_TICKETS_FILE = __import__("pathlib").Path("data/support_tickets.json")
 
@@ -2521,18 +2599,18 @@ async def portal_get_support_tickets(bot_name: str, telegram_id: int = Query(...
     return {"tickets": user_tickets}
 
 
-# ── Admin endpoints for support tickets ──
+# â”€â”€ Admin endpoints for support tickets â”€â”€
 
 @router.get("/admin/support-tickets")
 async def admin_list_support_tickets():
-    """List all support tickets (admin only — auth handled by admin session)."""
+    """List all support tickets (admin only â€” auth handled by admin session)."""
     tickets = _load_tickets()
     return {"tickets": tickets, "total": len(tickets), "open": sum(1 for t in tickets if t.get("status") == "open")}
 
 
 @router.patch("/admin/support-tickets/{ticket_id}")
 async def admin_update_support_ticket(ticket_id: str, status: str = Query(None), reply: str = Query(None)):
-    """Update a support ticket — close it or add admin reply."""
+    """Update a support ticket â€” close it or add admin reply."""
     import time
     tickets = _load_tickets()
     for t in tickets:
@@ -2547,12 +2625,12 @@ async def admin_update_support_ticket(ticket_id: str, status: str = Query(None),
     raise HTTPException(404, "Ticket not found")
 
 
-# ════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 #  WEB PURCHASE FLOW  (buy a new AdBot from the website)
 #  Frontend drives the UI; backend creates the NOWPayments invoice,
 #  reserves a pooled @BotFather token, stores the order, and on payment
 #  hands off to the existing creation pipeline (orders.json + worker).
-# ════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class PurchaseReference(BaseModel):
     name: Optional[str] = None
@@ -2685,7 +2763,7 @@ async def portal_purchase_create(body: PurchaseCreateRequest):
     duration_days = 30 if body.billing == "month" else 7
 
     # Payment-floor safety net: NOWPayments' real minimum varies by coin (~$2-$12+). Applies to
-    # every order, not just coupon ones — a full-price cheap plan paid in a high-minimum coin
+    # every order, not just coupon ones â€” a full-price cheap plan paid in a high-minimum coin
     # has the same failure mode. Fails OPEN (skips the check) if the lookup itself fails; the
     # flat MIN_PAYABLE_USD_FLOOR inside validate_coupon already caught the coupon-specific case.
     provider_currency = internal_to_provider(body.currency)
@@ -2789,7 +2867,7 @@ async def portal_purchase_create(body: PurchaseCreateRequest):
         "coupon_value": coupon_value,
         "base_amount_usd": base,
         "source": "web",
-        # Token is reserved at PAYMENT time (apply_confirmed_payment), never at creation —
+        # Token is reserved at PAYMENT time (apply_confirmed_payment), never at creation â€”
         # so unpaid / abandoned / spam orders can't lock up the pool. This is just a UI hint.
         "queued": token_pool.count_available() == 0,
     })
@@ -2818,7 +2896,7 @@ async def portal_purchase_create(body: PurchaseCreateRequest):
 @router.get("/purchase/{order_id}/status")
 async def portal_purchase_status(order_id: str):
     """Report a web purchase's current state. Confirmation is driven by the IPN
-    webhook (no provider polling here) — this only reads the stored order."""
+    webhook (no provider polling here) â€” this only reads the stored order."""
     from code.shop.storage import get_order
 
     order = get_order(order_id)
@@ -2832,13 +2910,13 @@ async def portal_purchase_status(order_id: str):
     waiting = status in ("payment_waiting", "confirming")
     underpaid = waiting and amount_received > 0 and amount_received < pay_amount
     expired = status in ("expired", "cancelled", "failed")
-    # Payment is done but the build can't start yet — we're out of ad-accounts (or a bot
-    # token). Surface this distinctly so the UI stops showing a fake "building…" spinner
+    # Payment is done but the build can't start yet â€” we're out of ad-accounts (or a bot
+    # token). Surface this distinctly so the UI stops showing a fake "buildingâ€¦" spinner
     # and instead tells the buyer they're queued (matches the Telegram shop-bot message).
     awaiting_capacity = status == "pending_creation" and not order.get("created_bot_username")
     queue_message = (
         "Payment received. We're briefly at capacity, so your AdBot is queued and will "
-        "activate automatically — you'll be notified the moment it's ready."
+        "activate automatically â€” you'll be notified the moment it's ready."
         if awaiting_capacity else ""
     )
 
@@ -2911,7 +2989,7 @@ def _verify_ipn_sig(raw: bytes, sig: str, secret: str) -> bool:
 
 @router.post("/payment/ipn")
 async def nowpayments_ipn(request: Request):
-    """NOWPayments IPN webhook — instant confirmation for web, bot, and renewal orders.
+    """NOWPayments IPN webhook â€” instant confirmation for web, bot, and renewal orders.
     Verifies the HMAC-SHA512 signature; performs no provider polling."""
     import json as _json
     from code import config as appcfg
@@ -2919,7 +2997,7 @@ async def nowpayments_ipn(request: Request):
     raw = await request.body()
     secret = getattr(appcfg, "NOWPAYMENTS_IPN_SECRET", "")
     if not secret:
-        logger.error("[IPN] NOWPAYMENTS_IPN_SECRET not set — cannot verify webhook")
+        logger.error("[IPN] NOWPAYMENTS_IPN_SECRET not set â€” cannot verify webhook")
         raise HTTPException(503, "IPN not configured")
     sig = request.headers.get("x-nowpayments-sig", "")
     if not _verify_ipn_sig(raw, sig, secret):
@@ -2946,7 +3024,7 @@ async def nowpayments_ipn(request: Request):
                 "partial": True,
             })
         else:
-            # Bot purchase still in temppay → DM the buyer how much is left.
+            # Bot purchase still in temppay â†’ DM the buyer how much is left.
             try:
                 from code.shop.workers import webhook_temppay_partial
                 await webhook_temppay_partial(payment_id, float(data.get("actually_paid") or data.get("amount_received") or 0))
@@ -2968,14 +3046,14 @@ async def nowpayments_ipn(request: Request):
             except Exception:
                 pass
         elif not order:
-            # Bot purchase still in temppay → remove it and tell the buyer.
+            # Bot purchase still in temppay â†’ remove it and tell the buyer.
             try:
                 from code.shop.workers import webhook_temppay_expired
                 handled = await webhook_temppay_expired(payment_id)
             except Exception as exc:
                 logger.warning("[IPN] temppay expiry notify failed: %s", exc)
                 handled = False
-            # Not a temppay entry either → could be a session-replacement invoice.
+            # Not a temppay entry either â†’ could be a session-replacement invoice.
             if not handled:
                 try:
                     from code.replacement import expire_replacement_invoice_by_id
@@ -2985,7 +3063,7 @@ async def nowpayments_ipn(request: Request):
                     logger.warning("[IPN] replacement expiry failed: %s", exc)
         return {"ok": True}
 
-    # Blockchain-confirmed → confirm + provision (confirmed/sending/finished, per product rule).
+    # Blockchain-confirmed â†’ confirm + provision (confirmed/sending/finished, per product rule).
     if is_payment_success(pstatus):
         details = {
             "payment_status": "confirmed",
@@ -3002,7 +3080,7 @@ async def nowpayments_ipn(request: Request):
             logger.exception("[IPN] confirmation failed for %s: %s", payment_id, exc)
             raise HTTPException(500, "Processing error")
         if not ok:
-            # Not an order/temppay — could be a session-replacement payment, whose
+            # Not an order/temppay â€” could be a session-replacement payment, whose
             # payment_id lives on the replacement queue (not in orders.json).
             try:
                 from code.replacement import confirm_replacement_payment_by_id
@@ -3018,7 +3096,7 @@ async def nowpayments_ipn(request: Request):
     return {"ok": True}  # always ack so NOWPayments stops retrying
 
 
-# ─────────────── Admin: bot-token pool ───────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Admin: bot-token pool â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.get("/admin/bot-tokens")
 async def admin_list_bot_tokens():
@@ -3057,16 +3135,16 @@ async def admin_add_bot_tokens(body: BotTokenAddRequest):
         except Exception as exc:
             ok, username = False, str(exc)
         if not ok:
-            results.append({"token": token[:8] + "…", "added": False, "error": username})
+            results.append({"token": token[:8] + "â€¦", "added": False, "error": username})
             continue
         added, msg = token_pool.add_token(token, username)
-        results.append({"token": token[:8] + "…", "username": username, "added": added, "error": None if added else msg})
+        results.append({"token": token[:8] + "â€¦", "username": username, "added": added, "error": None if added else msg})
     return {"results": results, "counts": token_pool.counts()}
 
 
 @router.delete("/admin/bot-tokens")
 async def admin_remove_bot_token(id: str = Query(None), token: str = Query(None)):
-    """Remove a token from the pool — by pool id (from the UI) or by full token value."""
+    """Remove a token from the pool â€” by pool id (from the UI) or by full token value."""
     from code.shop import token_pool
     ok = token_pool.remove_by_id(id) if id else (token_pool.remove_token(token) if token else False)
     if not ok:
@@ -3102,3 +3180,4 @@ async def admin_reconcile_bot_tokens():
         "promoted": len(report.get("promoted", [])),
         "counts": token_pool.counts(),
     }
+
