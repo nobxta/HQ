@@ -15,9 +15,9 @@ import {
 import { useState, useEffect, useCallback } from "react";
 import CryptoPaymentModal from "@/components/portal/CryptoPaymentModal";
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* ═══════════════════════════════════════════════════════
    TYPES
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ═══════════════════════════════════════════════════════ */
 
 type TimeFilter = "last_cycle" | "24h" | "overall";
 
@@ -39,9 +39,9 @@ interface DiagResult {
   details?: string | null;
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* ═══════════════════════════════════════════════════════
    STATUS THEME
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ═══════════════════════════════════════════════════════ */
 
 const STATUS_CFG: Record<string, {
   bg: string; border: string; text: string;
@@ -55,12 +55,12 @@ const STATUS_CFG: Record<string, {
   DEAD: {
     bg: "bg-red-500/[0.06]", border: "border-red-500/15", text: "text-red-400",
     iconBg: "bg-red-500/15", Icon: Skull, label: "Dead Session",
-    desc: "Connection is dead â€” the account was revoked or banned. Replace it.",
+    desc: "Connection is dead — the account was revoked or banned. Replace it.",
   },
   UNAUTHORIZED: {
     bg: "bg-rose-500/[0.06]", border: "border-rose-500/15", text: "text-rose-400",
     iconBg: "bg-rose-500/15", Icon: WifiOff, label: "Logged Out",
-    desc: "Session is unauthorized â€” it can't log in (signed out elsewhere). Replace it.",
+    desc: "Session is unauthorized — it can't log in (signed out elsewhere). Replace it.",
   },
   HARD_LIMITED: {
     bg: "bg-red-500/[0.06]", border: "border-red-500/15", text: "text-red-400",
@@ -99,9 +99,9 @@ const STATUS_CFG: Record<string, {
   },
 };
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* ═══════════════════════════════════════════════════════
    HELPERS
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ═══════════════════════════════════════════════════════ */
 
 function getFailInfo(ss: Record<string, any> | undefined, file: string) {
   if (!ss) return null;
@@ -129,14 +129,14 @@ function mkStatsDiag(rate: number): DiagResult {
   return { status: "STATS_ONLY", reason: `${Math.round(rate * 100)}% failure rate detected from stats`, action: "replace", source: "stats" };
 }
 
-// Map a canonical cache health status â†’ the recommended action.
+// Map a canonical cache health status → the recommended action.
 const _ACTION_FOR: Record<string, "replace" | "wait" | "ok" | "unknown"> = {
   FROZEN: "replace", DEAD: "replace", HARD_LIMITED: "replace", UNAUTHORIZED: "replace",
   TEMP_LIMITED: "wait", ACTIVE: "ok",
 };
 
 // Turn the persisted per-session health (session_meta cache, served by the bot endpoint) into
-// the same DiagResult shape a live "Check health" produces â€” so the card renders the saved
+// the same DiagResult shape a live "Check health" produces — so the card renders the saved
 // status on load and it survives refresh. A live in-session check always takes precedence.
 function cacheDiag(health?: string, details?: string | null): DiagResult | null {
   if (!health || health === "UNKNOWN" || health === "BUSY") return null;
@@ -160,36 +160,36 @@ const AVATAR_COLORS = [
   "from-pink-400 to-rose-700", "from-cyan-400 to-cyan-700",
 ];
 
-// Status â†’ tier (drives the summary counts, filter, and card accent).
+// Status → tier (drives the summary counts, filter, and card accent).
 const CRITICAL_STATUSES = new Set(["FROZEN", "DEAD", "HARD_LIMITED", "UNAUTHORIZED", "STATS_ONLY"]);
 const WARNING_STATUSES = new Set(["TEMP_LIMITED", "STATS_FAILING"]);
 
-// Compact numbered pagination window with ellipses (e.g. 1 â€¦ 4 5 6 â€¦ 12).
-function pageWindow(current: number, total: number): (number | "â€¦")[] {
+// Compact numbered pagination window with ellipses (e.g. 1 … 4 5 6 … 12).
+function pageWindow(current: number, total: number): (number | "…")[] {
   if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
-  const out: (number | "â€¦")[] = [1];
+  const out: (number | "…")[] = [1];
   const start = Math.max(2, current - 1);
   const end = Math.min(total - 1, current + 1);
-  if (start > 2) out.push("â€¦");
+  if (start > 2) out.push("…");
   for (let i = start; i <= end; i++) out.push(i);
-  if (end < total - 1) out.push("â€¦");
+  if (end < total - 1) out.push("…");
   out.push(total);
   return out;
 }
 
-// Partially mask a phone for privacy: "919876543124" â†’ "+91 â€¢â€¢â€¢â€¢â€¢ â€¢â€¢â€¢â€¢3124".
+// Partially mask a phone for privacy: "919876543124" → "+91 ••••• ••••3124".
 function maskPhone(p?: string | null): string | null {
   if (!p) return null;
   const raw = String(p).replace(/[^\d]/g, "");
   if (!raw) return null;
   if (raw.length <= 4) return "+" + raw;
   const cc = raw.length > 10 ? raw.slice(0, raw.length - 10) : raw.slice(0, 2);
-  return `+${cc} â€¢â€¢â€¢â€¢â€¢ â€¢â€¢â€¢â€¢${raw.slice(-4)}`;
+  return `+${cc} ••••• ••••${raw.slice(-4)}`;
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* ═══════════════════════════════════════════════════════
    TOAST
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ═══════════════════════════════════════════════════════ */
 
 function Toast({ msg, type, onClose }: { msg: string; type: "ok" | "err" | "warn"; onClose: () => void }) {
   useEffect(() => { const t = setTimeout(onClose, 6000); return () => clearTimeout(t); }, [onClose]);
@@ -211,9 +211,9 @@ function Toast({ msg, type, onClose }: { msg: string; type: "ok" | "err" | "warn
   );
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* ═══════════════════════════════════════════════════════
    MAIN PAGE
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ═══════════════════════════════════════════════════════ */
 
 export default function AccountsPage() {
   const [mounted, setMounted] = useState(false);
@@ -327,7 +327,7 @@ export default function AccountsPage() {
     }
   }, [supportFile, supportName, supportDiag, supportFailRate, supportMsg, showToast]);
 
-  /* â”€â”€â”€ Fetch replacement status â”€â”€â”€ */
+  /* ─── Fetch replacement status ─── */
   const fetchRepl = useCallback(async () => {
     const s = getPortalSession();
     if (!s?.bot_name || s?.telegram_id == null) return;
@@ -354,12 +354,12 @@ export default function AccountsPage() {
   // Reset to the first page whenever the filters change.
   useEffect(() => { setPage(1); }, [search, statusFilter, filter]);
 
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  /* ══════════════════════════════════════════════════════
      DIAGNOSE
-     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+     ══════════════════════════════════════════════════════ */
   const doCheckWhy = useCallback(async (file: string) => {
     const s = getPortalSession();
-    console.log("[Accounts] Check Why â†’", file, "bot:", s?.bot_name);
+    console.log("[Accounts] Check Why →", file, "bot:", s?.bot_name);
     if (!s?.bot_name || s?.telegram_id == null) { showToast("Please log in again", "err"); return; }
     setDiagLoading((p) => ({ ...p, [file]: true }));
     try {
@@ -384,15 +384,15 @@ export default function AccountsPage() {
       const detail = err?.response?.data?.detail || err?.message || "Unknown error";
       console.error("[Accounts] Diagnose error:", status, detail);
       if (status === 403) { showToast(`Access denied: ${detail}`, "err"); setDiagLoading((p) => ({ ...p, [file]: false })); return; }
-      if (status === 404) { showToast("Diagnose endpoint not found â€” restart backend", "err"); setDiagLoading((p) => ({ ...p, [file]: false })); return; }
+      if (status === 404) { showToast("Diagnose endpoint not found — restart backend", "err"); setDiagLoading((p) => ({ ...p, [file]: false })); return; }
     }
     const fi = getFailInfo(stats?.session_stats, file);
     if (fi) {
       setDiagResults((p) => ({ ...p, [file]: mkStatsDiag(fi.failRate) }));
-      showToast(`${Math.round(fi.failRate * 100)}% failure â€” SpamBot unavailable`, "warn");
+      showToast(`${Math.round(fi.failRate * 100)}% failure — SpamBot unavailable`, "warn");
     } else {
       setDiagResults((p) => ({ ...p, [file]: { status: "UNKNOWN", reason: "Could not reach SpamBot. Try again.", action: "unknown", source: "stats" } }));
-      showToast("Could not check session â€” try again", "err");
+      showToast("Could not check session — try again", "err");
     }
     setDiagLoading((p) => ({ ...p, [file]: false }));
   }, [stats?.session_stats, showToast]);
@@ -447,14 +447,14 @@ export default function AccountsPage() {
     const done: Record<string, boolean> = {};
     files.forEach((f) => { done[f] = false; });
     setDiagLoading((p) => ({ ...p, ...done }));
-    showToast(`SpamBot unavailable â€” showing stats for ${files.length} sessions`, "warn");
+    showToast(`SpamBot unavailable — showing stats for ${files.length} sessions`, "warn");
   }, [stats?.session_stats, showToast]);
 
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  /* ══════════════════════════════════════════════════════
      REPLACE
-     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+     ══════════════════════════════════════════════════════ */
   const openReplace = useCallback((targets: string[]) => {
-    console.log("[Accounts] Replace modal â†’", targets);
+    console.log("[Accounts] Replace modal →", targets);
     setReplTargets(targets); setReplMsg(null); setReplModal(true); fetchRepl();
   }, [fetchRepl]);
 
@@ -488,7 +488,7 @@ export default function AccountsPage() {
         msg = `${processed} session${processed !== 1 ? "s" : ""} replaced successfully!`;
         if (d.completed?.length > 0) msg += ` New: ${d.completed.map((c: any) => c.real_name || "new session").join(", ")}.`;
       } else if (awaitingPool > 0) {
-        msg = `${q} queued â€” no fresh sessions in pool yet. Admin notified.`;
+        msg = `${q} queued — no fresh sessions in pool yet. Admin notified.`;
       } else if (needsPayment > 0) {
         msg = `${needsPayment} session${needsPayment !== 1 ? "s" : ""} need payment ($${d.price_per_session}/ea).`;
       } else if (q > 0) {
@@ -518,9 +518,9 @@ export default function AccountsPage() {
     } finally { setReplLoading(false); }
   }, [replTargets, fetchRepl, mutateBot, showToast]);
 
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  /* ══════════════════════════════════════════════════════
      EDIT
-     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+     ══════════════════════════════════════════════════════ */
   const openEdit = useCallback(async (file: string) => {
     const s = getPortalSession();
     setEditFile(file); setEditMsg(null); setEditPhoto(null); setAccountInfo(null); setInfoLoading(true);
@@ -554,9 +554,9 @@ export default function AccountsPage() {
     finally { setEditLoading(false); }
   }, [editFile, editFirstName, editLastName, editBio, editUsername, editPhoto, mutateBot, showToast]);
 
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  /* ══════════════════════════════════════════════════════
      RENDER
-     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+     ══════════════════════════════════════════════════════ */
   if (!mounted || isLoading) return <PageSkeleton />;
 
   const currentSession = mounted ? getPortalSession() : null;
@@ -630,7 +630,7 @@ export default function AccountsPage() {
   const attentionCount = sessions.filter(s => tierByFile[s.file] === "attention").length;
   const criticalCount = sessions.filter(s => tierByFile[s.file] === "critical").length;
 
-  // Search + status filter (client-side over existing data â€” no new fetch).
+  // Search + status filter (client-side over existing data — no new fetch).
   const q = search.trim().toLowerCase();
   const visibleSessions = sessions.filter((s) => {
     if (statusFilter !== "all" && tierByFile[s.file] !== statusFilter) return false;
@@ -639,7 +639,7 @@ export default function AccountsPage() {
     return hay.includes(q);
   });
 
-  // Aggregate totals for the stats strip (from the bot's own stats â€” no extra fetch).
+  // Aggregate totals for the stats strip (from the bot's own stats — no extra fetch).
   const planLabel: string | null = (bot?.plan?.name || bot?.plan_name || (typeof bot?.plan === "string" ? bot.plan : null)) || null;
   const activeReplacementJobs = replacementJobs.filter(
     (job: any) => !["completed", "cancelled", "failed"].includes(job.status)
@@ -661,7 +661,7 @@ export default function AccountsPage() {
           <div>
             <h2 className="text-[14px] font-bold text-white">Telegram accounts</h2>
             <p className="mt-0.5 text-[10px] text-dark-500">
-              {sessions.length} connected Â· {freeRem} free replacement{freeRem === 1 ? "" : "s"}
+              {sessions.length} connected · {freeRem} free replacement{freeRem === 1 ? "" : "s"}
             </p>
           </div>
           <button type="button" onClick={() => { mutateBot(); fetchRepl(); }} aria-label="Refresh accounts"
@@ -735,9 +735,9 @@ export default function AccountsPage() {
                   : `Replacing ${job.total} account${job.total === 1 ? "" : "s"}`;
             const description = awaitingPayment
               ? hasActiveInvoice
-                ? `${job.total} account${job.total === 1 ? "" : "s"} Â· invoice active Â· replacement starts after confirmation`
-                : `${job.total} account${job.total === 1 ? "" : "s"} selected Â· replacement has not started`
-              : `${job.completed}/${job.total} complete${waitingInventory ? ` Â· ${job.awaiting_inventory} waiting` : ""}${needsAdmin ? ` Â· ${job.needs_attention} needs review` : ""}`;
+                ? `${job.total} account${job.total === 1 ? "" : "s"} · invoice active · replacement starts after confirmation`
+                : `${job.total} account${job.total === 1 ? "" : "s"} selected · replacement has not started`
+              : `${job.completed}/${job.total} complete${waitingInventory ? ` · ${job.awaiting_inventory} waiting` : ""}${needsAdmin ? ` · ${job.needs_attention} needs review` : ""}`;
             const tone = awaitingPayment
               ? "border-amber-500/25 bg-amber-500/[0.045]"
               : needsAdmin
@@ -773,7 +773,7 @@ export default function AccountsPage() {
                         <button type="button" onClick={openGroupedPayment}
                           className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-amber-400 px-3 text-[11px] font-bold text-[#17120a] shadow-sm shadow-amber-950/30 transition-colors hover:bg-amber-300">
                           <CircleDollarSign className="h-3.5 w-3.5" />
-                          {hasActiveInvoice ? "View payment" : "Choose payment"} Â· ${paymentTotal.toFixed(2)}
+                          {hasActiveInvoice ? "View payment" : "Choose payment"} · ${paymentTotal.toFixed(2)}
                         </button>
                       ) : (
                         <span className={`text-[11px] font-bold tabular-nums ${iconTone}`}>{Math.min(100, Number(job.progress || 0))}%</span>
@@ -815,10 +815,10 @@ export default function AccountsPage() {
         </div>
       )}
 
-      {/* â•â•â•â•â•â• ACTION BAR â€” compact alert + actions â•â•â•â•â•â• */}
+      {/* ══════ ACTION BAR — compact alert + actions ══════ */}
       {unresolvedFailFiles.length > 0 && (
         <div className="rounded-2xl border border-amber-500/15 bg-amber-500/[0.035] overflow-hidden">
-          {/* Failing sessions â€” compact bar */}
+          {/* Failing sessions — compact bar */}
           {unresolvedFailFiles.length > 0 && (
             <div className="flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-4">
               <div className="flex items-center gap-2.5 min-w-0">
@@ -845,7 +845,7 @@ export default function AccountsPage() {
         </div>
       )}
 
-      {/* â•â•â•â•â•â• SESSION CARDS â•â•â•â•â•â• */}
+      {/* ══════ SESSION CARDS ══════ */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         {pageSessions.map((sess, idx) => {
           const file = sess.file;
@@ -889,7 +889,7 @@ export default function AccountsPage() {
 
           return (
             <div key={file} className="flex h-full flex-col rounded-2xl border border-white/[0.06] bg-[#171723] p-3.5 shadow-[0_1px_2px_rgba(0,0,0,0.35)] transition-colors hover:border-white/[0.12] sm:p-4">
-              {/* Row 1 â€” avatar + identity + status */}
+              {/* Row 1 — avatar + identity + status */}
               <div className="flex items-start gap-3">
                 <div className="relative shrink-0">
                   <div className={`flex h-10 w-10 items-center justify-center rounded-xl text-[14px] font-bold text-white bg-gradient-to-br ${AVATAR_COLORS[idx % AVATAR_COLORS.length]}`}>
@@ -923,7 +923,7 @@ export default function AccountsPage() {
                 </div>
               </div>
 
-              {/* Row 2 â€” metrics */}
+              {/* Row 2 — metrics */}
               <div className="mt-3 grid grid-cols-3 rounded-xl bg-white/[0.02] border border-white/[0.05]">
                 <div className="flex items-center gap-2 px-3 py-2.5 min-w-0">
                   <Send className="h-4 w-4 text-emerald-400 shrink-0" />
@@ -942,7 +942,7 @@ export default function AccountsPage() {
                 <div className="flex items-center gap-2 px-3 py-2.5 min-w-0">
                   <Activity className={`h-4 w-4 shrink-0 ${pctTone}`} />
                   <div className="min-w-0">
-                    <p className={`text-[13px] font-bold tabular-nums leading-none ${pctTone}`}>{hasData ? `${pct}%` : "â€”"}</p>
+                    <p className={`text-[13px] font-bold tabular-nums leading-none ${pctTone}`}>{hasData ? `${pct}%` : "—"}</p>
                     <p className="text-[9px] text-dark-500 mt-1">Success</p>
                   </div>
                 </div>
@@ -954,14 +954,14 @@ export default function AccountsPage() {
               )}
               {isAwaitingPayment && (
                 <p className="mt-2 inline-flex items-center gap-1 text-[10.5px] font-medium text-amber-300">
-                  <CircleDollarSign className="h-3 w-3" /> Not started â€” complete payment first
+                  <CircleDollarSign className="h-3 w-3" /> Not started — complete payment first
                 </p>
               )}
               {isPendingRepl && !isAwaitingPayment && (
                 <p className="mt-2 inline-flex items-center gap-1 text-[10.5px] text-accent font-medium"><Clock className="h-3 w-3" /> Replacement in progress</p>
               )}
 
-              {/* Row 4 â€” actions (pinned to the bottom of the card) */}
+              {/* Row 4 — actions (pinned to the bottom of the card) */}
               <div className="mt-auto flex items-center gap-2 pt-3">
                 <button type="button" onClick={() => openEdit(file)}
                   className="inline-flex h-10 flex-1 items-center justify-center gap-1.5 rounded-xl border border-white/[0.08] bg-white/[0.02] text-[11px] font-semibold text-dark-200 hover:bg-white/[0.05] active:scale-[0.98] transition-all">
@@ -1002,11 +1002,11 @@ export default function AccountsPage() {
         })}
       </div>
 
-      {/* â•â•â•â•â•â• PAGINATION â•â•â•â•â•â• */}
+      {/* ══════ PAGINATION ══════ */}
       {visibleSessions.length > PAGE_SIZE && (
         <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-1">
           <p className="text-[11px] text-dark-500 order-2 sm:order-1">
-            Showing {pageStart + 1}â€“{Math.min(pageStart + PAGE_SIZE, visibleSessions.length)} of {visibleSessions.length} accounts
+            Showing {pageStart + 1}–{Math.min(pageStart + PAGE_SIZE, visibleSessions.length)} of {visibleSessions.length} accounts
           </p>
           <div className="flex items-center gap-1 order-1 sm:order-2">
             <button type="button" disabled={safePage <= 1} onClick={() => setPage(safePage - 1)} aria-label="Previous page"
@@ -1014,8 +1014,8 @@ export default function AccountsPage() {
               <ChevronLeft className="h-4 w-4" />
             </button>
             {pageWindow(safePage, totalPages).map((p, i) => (
-              p === "â€¦"
-                ? <span key={`e${i}`} className="px-1 text-[12px] text-dark-600">â€¦</span>
+              p === "…"
+                ? <span key={`e${i}`} className="px-1 text-[12px] text-dark-600">…</span>
                 : <button key={p} type="button" onClick={() => setPage(p)}
                     className={`h-9 min-w-[2.25rem] px-2 rounded-lg text-[12px] font-semibold transition-colors ${
                       p === safePage ? "bg-accent text-white shadow-[0_2px_10px_rgba(108,92,231,0.35)]" : "border border-white/[0.08] bg-[#171723] text-dark-300 hover:bg-white/[0.05]"
@@ -1046,7 +1046,7 @@ export default function AccountsPage() {
         </div>
       )}
 
-      {/* â•â•â•â•â•â• REPLACE MODAL â•â•â•â•â•â• */}
+      {/* ══════ REPLACE MODAL ══════ */}
       <Modal open={replModal} onClose={() => { setReplModal(false); setReplMsg(null); }} size="md">
         <div className="space-y-4">
           <div className="flex items-start gap-3">
@@ -1150,7 +1150,7 @@ export default function AccountsPage() {
         </div>
       </Modal>
 
-      {/* â•â•â•â•â•â• EDIT MODAL â•â•â•â•â•â• */}
+      {/* ══════ EDIT MODAL ══════ */}
       <Modal open={!!editFile} onClose={() => { setEditFile(null); setEditMsg(null); }} title="Edit Profile" size="md">
         {infoLoading ? (
           <div className="flex flex-col items-center py-10">
@@ -1172,7 +1172,7 @@ export default function AccountsPage() {
                 <div>
                   <p className="text-[13px] font-semibold text-dark-100">{accountInfo.first_name} {accountInfo.last_name}</p>
                   <p className="text-[10px] text-dark-500">
-                    {accountInfo.username ? `@${accountInfo.username}` : "No username"} Â· ID: {accountInfo.user_id}
+                    {accountInfo.username ? `@${accountInfo.username}` : "No username"} · ID: {accountInfo.user_id}
                   </p>
                 </div>
               </div>
@@ -1234,7 +1234,7 @@ export default function AccountsPage() {
         )}
       </Modal>
 
-      {/* â•â•â•â•â•â• CRYPTO PAYMENT MODAL â•â•â•â•â•â• */}
+      {/* ══════ CRYPTO PAYMENT MODAL ══════ */}
       <CryptoPaymentModal
         open={payModal}
         onClose={() => setPayModal(false)}
@@ -1248,7 +1248,7 @@ export default function AccountsPage() {
         }}
       />
 
-      {/* â•â•â•â•â•â• SUPPORT TICKET MODAL â•â•â•â•â•â• */}
+      {/* ══════ SUPPORT TICKET MODAL ══════ */}
       <Modal open={supportModal} onClose={() => { setSupportModal(false); setSupportResult(null); }} size="md">
         <div className="space-y-4">
           <div className="flex items-start gap-3">
@@ -1261,7 +1261,7 @@ export default function AccountsPage() {
             </div>
           </div>
 
-          {/* Session Info â€” auto-filled */}
+          {/* Session Info — auto-filled */}
           <div className="rounded-xl bg-dark-800/30 border border-white/[0.04] p-3 space-y-2">
             <p className="text-[10px] font-semibold text-dark-400 uppercase tracking-wider">Session Details</p>
             <div className="grid grid-cols-2 gap-2 text-[11px]">
@@ -1343,4 +1343,3 @@ export default function AccountsPage() {
     </div>
   );
 }
-

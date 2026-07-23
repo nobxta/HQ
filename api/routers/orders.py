@@ -25,8 +25,8 @@ def _temppay_as_order_rows() -> list[dict]:
     return rows
 
 
-# Replacement-queue statuses â†’ order-like display status so the payments UI can render them
-# with the same Badge/filters as real orders (money-in â†’ "paid", still-owed â†’ "payment_waiting").
+# Replacement-queue statuses → order-like display status so the payments UI can render them
+# with the same Badge/filters as real orders (money-in → "paid", still-owed → "payment_waiting").
 _REPLACEMENT_STATUS_MAP = {
     "pending_payment": "payment_waiting",
     "ready": "paid",
@@ -86,7 +86,7 @@ def _replacement_as_order_rows() -> list[dict]:
             "status": _REPLACEMENT_STATUS_MAP.get(queue_status, queue_status),
             "order_type": "replacement",
             "source": "replacement",
-            "plan_name": f"Session replacement Ã—{len(entries)}",
+            "plan_name": f"Session replacement ×{len(entries)}",
             "amount_usd": sum(float(e.get("price_usd") or 0) for e in entries),
             "bot_name": first.get("bot_name", ""),
             "real_name": ", ".join(names),
@@ -196,9 +196,9 @@ async def mark_paid(order_id: str):
     if not order:
         raise HTTPException(404, f"Order '{order_id}' not found")
     # Renewals must EXTEND the bot's validity, never trigger a new-bot build. order_mark_paid
-    # would wrongly push a renewal into "creating" (a provisioning state), stranding it â€” and
+    # would wrongly push a renewal into "creating" (a provisioning state), stranding it — and
     # "creating" can't be cancelled. apply_confirmed_payment runs the renewal branch
-    # (extend_valid_till_for_bot â†’ paid â†’ completed), is idempotent, and is the SAME path the
+    # (extend_valid_till_for_bot → paid → completed), is idempotent, and is the SAME path the
     # IPN webhook uses, so admin confirmation and automatic confirmation behave identically.
     if order.get("order_type") == "renewal" and order.get("status") in ("payment_waiting", "confirming"):
         from code.shop.workers import apply_confirmed_payment
@@ -206,9 +206,9 @@ async def mark_paid(order_id: str):
         if not ok:
             raise HTTPException(400, "Renewal is no longer awaiting payment")
         await wrappers.log_admin_action("web_admin", "order_mark_paid", target=f"{order_id} (renewal)")
-        return OrderActionResponse(success=True, message="Renewal confirmed â€” validity extended")
-    # Web orders must run the SAME provisioning the IPN webhook does â€” issue the web
-    # access code, reserve a pooled bot token, and submit the build â€” not just a status
+        return OrderActionResponse(success=True, message="Renewal confirmed — validity extended")
+    # Web orders must run the SAME provisioning the IPN webhook does — issue the web
+    # access code, reserve a pooled bot token, and submit the build — not just a status
     # flip, or the order strands in "creating" with no bot. apply_confirmed_payment is
     # idempotent and self-guards on status.
     if (order.get("source") or "") == "web" and order.get("status") in ("payment_waiting", "confirming"):
@@ -217,7 +217,7 @@ async def mark_paid(order_id: str):
         if not ok:
             raise HTTPException(400, "Order is no longer awaiting payment")
         await wrappers.log_admin_action("web_admin", "order_mark_paid", target=order_id)
-        return OrderActionResponse(success=True, message="Marked paid â€” provisioning started")
+        return OrderActionResponse(success=True, message="Marked paid — provisioning started")
     success, msg = await wrappers.order_mark_paid(order_id)
     if not success:
         raise HTTPException(400, msg)
@@ -267,7 +267,7 @@ async def sync_order(order_id: str):
 
     details = await asyncio.to_thread(get_payment_details, payment_id)
     if not details:
-        raise HTTPException(502, "Could not reach NOWPayments â€” try again")
+        raise HTTPException(502, "Could not reach NOWPayments — try again")
 
     pstatus = (details.get("payment_status") or "").lower()
     update_order(order_id, {
@@ -319,4 +319,3 @@ async def search_by_payment(payment_id: str):
 async def search_by_user(user_id: int):
     results = await wrappers.search_orders(user_id=user_id)
     return {"orders": [serialize_order(o) for o in results], "total": len(results)}
-

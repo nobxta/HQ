@@ -7,9 +7,9 @@ import {
   AlertTriangle, CheckCircle, Search, ChevronRight, XCircle, X,
 } from "lucide-react";
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* ═══════════════════════════════════════════════════════
    TYPES
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ═══════════════════════════════════════════════════════ */
 
 interface CryptoCurrency {
   code: string;
@@ -91,9 +91,9 @@ interface Props {
   onPaymentConfirmed: () => void;
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* ═══════════════════════════════════════════════════════
    CATEGORY GROUPING
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ═══════════════════════════════════════════════════════ */
 
 const MAIN_COINS = ["BTC", "ETH", "SOL", "BNB", "XMR", "LTC", "TRX", "DOGE", "TON", "ADA", "XRP", "MATIC"];
 
@@ -115,14 +115,14 @@ function groupCurrencies(currencies: CryptoCurrency[]) {
   return { main, usdt, usdc };
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* ═══════════════════════════════════════════════════════
    COMPONENT
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ═══════════════════════════════════════════════════════ */
 
 export default function CryptoPaymentModal({
   open, onClose, entryId, sessionName, amountUsd, replacementCount = 1, onPaymentConfirmed,
 }: Props) {
-  // Steps: "select" â†’ "paying" â†’ "confirmed"
+  // Steps: "select" → "paying" → "confirmed"
   const [step, setStep] = useState<"select" | "paying" | "confirmed">("select");
   const [currencies, setCurrencies] = useState<CryptoCurrency[]>([]);
   const [loadingCurrencies, setLoadingCurrencies] = useState(false);
@@ -190,7 +190,7 @@ export default function CryptoPaymentModal({
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [open, entryId]);
 
-  /* â”€â”€ Fetch currencies â”€â”€ */
+  /* ── Fetch currencies ── */
   const fetchCurrencies = useCallback(async () => {
     setLoadingCurrencies(true);
     try {
@@ -202,7 +202,7 @@ export default function CryptoPaymentModal({
     setLoadingCurrencies(false);
   }, []);
 
-  /* â”€â”€ Create invoice â”€â”€ */
+  /* ── Create invoice ── */
   const selectCoin = useCallback(async (currency: CryptoCurrency) => {
     const s = getPortalSession();
     if (!s?.bot_name || s?.telegram_id == null) return;
@@ -235,7 +235,7 @@ export default function CryptoPaymentModal({
     setCreatingInvoice(false);
   }, [entryId, onPaymentConfirmed]);
 
-  /* â”€â”€ Poll payment status â”€â”€ */
+  /* ── Poll payment status ── */
   const startPolling = useCallback(() => {
     if (pollRef.current) clearInterval(pollRef.current);
     const poll = async () => {
@@ -296,7 +296,7 @@ export default function CryptoPaymentModal({
     };
   }, [open, paymentStatus?.job?.job_id]);
 
-  /* â”€â”€ Countdown timer â”€â”€ */
+  /* ── Countdown timer ── */
   useEffect(() => {
     if (!invoice?.invoice_expires_at) return;
     const tick = () => {
@@ -314,14 +314,14 @@ export default function CryptoPaymentModal({
     return () => clearInterval(iv);
   }, [invoice?.invoice_expires_at]);
 
-  /* â”€â”€ Copy helper â”€â”€ */
+  /* ── Copy helper ── */
   const copyText = useCallback((text: string, type: "address" | "amount") => {
     navigator.clipboard.writeText(text);
     setCopied(type);
     setTimeout(() => setCopied(null), 2000);
   }, []);
 
-  /* â”€â”€ Filter currencies â”€â”€ */
+  /* ── Filter currencies ── */
   const filteredCurrencies = currencies.filter((c) => {
     if (!search) return true;
     const q = search.toLowerCase();
@@ -332,20 +332,20 @@ export default function CryptoPaymentModal({
   });
   const groups = groupCurrencies(filteredCurrencies);
 
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  /* ═══════════════════════════════════════════════════════
      RENDER
-     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+     ═══════════════════════════════════════════════════════ */
 
   return (
     <Modal open={open} onClose={onClose} title="" size="md">
       {step === "select" && resumingInvoice && (
         <div className="flex min-h-56 flex-col items-center justify-center">
           <Loader2 className="h-6 w-6 animate-spin text-accent" />
-          <p className="mt-3 text-[12px] font-medium text-dark-300">Checking for an active invoiceâ€¦</p>
+          <p className="mt-3 text-[12px] font-medium text-dark-300">Checking for an active invoice…</p>
           <p className="mt-1 text-[10px] text-dark-500">You will keep the same address if one already exists.</p>
         </div>
       )}
-      {/* â”€â”€ STEP 1: Select cryptocurrency â”€â”€ */}
+      {/* ── STEP 1: Select cryptocurrency ── */}
       {step === "select" && !resumingInvoice && (
         <div className="space-y-4">
           {/* Header */}
@@ -358,7 +358,7 @@ export default function CryptoPaymentModal({
             </div>
             <h3 className="text-base font-bold text-dark-100">Pay with Crypto</h3>
             <p className="text-[11px] text-dark-500 mt-1">
-              Replace <span className="text-dark-300 font-semibold">{replacementCount > 1 ? `${replacementCount} sessions` : sessionName}</span> â€” <span className="text-amber-400 font-bold">${(amountUsd * replacementCount).toFixed(2)}</span>
+              Replace <span className="text-dark-300 font-semibold">{replacementCount > 1 ? `${replacementCount} sessions` : sessionName}</span> — <span className="text-amber-400 font-bold">${(amountUsd * replacementCount).toFixed(2)}</span>
             </p>
           </div>
 
@@ -443,7 +443,7 @@ export default function CryptoPaymentModal({
         </div>
       )}
 
-      {/* â”€â”€ STEP 2: Payment screen â”€â”€ */}
+      {/* ── STEP 2: Payment screen ── */}
       {step === "paying" && invoice && selectedCurrency && (
         <div className="space-y-3">
           <div className="flex items-start justify-between gap-3">
@@ -492,7 +492,7 @@ export default function CryptoPaymentModal({
           {/* Timer */}
           <div className="flex items-center justify-between rounded-lg border border-amber-500/15 bg-amber-500/[0.055] px-3 py-2">
             <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-amber-400"><Clock className="h-3.5 w-3.5" /> Invoice expires in</span>
-            <span className={`text-[11px] font-bold tabular-nums ${timeLeft === "Expired" ? "text-red-400" : "text-amber-200"}`}>{timeLeft || "â€”"}</span>
+            <span className={`text-[11px] font-bold tabular-nums ${timeLeft === "Expired" ? "text-red-400" : "text-amber-200"}`}>{timeLeft || "—"}</span>
           </div>
 
           {/* Amount to send */}
@@ -555,7 +555,7 @@ export default function CryptoPaymentModal({
                 <p className="text-[12px] font-semibold text-dark-200">Waiting for payment...</p>
                 <p className="text-[10px] text-dark-500">
                   {paymentStatus?.amount_received && paymentStatus.amount_received > 0
-                    ? `Received: ${paymentStatus.amount_received} ${invoice.pay_currency.toUpperCase()} â€” confirming...`
+                    ? `Received: ${paymentStatus.amount_received} ${invoice.pay_currency.toUpperCase()} — confirming...`
                     : "We'll detect your payment automatically"}
                 </p>
               </div>
@@ -579,7 +579,7 @@ export default function CryptoPaymentModal({
         </div>
       )}
 
-      {/* â”€â”€ STEP 3: Payment confirmed â”€â”€ */}
+      {/* ── STEP 3: Payment confirmed ── */}
       {step === "confirmed" && (
         <div className="py-2 space-y-4">
           <div className="h-16 w-16 rounded-2xl bg-emerald-500/15 border border-emerald-500/20 flex items-center justify-center mx-auto">
@@ -630,7 +630,7 @@ function ReplacementProgress({ job }: { job: ReplacementJob }) {
           </p>
           <p className="text-[10px] text-dark-500">
             {job.completed} of {job.total} completed
-            {job.awaiting_inventory > 0 ? ` Â· ${job.awaiting_inventory} waiting for inventory` : ""}
+            {job.awaiting_inventory > 0 ? ` · ${job.awaiting_inventory} waiting for inventory` : ""}
           </p>
         </div>
         <span className="text-[12px] font-bold text-accent tabular-nums">{job.progress}%</span>
@@ -681,9 +681,9 @@ function ReplacementProgress({ job }: { job: ReplacementJob }) {
   );
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* ═══════════════════════════════════════════════════════
    SUB-COMPONENTS
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ═══════════════════════════════════════════════════════ */
 
 function CoinButton({ coin, onClick, disabled }: { coin: CryptoCurrency; onClick: () => void; disabled: boolean }) {
   return (
@@ -734,7 +734,7 @@ function StablecoinGroup({
         )}
         <div className="flex-1 text-left">
           <p className="text-[12px] font-bold text-dark-200">{label}</p>
-          <p className="text-[9px] text-dark-500">{symbol} â€” {coins.length} networks</p>
+          <p className="text-[9px] text-dark-500">{symbol} — {coins.length} networks</p>
         </div>
         <ChevronRight className={`h-4 w-4 text-dark-500 transition-transform ${expanded ? "rotate-90" : ""}`} />
       </button>
@@ -755,4 +755,3 @@ function StablecoinGroup({
     </div>
   );
 }
-
