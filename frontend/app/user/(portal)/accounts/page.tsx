@@ -285,9 +285,6 @@ export default function AccountsPage() {
   const [supportLoading, setSupportLoading] = useState(false);
   const [supportResult, setSupportResult] = useState<{ ok?: boolean; text?: string } | null>(null);
 
-  // Collapsible queue
-  const [queueExpanded, setQueueExpanded] = useState(false);
-
   // Health is now sourced from the unified session_meta cache (each session carries `health`
   // from the bot endpoint). The card resolves it via cacheDiag() at render time, so there is
   // no fragile stats-restore effect and a checked status persists across refresh automatically.
@@ -610,7 +607,10 @@ export default function AccountsPage() {
   });
 
   const anyLoading = Object.values(diagLoading).some(Boolean);
-  const pendingFiles = new Set(pendingReplacements.map((p: any) => p.session_file));
+  const pendingByFile = new Map<string, any>(
+    pendingReplacements.map((p: any) => [p.session_file, p])
+  );
+  const pendingFiles = new Set(pendingByFile.keys());
   const unresolvedFailFiles = failFiles.filter(f => !pendingFiles.has(f));
 
   // Per-session tier (critical / attention / healthy / unknown) from the resolved health.
@@ -640,13 +640,10 @@ export default function AccountsPage() {
   });
 
   // Aggregate totals for the stats strip (from the bot's own stats — no extra fetch).
-  const totalSent = Number(stats?.lifetime_sent || 0);
-  const totalFailed = Number(stats?.lifetime_failed || 0);
-  const avgSuccess = totalSent + totalFailed > 0 ? (totalSent / (totalSent + totalFailed)) * 100 : null;
   const planLabel: string | null = (bot?.plan?.name || bot?.plan_name || (typeof bot?.plan === "string" ? bot.plan : null)) || null;
-  const healthyPct = sessions.length ? Math.round((healthyCount / sessions.length) * 100) : 0;
-  const attentionPct = sessions.length ? Math.round((attentionCount / sessions.length) * 100) : 0;
-  const criticalPct = sessions.length ? Math.round((criticalCount / sessions.length) * 100) : 0;
+  const activeReplacementJobs = replacementJobs.filter(
+    (job: any) => !["completed", "cancelled", "failed"].includes(job.status)
+  );
 
   // Client-side pagination over the filtered list.
   const totalPages = Math.max(1, Math.ceil(visibleSessions.length / PAGE_SIZE));
@@ -658,161 +655,169 @@ export default function AccountsPage() {
     <div className="space-y-5 animate-fade-in" suppressHydrationWarning>
       {toast && <Toast msg={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
 
-      {/* ══════ SUMMARY ══════ */}
-      <div className="rounded-2xl border border-white/[0.06] bg-[#171723] p-3 sm:p-4">
-        <div className="flex items-center gap-2">
-          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/10 text-accent shrink-0"><Users className="h-5 w-5" /></span>
-          <div className="min-w-0 flex-1">
-            <p className="text-[10px] font-medium text-dark-500 leading-none">Total Accounts</p>
-            <p className="text-[22px] font-extrabold text-white tabular-nums leading-tight">{sessions.length}</p>
+      {/* Compact health overview: the counts also act as the status filter. */}
+      <section className="rounded-2xl border border-white/[0.06] bg-[#15151f] p-3 sm:p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-[14px] font-bold text-white">Telegram accounts</h2>
+            <p className="mt-0.5 text-[10px] text-dark-500">
+              {sessions.length} connected · {freeRem} free replacement{freeRem === 1 ? "" : "s"}
+            </p>
           </div>
-          <button type="button" onClick={() => { mutateBot(); fetchRepl(); }}
-            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-xl border border-white/[0.08] bg-white/[0.02] text-[12px] font-semibold text-dark-200 hover:bg-white/[0.05] active:scale-95 transition-all shrink-0">
-            <RefreshCw className="h-3.5 w-3.5" /> Refresh
+          <button type="button" onClick={() => { mutateBot(); fetchRepl(); }} aria-label="Refresh accounts"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.025] text-dark-300 hover:bg-white/[0.06] hover:text-white active:scale-95 transition-all">
+            <RefreshCw className="h-3.5 w-3.5" />
           </button>
         </div>
-        <div className="mt-3 grid grid-cols-4 gap-1.5">
+
+        <div className="mt-3 grid grid-cols-4 gap-1.5" role="group" aria-label="Filter by account health">
           {[
-            { label: "Healthy", value: healthyCount, pct: healthyPct, dot: "bg-emerald-400", tone: "text-emerald-400", pill: "bg-emerald-500/10 text-emerald-400" },
-            { label: "Needs Attention", value: attentionCount, pct: attentionPct, dot: "bg-amber-400", tone: "text-amber-400", pill: "bg-amber-500/10 text-amber-400" },
-            { label: "Critical", value: criticalCount, pct: criticalPct, dot: "bg-red-500", tone: "text-red-400", pill: "bg-red-500/10 text-red-400" },
-            { label: "Free Repl.", value: freeRem, pct: null as number | null, dot: "bg-accent", tone: "text-accent", pill: "bg-accent/10 text-accent", sub: freeRem > 0 ? "Available" : "None" },
-          ].map((st) => (
-            <div key={st.label} className="rounded-xl bg-white/[0.02] border border-white/[0.05] px-2 py-2 min-w-0">
-              <div className="flex items-center gap-1.5">
-                <span className={`h-1.5 w-1.5 rounded-full ${st.dot} shrink-0`} />
-                <span className={`text-[16px] font-bold tabular-nums ${st.tone}`}>{st.value}</span>
-                {st.pct != null && <span className={`ml-auto text-[9px] font-semibold rounded px-1 py-0.5 ${st.pill}`}>{st.pct}%</span>}
-              </div>
-              <p className="mt-0.5 text-[9px] font-medium text-dark-500 truncate">{(st as { sub?: string }).sub || st.label}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* ══════ FILTERS ══════ */}
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <div className="flex gap-0.5 rounded-xl bg-[#171723] border border-white/[0.06] p-0.5 shrink-0 self-start">
-          {([{ k: "24h" as TimeFilter, l: "Last 24h" }, { k: "overall" as TimeFilter, l: "Overall" }]).map((f) => (
-            <button key={f.k} type="button" onClick={() => setFilter(f.k)}
-              className={`h-9 px-3.5 rounded-lg text-[12px] font-semibold transition-all ${
-                filter === f.k ? "bg-accent text-white shadow-[0_2px_12px_rgba(108,92,231,0.35)]" : "text-dark-400 hover:text-dark-200"
-              }`}>{f.l}</button>
-          ))}
-        </div>
-        <div className="flex items-center gap-2 flex-1 min-w-0">
-          <div className="relative w-36 shrink-0">
-            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
-              className="w-full h-10 appearance-none rounded-xl bg-[#171723] border border-white/[0.06] pl-3 pr-8 text-[12px] font-medium text-dark-300 outline-none focus:border-accent/40 cursor-pointer">
-              <option value="all">All Status</option>
-              <option value="healthy">Healthy</option>
-              <option value="attention">Needs attention</option>
-              <option value="critical">Critical</option>
-            </select>
-            <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-dark-500 pointer-events-none" />
-          </div>
-          <div className="relative flex-1 min-w-0">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-dark-500 pointer-events-none" />
-            <input value={search} onChange={(e) => setSearch(e.target.value)} inputMode="search" placeholder="Search accounts…"
-              className="w-full h-10 rounded-xl bg-[#171723] border border-white/[0.06] pl-9 pr-3 text-[13px] text-dark-200 placeholder:text-dark-600 outline-none focus:border-accent/40" />
-          </div>
-        </div>
-      </div>
-
-      {/* ══════ AGGREGATE STATS STRIP ══════ */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        {[
-          { Icon: Send, label: "Total Sent", value: totalSent.toLocaleString(), tone: "text-emerald-400" },
-          { Icon: XCircle, label: "Total Failed", value: totalFailed.toLocaleString(), tone: "text-red-400" },
-          { Icon: Activity, label: "Avg Success", value: avgSuccess != null ? `${avgSuccess.toFixed(1)}%` : "—", tone: "text-accent" },
-          { Icon: CreditCard, label: "Per replace", value: `$${pricePer.toFixed(2)}`, tone: "text-dark-200" },
-        ].map(({ Icon, label, value, tone }) => (
-          <div key={label} className="flex items-center gap-2.5 rounded-xl border border-white/[0.06] bg-[#171723] px-3 py-2.5 min-w-0">
-            <Icon className={`h-4 w-4 shrink-0 ${tone}`} />
-            <div className="min-w-0">
-              <p className={`text-[14px] font-bold tabular-nums leading-none ${tone}`}>{value}</p>
-              <p className="text-[9px] text-dark-500 mt-1 truncate">{label}</p>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Grouped replacement jobs: shared live view for free and paid replacements. */}
-      {replacementJobs.length > 0 && (
-        <div className="space-y-3">
-          {replacementJobs.slice(0, 5).map((job: any) => {
-            const active = !["completed", "cancelled"].includes(job.status);
-            const tone = job.status === "completed"
-              ? "border-emerald-500/20 bg-emerald-500/[0.04]"
-              : job.status === "needs_admin"
-                ? "border-red-500/20 bg-red-500/[0.04]"
-                : job.awaiting_inventory
-                  ? "border-amber-500/20 bg-amber-500/[0.04]"
-                  : "border-accent/20 bg-accent/[0.03]";
+            { key: "all", label: "All", value: sessions.length, dot: "bg-accent", selected: "border-accent/40 bg-accent/10 text-white" },
+            { key: "healthy", label: "Healthy", value: healthyCount, dot: "bg-emerald-400", selected: "border-emerald-500/35 bg-emerald-500/[0.08] text-emerald-300" },
+            { key: "attention", label: "Review", value: attentionCount, dot: "bg-amber-400", selected: "border-amber-500/35 bg-amber-500/[0.08] text-amber-300" },
+            { key: "critical", label: "Replace", value: criticalCount, dot: "bg-red-400", selected: "border-red-500/35 bg-red-500/[0.08] text-red-300" },
+          ].map((item) => {
+            const selected = statusFilter === item.key;
             return (
-              <div key={job.job_id} className={`rounded-2xl border p-3 sm:p-4 ${tone}`}>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      {active ? <Loader2 className="h-4 w-4 text-accent animate-spin" /> : <CheckCircle className="h-4 w-4 text-emerald-400" />}
-                      <p className="text-[13px] font-bold text-dark-100">
-                        {job.status === "completed" ? "Replacement completed" : `Replacing ${job.total} session${job.total === 1 ? "" : "s"}`}
-                      </p>
+              <button key={item.key} type="button" onClick={() => setStatusFilter(item.key as typeof statusFilter)}
+                aria-pressed={selected}
+                className={`min-w-0 rounded-xl border px-2 py-2 text-left transition-colors ${
+                  selected ? item.selected : "border-white/[0.05] bg-white/[0.018] text-dark-400 hover:bg-white/[0.04]"
+                }`}>
+                <span className="flex items-center gap-1.5">
+                  <span className={`h-1.5 w-1.5 rounded-full ${item.dot}`} />
+                  <span className="text-[15px] font-bold tabular-nums">{item.value}</span>
+                </span>
+                <span className="mt-0.5 block truncate text-[9px] font-medium">{item.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="mt-3 flex items-center gap-2">
+          <div className="relative min-w-0 flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-dark-500" />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} inputMode="search" placeholder="Search accounts"
+              className="h-10 w-full rounded-xl border border-white/[0.06] bg-[#101018] pl-9 pr-3 text-[12px] text-dark-200 outline-none placeholder:text-dark-600 focus:border-accent/40" />
+          </div>
+          <div className="relative w-[7.5rem] shrink-0">
+            <select value={filter} onChange={(e) => setFilter(e.target.value as TimeFilter)} aria-label="Statistics period"
+              className="h-10 w-full appearance-none rounded-xl border border-white/[0.06] bg-[#101018] pl-3 pr-7 text-[11px] font-medium text-dark-300 outline-none focus:border-accent/40">
+              <option value="24h">Last 24h</option>
+              <option value="overall">All time</option>
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-dark-500" />
+          </div>
+        </div>
+      </section>
+
+      {/* Only unfinished work belongs on the operational screen; completed history is
+          intentionally omitted so it does not compete with current account health. */}
+      {activeReplacementJobs.length > 0 && (
+        <div className="space-y-2">
+          {activeReplacementJobs.map((job: any) => {
+            const awaitingPayment = job.status === "awaiting_payment";
+            const needsAdmin = job.status === "needs_admin";
+            const waitingInventory = Boolean(job.awaiting_inventory);
+            const paidItems = (job.items || []).filter((item: any) => item.status === "pending_payment");
+            const paymentTotal = paidItems.reduce((sum: number, item: any) => sum + Number(item.price_usd || 0), 0);
+            const firstPaid = paidItems[0];
+            const names = (job.items || [])
+              .map((item: any) => (item.real_name || item.session_file || "").replace(".session", ""))
+              .filter(Boolean);
+            const title = awaitingPayment
+              ? "Payment required"
+              : needsAdmin
+                ? "Setup needs help"
+                : waitingInventory
+                  ? "Waiting for an available account"
+                  : `Replacing ${job.total} account${job.total === 1 ? "" : "s"}`;
+            const description = awaitingPayment
+              ? `${job.total} account${job.total === 1 ? "" : "s"} selected · replacement has not started`
+              : `${job.completed}/${job.total} complete${waitingInventory ? ` · ${job.awaiting_inventory} waiting` : ""}${needsAdmin ? ` · ${job.needs_attention} needs review` : ""}`;
+            const tone = awaitingPayment
+              ? "border-amber-500/25 bg-amber-500/[0.045]"
+              : needsAdmin
+                ? "border-red-500/20 bg-red-500/[0.04]"
+                : waitingInventory
+                  ? "border-sky-500/20 bg-sky-500/[0.035]"
+                  : "border-accent/20 bg-accent/[0.03]";
+            const Icon = awaitingPayment ? CircleDollarSign : needsAdmin ? AlertTriangle : waitingInventory ? Clock : Loader2;
+            const iconTone = awaitingPayment ? "text-amber-400" : needsAdmin ? "text-red-400" : waitingInventory ? "text-sky-400" : "text-accent";
+
+            const openGroupedPayment = () => {
+              if (!firstPaid) return;
+              setPayEntryId(firstPaid.id);
+              setPaySessionName(names.join(", "));
+              setPayAmountUsd(Number(firstPaid.price_usd || pricePer));
+              setPayReplacementCount(Math.max(1, paidItems.length));
+              setPayModal(true);
+            };
+
+            return (
+              <section key={job.job_id} className={`rounded-2xl border p-3 sm:p-4 ${tone}`}>
+                <div className="flex items-start gap-3">
+                  <span className={`mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-black/15 ${iconTone}`}>
+                    <Icon className={`h-4 w-4 ${!awaitingPayment && !needsAdmin && !waitingInventory ? "animate-spin" : ""}`} />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
+                      <div className="min-w-0">
+                        <h3 className="text-[13px] font-bold text-dark-100">{title}</h3>
+                        <p className="mt-0.5 text-[10px] text-dark-500">{description}</p>
+                      </div>
+                      {awaitingPayment && firstPaid ? (
+                        <button type="button" onClick={openGroupedPayment}
+                          className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-amber-400 px-3 text-[11px] font-bold text-[#17120a] shadow-sm shadow-amber-950/30 transition-colors hover:bg-amber-300">
+                          <CircleDollarSign className="h-3.5 w-3.5" />
+                          Choose payment · ${paymentTotal.toFixed(2)}
+                        </button>
+                      ) : (
+                        <span className={`text-[11px] font-bold tabular-nums ${iconTone}`}>{Math.min(100, Number(job.progress || 0))}%</span>
+                      )}
                     </div>
-                    <p className="mt-1 text-[10px] text-dark-500">
-                      {job.completed}/{job.total} completed
-                      {job.awaiting_inventory ? ` · ${job.awaiting_inventory} waiting for inventory` : ""}
-                      {job.needs_attention ? ` · ${job.needs_attention} needs attention` : ""}
-                    </p>
-                  </div>
-                  <span className="text-[12px] font-bold text-accent tabular-nums">{job.progress || 0}%</span>
-                </div>
-                <div className="mt-2.5 h-1.5 rounded-full bg-dark-800 overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all duration-500 ${job.status === "completed" ? "bg-emerald-400" : job.status === "needs_admin" ? "bg-red-400" : "bg-accent"}`}
-                    style={{ width: `${Math.max(2, Math.min(100, Number(job.progress || 0)))}%` }}
-                  />
-                </div>
-                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {(job.items || []).map((item: any) => {
-                    const events = (item.timeline || []).slice(-4).reverse();
-                    return (
-                      <details key={item.id} className="group rounded-xl border border-white/[0.05] bg-dark-900/35 p-3">
-                        <summary className="list-none cursor-pointer flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="truncate text-[11px] font-semibold text-dark-200">
-                              {(item.real_name || item.session_file || "").replace(".session", "")}
-                            </p>
-                            <p className={`mt-0.5 text-[9px] ${item.status === "needs_admin" ? "text-red-400" : item.status === "awaiting_session" ? "text-amber-400" : "text-dark-500"}`}>
-                              {item.stage_message || item.status}
-                            </p>
-                          </div>
-                          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-dark-500 transition-transform group-open:rotate-180" />
-                        </summary>
-                        <div className="mt-2.5 border-t border-white/[0.04] pt-2 space-y-1.5">
-                          {events.length ? events.map((event: any, idx: number) => (
-                            <div key={`${event.at}-${idx}`} className="flex gap-2 text-[9px]">
-                              <span className="mt-1 h-1.5 w-1.5 rounded-full bg-accent shrink-0" />
-                              <span className="text-dark-400 leading-relaxed">{event.message}</span>
-                            </div>
-                          )) : <p className="text-[9px] text-dark-500">Waiting for the first live update.</p>}
+
+                    {awaitingPayment ? (
+                      <div className="mt-2.5 flex flex-wrap gap-1.5">
+                        {names.map((name: string) => (
+                          <span key={name} className="rounded-md border border-amber-500/15 bg-black/10 px-2 py-1 text-[9px] font-medium text-amber-100/75">{name}</span>
+                        ))}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="mt-2.5 h-1 rounded-full bg-black/20 overflow-hidden">
+                          <div className={`h-full rounded-full transition-all duration-500 ${needsAdmin ? "bg-red-400" : waitingInventory ? "bg-sky-400" : "bg-accent"}`}
+                            style={{ width: `${Math.max(2, Math.min(100, Number(job.progress || 0)))}%` }} />
                         </div>
-                      </details>
-                    );
-                  })}
+                        <details className="group mt-2">
+                          <summary className="list-none cursor-pointer text-[10px] font-medium text-dark-400 hover:text-dark-200">
+                            <span className="inline-flex items-center gap-1">View account progress <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-180" /></span>
+                          </summary>
+                          <div className="mt-2 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                            {(job.items || []).map((item: any) => (
+                              <div key={item.id} className="rounded-lg border border-white/[0.05] bg-black/10 px-2.5 py-2">
+                                <p className="truncate text-[10px] font-semibold text-dark-200">{(item.real_name || item.session_file || "").replace(".session", "")}</p>
+                                <p className="mt-0.5 truncate text-[9px] text-dark-500">{item.stage_message || item.status}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      </>
+                    )}
+                  </div>
                 </div>
-              </div>
+              </section>
             );
           })}
         </div>
       )}
 
       {/* ══════ ACTION BAR — compact alert + actions ══════ */}
-      {(unresolvedFailFiles.length > 0 || pendingReplacements.length > 0) && (
-        <div className="rounded-2xl border border-white/[0.06] bg-dark-850 overflow-hidden">
+      {unresolvedFailFiles.length > 0 && (
+        <div className="rounded-2xl border border-amber-500/15 bg-amber-500/[0.035] overflow-hidden">
           {/* Failing sessions — compact bar */}
           {unresolvedFailFiles.length > 0 && (
-            <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-white/[0.04]">
+            <div className="flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-4">
               <div className="flex items-center gap-2.5 min-w-0">
                 <div className="p-1.5 rounded-lg bg-amber-500/10 shrink-0">
                   <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />
@@ -821,89 +826,24 @@ export default function AccountsPage() {
                   <span className="text-amber-400">{unresolvedFailFiles.length}</span> session{unresolvedFailFiles.length !== 1 ? "s" : ""} need{unresolvedFailFiles.length === 1 ? "s" : ""} attention
                 </p>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center shrink-0">
                 <button type="button" onClick={() => doCheckAll(unresolvedFailFiles)} disabled={anyLoading}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-semibold bg-dark-800 hover:bg-dark-700 text-dark-300 border border-white/[0.06] disabled:opacity-50 transition-all cursor-pointer">
                   {anyLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Search className="h-3 w-3" />}
-                  Check Why
+                  Check health
                 </button>
                 <button type="button" onClick={() => openReplace(unresolvedFailFiles)}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold bg-accent text-white hover:bg-accent/90 transition-all cursor-pointer">
-                  <ArrowRightLeft className="h-3 w-3" /> Replace
+                  <ArrowRightLeft className="h-3 w-3" /> Replace selected
                 </button>
               </div>
-            </div>
-          )}
-
-          {/* Replacement queue — collapsible */}
-          {pendingReplacements.length > 0 && (
-            <div>
-              <button type="button" onClick={() => setQueueExpanded(!queueExpanded)}
-                className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-white/[0.02] transition-colors cursor-pointer">
-                <div className="flex items-center gap-2">
-                  <Loader2 className="h-3 w-3 text-accent animate-spin" />
-                  <span className="text-[11px] font-medium text-dark-300">
-                    {pendingReplacements.length} replacement{pendingReplacements.length !== 1 ? "s" : ""} in queue
-                  </span>
-                </div>
-                <ChevronDown className={`h-3.5 w-3.5 text-dark-500 transition-transform ${queueExpanded ? "rotate-180" : ""}`} />
-              </button>
-              {queueExpanded && (
-                <div className="px-4 pb-3 space-y-1">
-                  {pendingReplacements.map((p: any) => (
-                    <div key={p.id} className="flex items-center justify-between gap-2 rounded-lg bg-dark-800/30 px-3 py-2">
-                      <div className="min-w-0 flex-1">
-                        <span className="text-[11px] font-medium text-dark-300 truncate block">
-                          {(p.real_name || p.session_file || "").replace(".session", "")}
-                        </span>
-                        <span className={`text-[9px] ${
-                          p.status === "ready" ? "text-accent" : p.status === "pending_payment" ? "text-amber-400" : "text-dark-500"
-                        }`}>
-                          {p.stage_message || (p.status === "ready" ? "Processing..." : p.status === "awaiting_session" ? "Waiting for pool" : p.status === "pending_payment" ? "Payment needed" : p.status)}
-                        </span>
-                        {p.status !== "pending_payment" && (
-                          <div className="mt-1.5 h-1 rounded-full bg-dark-700 overflow-hidden">
-                            <div
-                              className={`h-full rounded-full transition-all duration-500 ${p.status === "completed" ? "bg-emerald-400" : "bg-accent"}`}
-                              style={{ width: `${Math.max(2, Math.min(100, Number(p.progress || 0)))}%` }}
-                            />
-                          </div>
-                        )}
-                      </div>
-                      {p.status === "pending_payment" && (
-                        <button onClick={() => {
-                          const count = pendingReplacements.filter((x: any) =>
-                            x.status === "pending_payment" &&
-                            (x.job_id || x.id) === (p.job_id || p.id)
-                          ).length;
-                          setPayEntryId(p.id);
-                          setPaySessionName((p.real_name || "").replace(".session", ""));
-                          setPayAmountUsd(Number(p.price_usd || 2));
-                          setPayReplacementCount(Math.max(1, count));
-                          setPayModal(true);
-                        }}
-                          className="text-[9px] font-bold rounded-md px-2 py-1 bg-accent/15 text-accent hover:bg-accent/25 transition-colors cursor-pointer">
-                          Pay ${Number(p.price_usd || 0).toFixed(2)}
-                        </button>
-                      )}
-                      {p.status !== "pending_payment" && (
-                        <span className={`text-[9px] font-medium rounded-md px-2 py-0.5 ${
-                          p.free_replacement ? "bg-emerald-500/10 text-emerald-400" : "bg-dark-700/30 text-dark-500"
-                        }`}>
-                          {p.free_replacement ? "Free" : `$${Number(p.price_usd || 0).toFixed(2)}`}
-                        </span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
           )}
         </div>
       )}
 
       {/* ══════ SESSION CARDS ══════ */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         {pageSessions.map((sess, idx) => {
           const file = sess.file;
           const s = sessionStats?.[file];
@@ -913,7 +853,9 @@ export default function AccountsPage() {
           const diag = liveDiag || cacheDiag(sess.health, sess.spam_details);    // else the persisted cache status
           const diagCfg = diag ? STATUS_CFG[diag.status] || STATUS_CFG.UNKNOWN : null;
           const tier = tierByFile[file];
-          const isPendingRepl = pendingFiles.has(file);
+          const pendingEntry = pendingByFile.get(file);
+          const isPendingRepl = Boolean(pendingEntry);
+          const isAwaitingPayment = pendingEntry?.status === "pending_payment";
           const replaceAllowed = (tier === "critical" || tier === "attention") && !isPendingRepl;
           const menuOpen = openMenu === file;
 
@@ -930,12 +872,12 @@ export default function AccountsPage() {
                        return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.floor(m / 60)}h ago` : `${Math.floor(m / 1440)}d ago`; })()
             : null;
 
-          const dotTone = isPendingRepl ? "bg-accent" : tier === "critical" ? "bg-red-500" : tier === "attention" ? "bg-amber-400" : tier === "healthy" ? "bg-emerald-400" : "bg-dark-600";
+          const dotTone = isAwaitingPayment ? "bg-amber-400" : isPendingRepl ? "bg-accent" : tier === "critical" ? "bg-red-500" : tier === "attention" ? "bg-amber-400" : tier === "healthy" ? "bg-emerald-400" : "bg-dark-600";
           const pctTone = pct >= 70 ? "text-emerald-400" : pct >= 40 ? "text-amber-400" : "text-red-400";
-          const barColor = pct >= 70 ? "bg-emerald-500" : pct >= 40 ? "bg-amber-500" : "bg-red-500";
 
           let badgeLabel: string, badgeCls: string, BadgeIcon: any, badgeSpin = false;
-          if (isPendingRepl) { badgeLabel = "Replacing"; badgeCls = "bg-accent/10 border-accent/20 text-accent"; BadgeIcon = Clock; }
+          if (isAwaitingPayment) { badgeLabel = "Payment required"; badgeCls = "bg-amber-500/10 border-amber-500/20 text-amber-300"; BadgeIcon = CircleDollarSign; }
+          else if (isPendingRepl) { badgeLabel = "Replacing"; badgeCls = "bg-accent/10 border-accent/20 text-accent"; BadgeIcon = Clock; }
           else if (isChk && !liveDiag) { badgeLabel = "Checking"; badgeCls = "bg-sky-500/10 border-sky-500/20 text-sky-400"; BadgeIcon = Loader2; badgeSpin = true; }
           else if (diagCfg) { badgeLabel = diagCfg.label; badgeCls = `${diagCfg.bg} ${diagCfg.border} ${diagCfg.text}`; BadgeIcon = diagCfg.Icon; }
           else if (tier === "attention") { badgeLabel = "Needs attention"; badgeCls = "bg-amber-500/10 border-amber-500/20 text-amber-400"; BadgeIcon = AlertTriangle; }
@@ -943,11 +885,11 @@ export default function AccountsPage() {
           else { badgeLabel = "Unchecked"; badgeCls = "bg-dark-700/30 border-white/[0.06] text-dark-400"; BadgeIcon = HelpCircle; }
 
           return (
-            <div key={file} className="flex h-full flex-col rounded-2xl border border-white/[0.06] bg-[#171723] p-4 shadow-[0_1px_2px_rgba(0,0,0,0.35)] transition-colors hover:border-white/[0.12]">
+            <div key={file} className="flex h-full flex-col rounded-2xl border border-white/[0.06] bg-[#171723] p-3.5 shadow-[0_1px_2px_rgba(0,0,0,0.35)] transition-colors hover:border-white/[0.12] sm:p-4">
               {/* Row 1 — avatar + identity + status */}
               <div className="flex items-start gap-3">
                 <div className="relative shrink-0">
-                  <div className={`flex items-center justify-center h-11 w-11 rounded-xl text-[15px] font-bold text-white bg-gradient-to-br ${AVATAR_COLORS[idx % AVATAR_COLORS.length]}`}>
+                  <div className={`flex h-10 w-10 items-center justify-center rounded-xl text-[14px] font-bold text-white bg-gradient-to-br ${AVATAR_COLORS[idx % AVATAR_COLORS.length]}`}>
                     {name.charAt(0).toUpperCase()}
                   </div>
                   <span className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ring-2 ring-[#171723] ${dotTone}`} />
@@ -1003,33 +945,30 @@ export default function AccountsPage() {
                 </div>
               </div>
 
-              {/* Row 3 — session health bar */}
-              <div className="mt-3 flex items-center gap-2.5">
-                <span className="text-[10px] font-medium text-dark-500 shrink-0">Session health</span>
-                <div className="flex-1 h-1.5 rounded-full bg-white/[0.05] overflow-hidden">
-                  <div className={`h-full rounded-full transition-all duration-700 ${barColor}`} style={{ width: `${hasData ? Math.max(pct, 3) : 0}%` }} />
-                </div>
-                <span className={`text-[11px] font-bold tabular-nums shrink-0 ${pctTone}`}>{hasData ? `${pct}%` : "—"}</span>
-              </div>
-
               {/* Reason line for non-healthy states */}
               {diag && diagCfg && tier !== "healthy" && !isPendingRepl && (
                 <p className="mt-2 text-[10.5px] text-dark-400 leading-snug line-clamp-2">{diag.reason}</p>
               )}
-              {isPendingRepl && (
+              {isAwaitingPayment && (
+                <p className="mt-2 inline-flex items-center gap-1 text-[10.5px] font-medium text-amber-300">
+                  <CircleDollarSign className="h-3 w-3" /> Not started — complete payment first
+                </p>
+              )}
+              {isPendingRepl && !isAwaitingPayment && (
                 <p className="mt-2 inline-flex items-center gap-1 text-[10.5px] text-accent font-medium"><Clock className="h-3 w-3" /> Replacement in progress</p>
               )}
 
               {/* Row 4 — actions (pinned to the bottom of the card) */}
-              <div className="mt-auto pt-3 flex items-center gap-2">
+              <div className="mt-auto flex items-center gap-2 pt-3">
                 <button type="button" onClick={() => openEdit(file)}
-                  className="flex-1 inline-flex items-center justify-center gap-1.5 h-11 rounded-xl border border-white/[0.08] bg-white/[0.02] text-[12px] font-semibold text-dark-200 hover:bg-white/[0.05] active:scale-[0.98] transition-all">
-                  <Eye className="h-4 w-4 text-accent" /> View Details
+                  className="inline-flex h-10 flex-1 items-center justify-center gap-1.5 rounded-xl border border-white/[0.08] bg-white/[0.02] text-[11px] font-semibold text-dark-200 hover:bg-white/[0.05] active:scale-[0.98] transition-all">
+                  <Eye className="h-3.5 w-3.5 text-accent" /> Details
                 </button>
-                <div className="relative flex-1">
+                <div className="relative">
                   <button type="button" onClick={() => setOpenMenu(menuOpen ? null : file)} aria-haspopup="menu" aria-expanded={menuOpen}
-                    className="w-full inline-flex items-center justify-center gap-1.5 h-11 rounded-xl border border-white/[0.08] bg-white/[0.02] text-[12px] font-semibold text-dark-200 hover:bg-white/[0.05] active:scale-[0.98] transition-all">
-                    <Settings className="h-4 w-4 text-accent" /> Manage <ChevronDown className={`h-3.5 w-3.5 transition-transform ${menuOpen ? "rotate-180" : ""}`} />
+                    aria-label={`Manage ${name}`}
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.02] text-dark-300 hover:bg-white/[0.05] hover:text-white active:scale-[0.98] transition-all">
+                    <Settings className="h-3.5 w-3.5" />
                   </button>
                   {menuOpen && (
                     <div className="absolute right-0 bottom-full mb-2 z-40 w-56 rounded-xl border border-white/[0.08] bg-[#1c1c2b] p-1 shadow-xl shadow-black/50">

@@ -40,7 +40,9 @@ CHECK_COOLDOWN_SEC = 1800
 PROCESSING_LEASE_SEC = 15 * 60
 
 REPLACEMENT_STAGE_PROGRESS = {
-    "payment_required": 5,
+    # A request is not replacement work until payment has been detected. Keeping
+    # this at zero also prevents the portal from implying that work has started.
+    "payment_required": 0,
     "payment_detected": 10,
     "payment_confirmed": 15,
     "awaiting_session": 20,
@@ -152,7 +154,14 @@ def get_replacement_job(job_id: str, *, bot_name: str | None = None) -> dict[str
         "processing" if any(e.get("status") in ("ready", "processing") for e in entries) else
         "failed" if failed == total else "pending"
     )
-    progress = round(sum(int(e.get("progress") or 0) for e in entries) / max(1, total))
+    # Older queue rows may predate persisted progress. Their terminal status is the
+    # source of truth, so a completed job must never render as zero percent.
+    progress = 100 if completed == total else round(
+        sum(
+            100 if e.get("status") == "completed" else int(e.get("progress") or 0)
+            for e in entries
+        ) / max(1, total)
+    )
     return {
         "job_id": job_id,
         "bot_name": entries[0].get("bot_name", ""),

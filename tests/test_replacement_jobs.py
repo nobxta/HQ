@@ -42,7 +42,21 @@ class ReplacementJobTests(unittest.TestCase):
         job = replacement.get_replacement_job(entries[0]["job_id"])
         self.assertEqual(2, job["total"])
         self.assertEqual("awaiting_payment", job["status"])
+        paid_item = next(entry for entry in entries if not entry["free_replacement"])
+        self.assertEqual(0, paid_item["progress"])
         self.assertFalse(job["payment_confirmed"])
+
+    def test_completed_legacy_job_reports_full_progress(self):
+        replacement.save_replacement_queue([{
+            "id": "legacy-completed",
+            "bot_name": "Example Bot",
+            "status": "completed",
+            "progress": 0,
+        }])
+        job = replacement.get_replacement_job("legacy-completed")
+        self.assertIsNotNone(job)
+        self.assertEqual("completed", job["status"])
+        self.assertEqual(100, job["progress"])
 
     def test_stage_update_is_persisted_in_timeline(self):
         entry = replacement.create_replacement_request(
