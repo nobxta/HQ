@@ -266,12 +266,14 @@ export default function AccountsPage() {
   const [freeRem, setFreeRem] = useState(0);
   const [pricePer, setPricePer] = useState(2.0);
   const [pendingReplacements, setPendingReplacements] = useState<any[]>([]);
+  const [replacementJobs, setReplacementJobs] = useState<any[]>([]);
 
   // Crypto payment
   const [payModal, setPayModal] = useState(false);
   const [payEntryId, setPayEntryId] = useState("");
   const [paySessionName, setPaySessionName] = useState("");
   const [payAmountUsd, setPayAmountUsd] = useState(0);
+  const [payReplacementCount, setPayReplacementCount] = useState(1);
 
   // Support ticket modal
   const [supportModal, setSupportModal] = useState(false);
@@ -329,20 +331,28 @@ export default function AccountsPage() {
   }, [supportFile, supportName, supportDiag, supportFailRate, supportMsg, showToast]);
 
   /* ─── Fetch replacement status ─── */
-  const fetchRepl = useCallback(() => {
+  const fetchRepl = useCallback(async () => {
     const s = getPortalSession();
     if (!s?.bot_name || s?.telegram_id == null) return;
-    portalApi
-      .get(`/api/portal/bot/${s.bot_name}/replacements?telegram_id=${s.telegram_id}`)
-      .then((r) => {
-        setFreeRem(r.data?.free_remaining ?? 0);
-        setPricePer(r.data?.price_per_session ?? 2.0);
-        setPendingReplacements(r.data?.pending ?? []);
-      })
-      .catch(() => {});
+    try {
+      const [legacy, jobs] = await Promise.all([
+        portalApi.get(`/api/portal/bot/${s.bot_name}/replacements?telegram_id=${s.telegram_id}`),
+        portalApi.get(`/api/portal/bot/${s.bot_name}/replacement-jobs?telegram_id=${s.telegram_id}`),
+      ]);
+      setFreeRem(legacy.data?.free_remaining ?? 0);
+      setPricePer(legacy.data?.price_per_session ?? 2.0);
+      setPendingReplacements(legacy.data?.pending ?? []);
+      setReplacementJobs(jobs.data?.jobs ?? []);
+    } catch {
+      // Keep the last known replacement state during a temporary API outage.
+    }
   }, []);
 
-  useEffect(() => { fetchRepl(); const iv = setInterval(fetchRepl, 15000); return () => clearInterval(iv); }, [fetchRepl]);
+  useEffect(() => {
+    fetchRepl();
+    const iv = setInterval(fetchRepl, pendingReplacements.length > 0 ? 3000 : 15000);
+    return () => clearInterval(iv);
+  }, [fetchRepl, pendingReplacements.length]);
 
   // Reset to the first page whenever the filters change.
   useEffect(() => { setPage(1); }, [search, statusFilter, filter]);
@@ -499,6 +509,7 @@ export default function AccountsPage() {
             setPayEntryId(firstPaid.id);
             setPaySessionName((firstPaid.real_name || firstPaid.session_file || "").replace(".session", ""));
             setPayAmountUsd(Number(firstPaid.price_usd || d.price_per_session || 2));
+            setPayReplacementCount(needsPayment || 1);
             setPayModal(true); setReplModal(false);
           }, 800);
         }
@@ -726,6 +737,76 @@ export default function AccountsPage() {
         ))}
       </div>
 
+      {/* Grouped replacement jobs: shared live view for free and paid replacements. */}
+      {replacementJobs.length > 0 && (
+        <div className="space-y-3">
+          {replacementJobs.slice(0, 5).map((job: any) => {
+            const active = !["completed", "cancelled"].includes(job.status);
+            const tone = job.status === "completed"
+              ? "border-emerald-500/20 bg-emerald-500/[0.04]"
+              : job.status === "needs_admin"
+                ? "border-red-500/20 bg-red-500/[0.04]"
+                : job.awaiting_inventory
+                  ? "border-amber-500/20 bg-amber-500/[0.04]"
+                  : "border-accent/20 bg-accent/[0.03]";
+            return (
+              <div key={job.job_id} className={`rounded-2xl border p-3 sm:p-4 ${tone}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      {active ? <Loader2 className="h-4 w-4 text-accent animate-spin" /> : <CheckCircle className="h-4 w-4 text-emerald-400" />}
+                      <p className="text-[13px] font-bold text-dark-100">
+                        {job.status === "completed" ? "Replacement completed" : `Replacing ${job.total} session${job.total === 1 ? "" : "s"}`}
+                      </p>
+                    </div>
+                    <p className="mt-1 text-[10px] text-dark-500">
+                      {job.completed}/{job.total} completed
+                      {job.awaiting_inventory ? ` · ${job.awaiting_inventory} waiting for inventory` : ""}
+                      {job.needs_attention ? ` · ${job.needs_attention} needs attention` : ""}
+                    </p>
+                  </div>
+                  <span className="text-[12px] font-bold text-accent tabular-nums">{job.progress || 0}%</span>
+                </div>
+                <div className="mt-2.5 h-1.5 rounded-full bg-dark-800 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-500 ${job.status === "completed" ? "bg-emerald-400" : job.status === "needs_admin" ? "bg-red-400" : "bg-accent"}`}
+                    style={{ width: `${Math.max(2, Math.min(100, Number(job.progress || 0)))}%` }}
+                  />
+                </div>
+                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {(job.items || []).map((item: any) => {
+                    const events = (item.timeline || []).slice(-4).reverse();
+                    return (
+                      <details key={item.id} className="group rounded-xl border border-white/[0.05] bg-dark-900/35 p-3">
+                        <summary className="list-none cursor-pointer flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-[11px] font-semibold text-dark-200">
+                              {(item.real_name || item.session_file || "").replace(".session", "")}
+                            </p>
+                            <p className={`mt-0.5 text-[9px] ${item.status === "needs_admin" ? "text-red-400" : item.status === "awaiting_session" ? "text-amber-400" : "text-dark-500"}`}>
+                              {item.stage_message || item.status}
+                            </p>
+                          </div>
+                          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-dark-500 transition-transform group-open:rotate-180" />
+                        </summary>
+                        <div className="mt-2.5 border-t border-white/[0.04] pt-2 space-y-1.5">
+                          {events.length ? events.map((event: any, idx: number) => (
+                            <div key={`${event.at}-${idx}`} className="flex gap-2 text-[9px]">
+                              <span className="mt-1 h-1.5 w-1.5 rounded-full bg-accent shrink-0" />
+                              <span className="text-dark-400 leading-relaxed">{event.message}</span>
+                            </div>
+                          )) : <p className="text-[9px] text-dark-500">Waiting for the first live update.</p>}
+                        </div>
+                      </details>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* ══════ ACTION BAR — compact alert + actions ══════ */}
       {(unresolvedFailFiles.length > 0 || pendingReplacements.length > 0) && (
         <div className="rounded-2xl border border-white/[0.06] bg-dark-850 overflow-hidden">
@@ -778,11 +859,29 @@ export default function AccountsPage() {
                         <span className={`text-[9px] ${
                           p.status === "ready" ? "text-accent" : p.status === "pending_payment" ? "text-amber-400" : "text-dark-500"
                         }`}>
-                          {p.status === "ready" ? "Processing..." : p.status === "awaiting_session" ? "Waiting for pool" : p.status === "pending_payment" ? "Payment needed" : p.status}
+                          {p.stage_message || (p.status === "ready" ? "Processing..." : p.status === "awaiting_session" ? "Waiting for pool" : p.status === "pending_payment" ? "Payment needed" : p.status)}
                         </span>
+                        {p.status !== "pending_payment" && (
+                          <div className="mt-1.5 h-1 rounded-full bg-dark-700 overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all duration-500 ${p.status === "completed" ? "bg-emerald-400" : "bg-accent"}`}
+                              style={{ width: `${Math.max(2, Math.min(100, Number(p.progress || 0)))}%` }}
+                            />
+                          </div>
+                        )}
                       </div>
                       {p.status === "pending_payment" && (
-                        <button onClick={() => { setPayEntryId(p.id); setPaySessionName((p.real_name || "").replace(".session", "")); setPayAmountUsd(Number(p.price_usd || 2)); setPayModal(true); }}
+                        <button onClick={() => {
+                          const count = pendingReplacements.filter((x: any) =>
+                            x.status === "pending_payment" &&
+                            (x.job_id || x.id) === (p.job_id || p.id)
+                          ).length;
+                          setPayEntryId(p.id);
+                          setPaySessionName((p.real_name || "").replace(".session", ""));
+                          setPayAmountUsd(Number(p.price_usd || 2));
+                          setPayReplacementCount(Math.max(1, count));
+                          setPayModal(true);
+                        }}
                           className="text-[9px] font-bold rounded-md px-2 py-1 bg-accent/15 text-accent hover:bg-accent/25 transition-colors cursor-pointer">
                           Pay ${Number(p.price_usd || 0).toFixed(2)}
                         </button>
@@ -1200,6 +1299,7 @@ export default function AccountsPage() {
         entryId={payEntryId}
         sessionName={paySessionName}
         amountUsd={payAmountUsd}
+        replacementCount={payReplacementCount}
         onPaymentConfirmed={() => {
           fetchRepl(); mutateBot();
           showToast("Payment confirmed! Replacement processing...", "ok");

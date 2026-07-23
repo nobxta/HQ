@@ -391,6 +391,7 @@ async def repair_replace_session(
     old_session_file: str,
     status: str,
     log_async: Callable[[str], Awaitable[None]] | None = None,
+    progress_async: Callable[[str, str, dict | None], Awaitable[None]] | None = None,
 ) -> str:
     """Replace a session with a new one from pool. Move old to frozen/limited/unauth."""
     name = get_name_by_token(bot_token)
@@ -423,6 +424,64 @@ async def repair_replace_session(
     if not ok:
         await asyncio.to_thread(move_session_to_bucket, new_fn, "dead_sessions")
         return "Replacement session failed validation."
+    if progress_async:
+        await progress_async("validating", "Telegram authorization validation passed.", None)
+
+    if progress_async:
+        await progress_async(
+            "checking_spambot", "Checking the replacement account with Telegram SpamBot.", None
+        )
+    health = await check_sessions_health_detailed_parallel([new_fn])
+    health_result = health.get(new_fn) or {}
+    candidate_status = str(health_result.get("status") or SPAM_UNKNOWN)
+    candidate_details = health_result.get("details")
+    if candidate_status != SPAM_ACTIVE:
+        if candidate_status in (SPAM_UNKNOWN, SPAM_FAILED):
+            # Telegram/SpamBot/network uncertainty is not evidence that the account is
+            # bad. Return it to the end of the free pool and try another candidate.
+            await asyncio.to_thread(move_session_to_bucket, new_fn, "free_sessions")
+            if progress_async:
+                await progress_async(
+                    "checking_spambot",
+                    "Health check was inconclusive. Candidate returned safely for a later retry.",
+                    {
+                        "success": False,
+                        "retryable": True,
+                        "status": candidate_status,
+                        "details": candidate_details,
+                    },
+                )
+            return f"Replacement session health check inconclusive: {candidate_status}."
+        if candidate_status == SPAM_FROZEN:
+            dest_dir, dest_bucket = config.SESSIONS_FROZEN, "frozen_sessions"
+        elif candidate_status in (SPAM_TEMP_LIMITED, SPAM_HARD_LIMITED):
+            dest_dir, dest_bucket = config.SESSIONS_LIMITED, "limited_sessions"
+        elif candidate_status in (SPAM_DEAD,):
+            dest_dir, dest_bucket = config.SESSIONS_DEAD, "dead_sessions"
+        else:
+            # UNKNOWN/FAILED/UNAUTHORIZED candidates require operator review and must
+            # never be delivered as a supposedly healthy paid replacement.
+            dest_dir, dest_bucket = config.SESSIONS_UNAUTH, "unauth_sessions"
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            if new_path.is_file():
+                shutil.move(str(new_path), str(dest_dir / new_fn))
+        except Exception as move_exc:
+            logger.warning("Could not quarantine replacement candidate %s: %s", new_fn, move_exc)
+        await asyncio.to_thread(move_session_to_bucket, new_fn, dest_bucket)
+        if progress_async:
+            await progress_async(
+                "checking_spambot",
+                f"Candidate rejected by health check: {candidate_status}.",
+                {"success": False, "status": candidate_status, "details": candidate_details},
+            )
+        return f"Replacement session health check failed: {candidate_status}."
+    if progress_async:
+        await progress_async(
+            "checking_spambot",
+            "Telegram SpamBot reports that the replacement account is active.",
+            {"success": True, "status": candidate_status},
+        )
 
     probe = await probe_session_identity(new_path)
     real_name = probe.get("full_name") or new_fn
@@ -431,6 +490,12 @@ async def repair_replace_session(
         await asyncio.to_thread(
             record_session_meta, new_fn, probe,
             validation_status="valid" if probe.get("status") == "active" else "unknown",
+        )
+    if progress_async:
+        await progress_async(
+            "validating",
+            f"Account identity confirmed: {real_name}.",
+            {"real_name": real_name, "user_id": user_id},
         )
 
     if not add_mode:
@@ -473,6 +538,9 @@ async def repair_replace_session(
 
     log_group = cfg.get("log_group")
     if log_group:
+        log_join_ok = True
+        if progress_async:
+            await progress_async("joining_log_group", "Joining the AdBot log group.", None)
         client = guarded_client(new_path, "session replacement", wait_timeout=15, expected_sec=60)
         try:
             await client.connect()
@@ -481,13 +549,30 @@ async def repair_replace_session(
                     await join_chat_by_link(client, log_group)
                 except Exception as je:
                     if "already" not in str(je).lower():
+                        log_join_ok = False
                         logger.warning("New session join log group failed: %s", je)
+                        if progress_async:
+                            await progress_async(
+                                "joining_log_group",
+                                f"Log-group join needs attention: {str(je)[:120]}",
+                                {"success": False},
+                            )
         finally:
             await client.disconnect()
+        if progress_async:
+            await progress_async(
+                "joining_log_group",
+                "Log-group membership step finished." if log_join_ok else "Log-group join could not be confirmed.",
+                {"success": log_join_ok},
+            )
 
     log_bot_event(bot_token, f"[Fix Sessions] Replaced {old_session_file} with {new_fn} (status was {status})")
     if log_async:
         await log_async(f"Replaced {old_session_file} with {new_fn}")
+    if progress_async:
+        await progress_async(
+            "installing", "Replacement account was saved to the AdBot.", {"new_session_file": new_fn}
+        )
     return f"Replaced {old_session_file} with {new_fn}."
 
 

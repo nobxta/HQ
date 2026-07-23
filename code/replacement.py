@@ -8,7 +8,7 @@ import logging
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +37,152 @@ _queue_lock = threading.Lock()
 FAILURE_THRESHOLD = 0.90
 MIN_CYCLES_BEFORE_CHECK = 3
 CHECK_COOLDOWN_SEC = 1800
+PROCESSING_LEASE_SEC = 15 * 60
+
+REPLACEMENT_STAGE_PROGRESS = {
+    "payment_required": 5,
+    "payment_detected": 10,
+    "payment_confirmed": 15,
+    "awaiting_session": 20,
+    "candidate_reserved": 30,
+    "validating": 40,
+    "checking_spambot": 48,
+    "joining_log_group": 55,
+    "clearing_chatlists": 65,
+    "joining_chatlists": 75,
+    "installing": 85,
+    "starting_worker": 92,
+    "needs_admin": 95,
+    "completed": 100,
+    "failed": 100,
+    "cancelled": 100,
+}
+
+
+def _utcnow() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _entry_job_id(entry: dict[str, Any]) -> str:
+    """Return a stable job id while remaining compatible with old queue entries."""
+    return str(entry.get("job_id") or entry.get("id") or "")
+
+
+def _emit_entry_update(entry: dict[str, Any], event: str = "replacement.updated") -> None:
+    try:
+        from api.services.events import emit_replacement_progress
+        emit_replacement_progress(_entry_job_id(entry), event, {
+            "job_id": _entry_job_id(entry),
+            "entry_id": entry.get("id", ""),
+            "session_file": entry.get("session_file", ""),
+            "status": entry.get("status", ""),
+            "stage": entry.get("stage", ""),
+            "stage_message": entry.get("stage_message", ""),
+            "progress": entry.get("progress", 0),
+            "updated_at": entry.get("updated_at", ""),
+        })
+    except Exception:
+        logger.debug("Could not emit replacement update", exc_info=True)
+
+
+def update_replacement_stage(
+    entry_id: str,
+    stage: str,
+    message: str,
+    *,
+    status: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> bool:
+    """Persist a durable timeline event, then publish the same state live."""
+    changed: dict[str, Any] | None = None
+    with _queue_lock:
+        queue = load_replacement_queue()
+        for entry in queue:
+            if entry.get("id") != entry_id:
+                continue
+            now = _utcnow()
+            entry["job_id"] = _entry_job_id(entry)
+            entry["stage"] = stage
+            entry["stage_message"] = message
+            entry["progress"] = REPLACEMENT_STAGE_PROGRESS.get(stage, entry.get("progress", 0))
+            entry["updated_at"] = now
+            if status is not None:
+                entry["status"] = status
+            if entry.get("status") == "processing":
+                entry["processing_heartbeat_at"] = time.time()
+            event = {
+                "at": now,
+                "stage": stage,
+                "message": message,
+                "status": entry.get("status", ""),
+            }
+            if details:
+                event["details"] = details
+            entry.setdefault("timeline", []).append(event)
+            entry["timeline"] = entry["timeline"][-100:]
+            changed = dict(entry)
+            save_replacement_queue(queue)
+            break
+    if changed:
+        _emit_entry_update(changed)
+        return True
+    return False
+
+
+def get_replacement_job(job_id: str, *, bot_name: str | None = None) -> dict[str, Any] | None:
+    entries = [
+        dict(e) for e in load_replacement_queue()
+        if _entry_job_id(e) == job_id
+        and (bot_name is None or str(e.get("bot_name", "")).lower() == bot_name.lower())
+    ]
+    if not entries:
+        return None
+    total = len(entries)
+    completed = sum(1 for e in entries if e.get("status") == "completed")
+    failed = sum(1 for e in entries if e.get("status") in ("failed", "cancelled"))
+    awaiting = sum(1 for e in entries if e.get("status") == "awaiting_session")
+    needs_attention = sum(1 for e in entries if e.get("status") == "needs_admin")
+    paid = all(e.get("free_replacement") or e.get("status") != "pending_payment" for e in entries)
+    overall = (
+        "completed" if completed == total else
+        "needs_admin" if needs_attention else
+        "partially_completed" if completed else
+        "awaiting_inventory" if awaiting else
+        "awaiting_payment" if not paid else
+        "processing" if any(e.get("status") in ("ready", "processing") for e in entries) else
+        "failed" if failed == total else "pending"
+    )
+    progress = round(sum(int(e.get("progress") or 0) for e in entries) / max(1, total))
+    return {
+        "job_id": job_id,
+        "bot_name": entries[0].get("bot_name", ""),
+        "status": overall,
+        "progress": progress,
+        "total": total,
+        "completed": completed,
+        "failed": failed,
+        "awaiting_inventory": awaiting,
+        "needs_attention": needs_attention,
+        "payment_confirmed": paid,
+        "created_at": min((e.get("created_at", "") for e in entries), default=""),
+        "updated_at": max((e.get("updated_at", e.get("created_at", "")) for e in entries), default=""),
+        "items": entries,
+    }
+
+
+def public_replacement_job(job: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Remove controller credentials and internal ownership fields from portal responses."""
+    if not job:
+        return None
+    out = dict(job)
+    safe_items = []
+    for raw in job.get("items", []):
+        item = dict(raw)
+        for key in ("bot_token", "owner_id"):
+            item.pop(key, None)
+        safe_items.append(item)
+    out["items"] = safe_items
+    return out
 
 
 def _notify_user(entry: dict, event: str, **kw):
@@ -262,6 +408,7 @@ def create_replacement_request(
     """Create replacement queue entries for failing sessions.
     free_count: how many can use free replacement. Rest need payment."""
     entries = []
+    job_id = f"rjob_{uuid.uuid4().hex[:12]}"
     price_per = get_session_replacement_price()
     with _queue_lock:
         queue = load_replacement_queue()
@@ -271,8 +418,15 @@ def create_replacement_request(
             if fn in existing_files:
                 continue
             is_free = i < free_count
+            now = _utcnow()
+            initial_stage = "candidate_reserved" if is_free else "payment_required"
+            initial_message = (
+                "Free replacement approved and ready to start."
+                if is_free else "Payment is required before replacement can start."
+            )
             entry = {
                 "id": str(uuid.uuid4())[:12],
+                "job_id": job_id,
                 "bot_token": bot_token,
                 "bot_name": bot_name,
                 "owner_id": owner_id,
@@ -285,13 +439,25 @@ def create_replacement_request(
                 "status": "ready" if is_free else "pending_payment",
                 "payment_id": "",
                 "invoice_data": {},
-                "created_at": datetime.utcnow().isoformat() + "Z",
+                "created_at": _utcnow(),
                 "completed_at": "",
                 "new_session_file": "",
+                "stage": initial_stage,
+                "stage_message": initial_message,
+                "progress": REPLACEMENT_STAGE_PROGRESS[initial_stage],
+                "updated_at": now,
+                "timeline": [{
+                    "at": now,
+                    "stage": initial_stage,
+                    "message": initial_message,
+                    "status": "ready" if is_free else "pending_payment",
+                }],
             }
             entries.append(entry)
             queue.append(entry)
         save_replacement_queue(queue)
+    for entry in entries:
+        _emit_entry_update(entry, "replacement.created")
     return entries
 
 
@@ -325,17 +491,27 @@ def update_replacement_status(entry_id: str, status: str, **extra: Any) -> bool:
 
 
 def mark_replacement_paid(entry_id: str, payment_id: str = "") -> bool:
-    return update_replacement_status(entry_id, "ready", payment_id=payment_id, paid_at=datetime.utcnow().isoformat() + "Z")
+    ok = update_replacement_status(entry_id, "ready", payment_id=payment_id, paid_at=_utcnow())
+    if ok:
+        update_replacement_stage(
+            entry_id, "payment_confirmed",
+            "Payment received. Replacement preparation is starting.",
+            status="ready",
+        )
+    return ok
 
 
 def cancel_replacement(entry_id: str) -> bool:
-    return update_replacement_status(entry_id, "cancelled")
+    return update_replacement_stage(
+        entry_id, "cancelled", "Replacement request was cancelled.", status="cancelled"
+    )
 
 
 async def process_ready_replacements() -> list[dict[str, Any]]:
     """Process all 'ready' replacement entries: swap sessions from free pool.
     Returns list of processed entries with results."""
     results = []
+    installed: list[dict[str, Any]] = []
     # Atomically CLAIM every 'ready' entry by flipping it to 'processing' under the lock,
     # then work on the claimed snapshot. A concurrent caller (portal auto-process, IPN
     # confirm, admin, background loop) will now see 'processing' — not 'ready' — and skip
@@ -346,6 +522,9 @@ async def process_ready_replacements() -> list[dict[str, Any]]:
         if ready:
             for e in ready:
                 e["status"] = "processing"
+                e["processing_token"] = uuid.uuid4().hex
+                e["processing_started_at"] = time.time()
+                e["processing_heartbeat_at"] = time.time()
             save_replacement_queue(queue)
     if not ready:
         return results
@@ -355,7 +534,11 @@ async def process_ready_replacements() -> list[dict[str, Any]]:
 
     for entry in ready:
         if free_count <= 0:
-            update_replacement_status(entry["id"], "awaiting_session")
+            update_replacement_stage(
+                entry["id"], "awaiting_session",
+                "No prepared replacement account is available. The administrator has been notified.",
+                status="awaiting_session",
+            )
             add_admin_alert(
                 "replacement_queue",
                 f"Replacement for {entry['bot_name']} session {entry['session_file']} queued — no free sessions available. Add sessions to pool.",
@@ -367,71 +550,298 @@ async def process_ready_replacements() -> list[dict[str, Any]]:
         bot_token = entry["bot_token"]
         old_file = entry["session_file"]
         spam_status = entry.get("spam_status", "UNKNOWN")
+        update_replacement_stage(
+            entry["id"], "candidate_reserved",
+            "A replacement account was reserved from the secure pool.",
+            status="processing",
+        )
+        update_replacement_stage(
+            entry["id"], "validating",
+            "Validating Telegram authorization and account health.",
+        )
         try:
-            msg = await repair_replace_session(bot_token, old_file, spam_status)
+            async def _progress(stage: str, message: str, details: dict | None = None) -> None:
+                update_replacement_stage(entry["id"], stage, message, details=details)
+
+            attempt_limit = max(1, len(load_pool().get("free_sessions", [])))
+            msg = ""
+            for attempt in range(1, attempt_limit + 1):
+                msg = await repair_replace_session(
+                    bot_token, old_file, spam_status, progress_async=_progress
+                )
+                if "Replaced" in msg or "No free sessions" in msg:
+                    break
+                retryable_candidate_failure = any(part in msg for part in (
+                    "file missing",
+                    "failed validation",
+                    "health check failed",
+                    "health check inconclusive",
+                ))
+                if not retryable_candidate_failure:
+                    break
+                update_replacement_stage(
+                    entry["id"], "candidate_reserved",
+                    f"Candidate {attempt} was unsuitable. Trying another available account.",
+                    details={"attempt": attempt, "attempt_limit": attempt_limit},
+                )
         except Exception as exc:
             logger.error("repair_replace_session crashed for %s: %s", old_file, exc, exc_info=True)
             msg = f"Session swap failed: {exc}"
         if "Replaced" in msg:
             new_file = msg.split("with ")[-1].rstrip(".")
-            update_replacement_status(
-                entry["id"], "completed",
-                new_session_file=new_file,
-                completed_at=datetime.utcnow().isoformat() + "Z",
+            update_replacement_stage(
+                entry["id"], "clearing_chatlists",
+                "Clearing previous Telegram chat-list folders to free both slots.",
             )
-            name = get_name_by_token(bot_token)
-            if name:
-                cfg = load_user_data(name)
-                if cfg:
-                    cfg["replacements_used"] = int(cfg.get("replacements_used", 0)) + 1
-                    save_user_data(name, cfg)
+            update_replacement_stage(
+                entry["id"], "joining_chatlists",
+                "Joining the configured custom chat lists.",
+            )
+            chatlist_result = await _join_chatlist_for_new_session(bot_token, new_file)
+            saved_entry = next(
+                (e for e in load_replacement_queue() if e.get("id") == entry["id"]),
+                {},
+            )
+            log_event = next(
+                (
+                    event for event in reversed(saved_entry.get("timeline", []))
+                    if event.get("stage") == "joining_log_group"
+                    and isinstance(event.get("details"), dict)
+                ),
+                {},
+            )
+            log_group_ok = (log_event.get("details") or {}).get("success", True)
+            setup_ok = bool(log_group_ok) and not chatlist_result.get("failed")
             free_count -= 1
-            results.append({**entry, "result": "replaced", "new_session_file": new_file})
-
-            # Notify user
-            _notify_user(entry, "replaced", new_file=new_file)
-
-            await _join_chatlist_for_new_session(bot_token, new_file)
+            installed.append({
+                "entry": entry,
+                "bot_token": bot_token,
+                "new_file": new_file,
+                "chatlist_result": chatlist_result,
+                "log_group_ok": bool(log_group_ok),
+                "setup_ok": setup_ok,
+            })
         else:
-            update_replacement_status(entry["id"], "awaiting_session")
+            update_replacement_stage(
+                entry["id"], "awaiting_session",
+                f"Candidate could not be installed: {msg}",
+                status="awaiting_session",
+            )
             results.append({**entry, "result": "failed", "error": msg})
             _notify_user(entry, "failed", error=msg)
+
+    # Refresh each running bot once after every session in this batch is installed.
+    # This avoids restarting midway through a two-session replacement.
+    running_bots: set[str] = set()
+    for item in installed:
+        name = get_name_by_token(item["bot_token"])
+        cfg = load_user_data(name) if name else None
+        if item.get("setup_ok") and cfg and cfg.get("state") == "running":
+            running_bots.add(item["bot_token"])
+            update_replacement_stage(
+                item["entry"]["id"], "starting_worker",
+                "Refreshing the running AdBot so the new session receives a worker.",
+            )
+    for token in running_bots:
+        try:
+            from .admin_ptb import submit_main_loop_job
+            submit_main_loop_job("restart_bot_preserve", (token,))
+        except Exception as exc:
+            logger.warning("Could not queue posting restart after replacement: %s", exc)
+
+    for item in installed:
+        entry = item["entry"]
+        new_file = item["new_file"]
+        chatlist_result = item["chatlist_result"]
+        if not item.get("setup_ok"):
+            reasons = []
+            if not item.get("log_group_ok"):
+                reasons.append("log-group join could not be confirmed")
+            if chatlist_result.get("failed"):
+                reasons.append(
+                    f"{chatlist_result['failed']} custom chat list(s) failed"
+                )
+            message = "Replacement account is installed but needs administrator attention: " + "; ".join(reasons)
+            update_replacement_status(
+                entry["id"], "needs_admin",
+                new_session_file=new_file,
+                chatlist_result=chatlist_result,
+                setup_errors=reasons,
+                processing_token="",
+                processing_started_at=0,
+                processing_heartbeat_at=0,
+            )
+            update_replacement_stage(
+                entry["id"], "needs_admin", message, status="needs_admin",
+                details={"new_session_file": new_file, "errors": reasons},
+            )
+            results.append({
+                **entry, "result": "needs_admin",
+                "new_session_file": new_file, "error": message,
+            })
+            _notify_user(entry, "failed", error=message)
+            continue
+        update_replacement_status(
+            entry["id"], "completed",
+            new_session_file=new_file,
+            completed_at=_utcnow(),
+            chatlist_result=chatlist_result,
+            worker_refresh_queued=item["bot_token"] in running_bots,
+            processing_token="",
+            processing_started_at=0,
+            processing_heartbeat_at=0,
+        )
+        name = get_name_by_token(item["bot_token"])
+        cfg = load_user_data(name) if name else None
+        if cfg:
+            cfg["replacements_used"] = int(cfg.get("replacements_used", 0)) + 1
+            save_user_data(name, cfg)
+        message = (
+            "Replacement installed and the running AdBot worker refresh was queued."
+            if item["bot_token"] in running_bots
+            else "Replacement installed. The new session will start when the AdBot runs."
+        )
+        if chatlist_result.get("failed"):
+            message += (
+                f" {chatlist_result['failed']} of {chatlist_result.get('configured', 0)} "
+                "custom chat lists need administrator attention."
+            )
+        update_replacement_stage(
+            entry["id"], "completed", message, status="completed",
+            details={"new_session_file": new_file, "chatlists": chatlist_result},
+        )
+        results.append({**entry, "result": "replaced", "new_session_file": new_file})
+        _notify_user(entry, "replaced", new_file=new_file)
 
     return results
 
 
-async def _join_chatlist_for_new_session(bot_token: str, new_session_file: str) -> None:
+async def _join_chatlist_for_new_session(bot_token: str, new_session_file: str) -> dict[str, Any]:
     """Join the new replacement session to the bot's chatlist groups."""
     name = get_name_by_token(bot_token)
     if not name:
-        return
+        return {"configured": 0, "joined": 0, "failed": 0, "errors": ["Bot not found"]}
     cfg = load_user_data(name)
     if not cfg:
-        return
+        return {"configured": 0, "joined": 0, "failed": 0, "errors": ["Config not found"]}
     custom_chatlist = cfg.get("custom_chatlist") or {}
     slugs = custom_chatlist.get("slugs", [])
     if not slugs:
-        return
+        return {"configured": 0, "joined": 0, "failed": 0, "errors": []}
+    result = {"configured": len(slugs), "joined": 0, "failed": 0, "errors": []}
     try:
-        from .chatlist import join_chatlist_on_session
+        from .chatlist import join_chatlist_on_session, leave_chatlist_on_session
         from .session_guard import open_session
         path = config.SESSIONS_ACTIVE / new_session_file
         if not path.is_file():
-            return
+            return {**result, "failed": len(slugs), "errors": ["Session file missing"]}
         async with open_session(path, "session replacement (chatlist join)", wait_timeout=20, expected_sec=90) as client:
             if not await client.is_user_authorized():
-                return
+                return {**result, "failed": len(slugs), "errors": ["Session unauthorized"]}
+            await leave_chatlist_on_session(client, "", new_session_file)
+            await asyncio.sleep(0.5)
             for slug in slugs:
                 try:
                     ok, err = await join_chatlist_on_session(client, slug, new_session_file)
                     if ok:
+                        result["joined"] += 1
                         logger.info("[Replacement] Session %s joined chatlist slug=%s", new_session_file, slug)
                     else:
+                        result["failed"] += 1
+                        result["errors"].append(err or f"Could not join {slug}")
                         logger.warning("[Replacement] Session %s chatlist join failed slug=%s: %s", new_session_file, slug, err)
                 except Exception as e:
+                    result["failed"] += 1
+                    result["errors"].append(str(e)[:160])
                     logger.warning("[Replacement] Chatlist join error for %s: %s", new_session_file, e)
     except Exception as e:
+        result["failed"] = max(result["failed"], len(slugs) - result["joined"])
+        result["errors"].append(str(e)[:160])
         logger.warning("[Replacement] Chatlist join outer error: %s", e)
+    return result
+
+
+async def retry_replacement_setup(entry_id: str) -> dict[str, Any]:
+    """Retry post-install log/chat-list setup without consuming another pool session."""
+    entry = next(
+        (e for e in load_replacement_queue() if e.get("id") == entry_id),
+        None,
+    )
+    if not entry:
+        return {"result": "not_found"}
+    if entry.get("status") != "needs_admin":
+        return {"result": "not_applicable", "status": entry.get("status")}
+    bot_token = entry.get("bot_token", "")
+    new_file = entry.get("new_session_file", "")
+    name = get_name_by_token(bot_token)
+    cfg = load_user_data(name) if name else None
+    if not cfg or not new_file:
+        return {"result": "failed", "error": "Replacement configuration is missing."}
+
+    log_ok = True
+    log_group = cfg.get("log_group")
+    path = config.SESSIONS_ACTIVE / new_file
+    if log_group and path.is_file():
+        from .session_guard import guarded_client
+        from .utils import join_chat_by_link
+        client = guarded_client(path, "replacement setup retry", wait_timeout=15, expected_sec=60)
+        try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                log_ok = False
+            else:
+                try:
+                    await join_chat_by_link(client, log_group)
+                except Exception as exc:
+                    if "already" not in str(exc).lower():
+                        log_ok = False
+        except Exception:
+            log_ok = False
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+    update_replacement_stage(
+        entry_id, "clearing_chatlists", "Retrying custom chat-list setup.",
+        status="processing",
+    )
+    chatlists = await _join_chatlist_for_new_session(bot_token, new_file)
+    if not log_ok or chatlists.get("failed"):
+        reasons = []
+        if not log_ok:
+            reasons.append("log-group join could not be confirmed")
+        if chatlists.get("failed"):
+            reasons.append(f"{chatlists['failed']} custom chat list(s) failed")
+        update_replacement_stage(
+            entry_id, "needs_admin",
+            "Setup retry still needs attention: " + "; ".join(reasons),
+            status="needs_admin", details={"errors": reasons, "chatlists": chatlists},
+        )
+        return {"result": "needs_admin", "errors": reasons}
+
+    cfg["replacements_used"] = int(cfg.get("replacements_used", 0)) + 1
+    save_user_data(name, cfg)
+    worker_refresh = cfg.get("state") == "running"
+    if worker_refresh:
+        try:
+            from .admin_ptb import submit_main_loop_job
+            submit_main_loop_job("restart_bot_preserve", (bot_token,))
+        except Exception:
+            worker_refresh = False
+    update_replacement_status(
+        entry_id, "completed", completed_at=_utcnow(),
+        chatlist_result=chatlists, setup_errors=[],
+        worker_refresh_queued=worker_refresh,
+    )
+    update_replacement_stage(
+        entry_id, "completed",
+        "Replacement setup retry completed successfully.",
+        status="completed", details={"chatlists": chatlists},
+    )
+    _notify_user(entry, "replaced", new_file=new_file)
+    return {"result": "replaced", "new_session_file": new_file}
 
 
 def generate_replacement_invoice_data(
@@ -590,7 +1000,21 @@ async def process_queue_by_admin() -> dict[str, Any]:
         # Pick up "awaiting_session", "ready", and any "processing" entries left stuck by
         # a crash mid-swap (a live processor already holds real 'ready' ones, so re-marking
         # them 'ready' here is harmless — process_ready_replacements re-claims atomically).
-        processable = [e for e in queue if e.get("status") in ("awaiting_session", "ready", "processing")]
+        now = time.time()
+        processable = []
+        for entry in queue:
+            status = entry.get("status")
+            if status in ("awaiting_session", "ready"):
+                processable.append(entry)
+                continue
+            if status == "processing":
+                heartbeat = float(
+                    entry.get("processing_heartbeat_at")
+                    or entry.get("processing_started_at")
+                    or 0
+                )
+                if not heartbeat or now - heartbeat >= PROCESSING_LEASE_SEC:
+                    processable.append(entry)
     if not processable:
         return {"processed": 0, "message": "No queued replacements"}
     # Mark all as "ready" so process_ready_replacements picks them up

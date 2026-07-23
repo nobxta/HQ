@@ -1083,6 +1083,38 @@ async def portal_bot_replacements(bot_name: str, telegram_id: int = Query(...)):
     }
 
 
+@router.get("/bot/{bot_name}/replacement-jobs")
+async def portal_replacement_jobs(bot_name: str, telegram_id: int = Query(...)):
+    """List grouped replacement jobs while preserving the legacy entries endpoint."""
+    await _get_user_bot(telegram_id, bot_name)
+    from code.replacement import (
+        load_replacement_queue, get_replacement_job, public_replacement_job, _entry_job_id
+    )
+    queue = load_replacement_queue()
+    job_ids = []
+    for entry in queue:
+        if str(entry.get("bot_name", "")).lower() != bot_name.lower():
+            continue
+        job_id = _entry_job_id(entry)
+        if job_id and job_id not in job_ids:
+            job_ids.append(job_id)
+    jobs = [get_replacement_job(jid, bot_name=bot_name) for jid in reversed(job_ids)]
+    visible = [public_replacement_job(j) for j in jobs if j]
+    return {"jobs": visible, "total": len(visible)}
+
+
+@router.get("/bot/{bot_name}/replacement-jobs/{job_id}")
+async def portal_replacement_job(
+    bot_name: str, job_id: str, telegram_id: int = Query(...)
+):
+    await _get_user_bot(telegram_id, bot_name)
+    from code.replacement import get_replacement_job, public_replacement_job
+    job = get_replacement_job(job_id, bot_name=bot_name)
+    if not job:
+        raise HTTPException(404, "Replacement job not found")
+    return public_replacement_job(job)
+
+
 class PortalDiagnoseRequest(BaseModel):
     session_files: list[str]
 
@@ -1912,8 +1944,55 @@ async def portal_replacement_create_invoice(
         if entry.get("bot_name", "").lower() != bot_name.lower():
             raise HTTPException(403, "Entry does not belong to this bot")
 
-        amount_usd = float(entry.get("price_usd", 2.0))
-        order_id = entry["id"]
+        job_id = entry.get("job_id") or entry["id"]
+        payable_entries = [
+            e for e in queue
+            if (e.get("job_id") or e.get("id")) == job_id
+            and e.get("status") == "pending_payment"
+            and not e.get("free_replacement")
+        ]
+        amount_usd = sum(float(e.get("price_usd", 2.0)) for e in payable_entries)
+        order_id = job_id
+
+        # Reuse one active invoice across every paid item in the grouped job. This
+        # prevents double-payment addresses from being minted by a second tab/click.
+        existing = next(
+            (
+                e for e in payable_entries
+                if e.get("payment_id") and isinstance(e.get("invoice_data"), dict)
+                and e.get("invoice_data")
+            ),
+            None,
+        )
+        if existing:
+            from datetime import datetime, timezone
+            inv = existing.get("invoice_data") or {}
+            expires_raw = inv.get("invoice_expires_at") or inv.get("invoice_expiry") or ""
+            expired = False
+            if expires_raw:
+                try:
+                    expires_at = datetime.fromisoformat(str(expires_raw).replace("Z", "+00:00"))
+                    if expires_at.tzinfo is None:
+                        expires_at = expires_at.replace(tzinfo=timezone.utc)
+                    expired = expires_at <= datetime.now(timezone.utc)
+                except (ValueError, TypeError):
+                    expired = False
+            if not expired:
+                payable_ids = sorted(e.get("id") for e in payable_entries if e.get("id"))
+                return {
+                    "payment_id": existing.get("payment_id", ""),
+                    "pay_address": inv.get("pay_address", ""),
+                    "pay_amount": inv.get("pay_amount", 0),
+                    "pay_currency": inv.get("pay_currency", ""),
+                    "amount_usd": amount_usd,
+                    "invoice_expiry": inv.get("invoice_expiry", ""),
+                    "invoice_expires_at": inv.get("invoice_expires_at", ""),
+                    "entry_id": body.entry_id,
+                    "entry_ids": payable_ids,
+                    "job_id": job_id,
+                    "replacement_count": len(payable_entries),
+                    "reused": True,
+                }
 
         # Validate currency
         if body.currency.upper() not in SUPPORTED_PAY_CURRENCIES:
@@ -1927,7 +2006,7 @@ async def portal_replacement_create_invoice(
         amount_usd=amount_usd,
         currency=body.currency.upper(),
         order_id=order_id,
-        description=f"Session replacement: {entry.get('real_name', entry.get('session_file', ''))}",
+        description=f"Session replacement x{len(payable_entries)} for {bot_name}",
     )
 
     if invoice.get("_invoice_failed"):
@@ -1937,8 +2016,9 @@ async def portal_replacement_create_invoice(
     # Save invoice data onto the entry
     with _queue_lock:
         queue = load_replacement_queue()
+        payable_ids = {e.get("id") for e in payable_entries}
         for e in queue:
-            if e.get("id") == body.entry_id:
+            if e.get("id") in payable_ids:
                 e["payment_id"] = invoice.get("payment_id", "")
                 e["invoice_data"] = {
                     "pay_address": invoice.get("pay_address", ""),
@@ -1948,7 +2028,6 @@ async def portal_replacement_create_invoice(
                     "invoice_expires_at": invoice.get("invoice_expires_at", ""),
                 }
                 e["status"] = "pending_payment"  # stays pending until confirmed
-                break
         save_replacement_queue(queue)
 
     return {
@@ -1960,6 +2039,9 @@ async def portal_replacement_create_invoice(
         "invoice_expiry": invoice.get("invoice_expiry", ""),
         "invoice_expires_at": invoice.get("invoice_expires_at", ""),
         "entry_id": body.entry_id,
+        "entry_ids": sorted(payable_ids),
+        "job_id": job_id,
+        "replacement_count": len(payable_entries),
     }
 
 
@@ -1970,7 +2052,10 @@ async def portal_replacement_payment_status(
     """Poll payment status for a replacement entry."""
     await _get_user_bot(telegram_id, bot_name)
 
-    from code.replacement import load_replacement_queue, mark_replacement_paid, _queue_lock
+    from code.replacement import (
+        load_replacement_queue, mark_replacement_paid, get_replacement_job,
+        public_replacement_job, _queue_lock
+    )
     from code.shop.payment import get_payment_details, is_payment_success
     from code.shop.explorer import build_explorer_link, normalize_network_for_explorer
 
@@ -1987,29 +2072,35 @@ async def portal_replacement_payment_status(
 
     # If already paid/ready/completed, return immediately
     if entry.get("status") in ("ready", "completed", "awaiting_session"):
+        job = get_replacement_job(entry.get("job_id") or entry_id, bot_name=bot_name)
         return {
             "status": entry["status"],
             "payment_confirmed": True,
             "entry_id": entry_id,
+            "job": public_replacement_job(job),
         }
 
     payment_id = entry.get("payment_id", "")
     if not payment_id:
+        job = get_replacement_job(entry.get("job_id") or entry_id, bot_name=bot_name)
         return {
             "status": "pending_payment",
             "payment_confirmed": False,
             "message": "No invoice created yet",
             "entry_id": entry_id,
+            "job": public_replacement_job(job),
         }
 
     # Poll NOWPayments
     details = get_payment_details(payment_id)
     if details is None:
+        job = get_replacement_job(entry.get("job_id") or entry_id, bot_name=bot_name)
         return {
             "status": "pending_payment",
             "payment_confirmed": False,
             "message": "Waiting for payment...",
             "entry_id": entry_id,
+            "job": public_replacement_job(job),
         }
 
     pay_status = (details.get("payment_status") or "waiting").lower()
@@ -2025,8 +2116,9 @@ async def portal_replacement_payment_status(
         explorer_link = build_explorer_link(net_key, tx_hash)
 
     if is_payment_success(pay_status):
-        # Mark as paid and transition to ready
-        mark_replacement_paid(entry_id, payment_id=payment_id)
+        # Mark every item sharing this invoice as paid, then process the grouped job.
+        from code.replacement import confirm_replacement_payment_by_id
+        await confirm_replacement_payment_by_id(payment_id)
         add_portal_notification(
             bot_name,
             title="Payment Confirmed ✓",
@@ -2034,22 +2126,29 @@ async def portal_replacement_payment_status(
             type="success",
             icon="swap",
         )
-        # Auto-process immediately
-        try:
-            from code.replacement import process_ready_replacements
-            import asyncio
-            await asyncio.to_thread(lambda: asyncio.run(process_ready_replacements()))
-        except Exception as exc:
-            logger.warning("Auto-process after payment failed: %s", exc)
-
+        refreshed = get_replacement_job(entry.get("job_id") or entry_id, bot_name=bot_name)
         return {
-            "status": "ready",
+            "status": refreshed.get("status", "ready") if refreshed else "ready",
             "payment_confirmed": True,
             "amount_received": amount_received,
             "tx_hash": tx_hash,
             "explorer_link": explorer_link,
             "entry_id": entry_id,
+            "job": public_replacement_job(refreshed),
         }
+
+    if amount_received > 0 or pay_status not in ("waiting", "new"):
+        from code.replacement import update_replacement_stage
+        update_replacement_stage(
+            entry_id,
+            "payment_detected",
+            "Blockchain transaction detected. Waiting for confirmation.",
+            details={
+                "payment_status": pay_status,
+                "amount_received": amount_received,
+                "tx_hash": tx_hash,
+            },
+        )
 
     return {
         "status": "pending_payment",
@@ -2061,6 +2160,9 @@ async def portal_replacement_payment_status(
         "explorer_link": explorer_link,
         "message": "Waiting for payment confirmation..." if pay_status == "waiting" else f"Status: {pay_status}",
         "entry_id": entry_id,
+        "job": public_replacement_job(
+            get_replacement_job(entry.get("job_id") or entry_id, bot_name=bot_name)
+        ),
     }
 
 

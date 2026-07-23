@@ -30,6 +30,7 @@ interface InvoiceData {
   invoice_expiry: string;
   invoice_expires_at: string;
   entry_id: string;
+  replacement_count?: number;
 }
 
 interface PaymentStatusData {
@@ -41,6 +42,42 @@ interface PaymentStatusData {
   tx_hash?: string;
   explorer_link?: string;
   message?: string;
+  job?: ReplacementJob | null;
+}
+
+interface ReplacementTimelineEvent {
+  at: string;
+  stage: string;
+  message: string;
+  status: string;
+}
+
+interface ReplacementItem {
+  id: string;
+  session_file: string;
+  real_name?: string;
+  new_session_file?: string;
+  status: string;
+  stage?: string;
+  stage_message?: string;
+  progress?: number;
+  timeline?: ReplacementTimelineEvent[];
+  chatlist_result?: {
+    configured: number;
+    joined: number;
+    failed: number;
+    errors?: string[];
+  };
+}
+
+interface ReplacementJob {
+  job_id: string;
+  status: string;
+  progress: number;
+  total: number;
+  completed: number;
+  awaiting_inventory: number;
+  items: ReplacementItem[];
 }
 
 interface Props {
@@ -49,6 +86,7 @@ interface Props {
   entryId: string;
   sessionName: string;
   amountUsd: number;
+  replacementCount?: number;
   onPaymentConfirmed: () => void;
 }
 
@@ -81,7 +119,7 @@ function groupCurrencies(currencies: CryptoCurrency[]) {
    ═══════════════════════════════════════════════════════ */
 
 export default function CryptoPaymentModal({
-  open, onClose, entryId, sessionName, amountUsd, onPaymentConfirmed,
+  open, onClose, entryId, sessionName, amountUsd, replacementCount = 1, onPaymentConfirmed,
 }: Props) {
   // Steps: "select" → "paying" → "confirmed"
   const [step, setStep] = useState<"select" | "paying" | "confirmed">("select");
@@ -100,6 +138,8 @@ export default function CryptoPaymentModal({
   // Payment polling
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatusData | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const confirmationNotifiedRef = useRef(false);
 
   // Timer
   const [timeLeft, setTimeLeft] = useState("");
@@ -115,6 +155,7 @@ export default function CryptoPaymentModal({
       setInvoice(null);
       setInvoiceError("");
       setPaymentStatus(null);
+      confirmationNotifiedRef.current = false;
       fetchCurrencies();
     }
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
@@ -177,20 +218,54 @@ export default function CryptoPaymentModal({
         );
         setPaymentStatus(r.data);
         if (r.data?.payment_confirmed) {
-          if (pollRef.current) clearInterval(pollRef.current);
           setStep("confirmed");
-          onPaymentConfirmed();
+          if (!confirmationNotifiedRef.current) {
+            confirmationNotifiedRef.current = true;
+            onPaymentConfirmed();
+          }
+          if (r.data?.job?.status === "completed" && pollRef.current) {
+            clearInterval(pollRef.current);
+          }
         }
       } catch { /* silent */ }
     };
     poll(); // immediate first check
-    pollRef.current = setInterval(poll, 15000); // then every 15s
+    pollRef.current = setInterval(poll, 3000);
   }, [entryId, onPaymentConfirmed]);
 
   // Cleanup polling on unmount
   useEffect(() => {
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      wsRef.current?.close();
+    };
   }, []);
+
+  useEffect(() => {
+    const jobId = paymentStatus?.job?.job_id;
+    const s = getPortalSession();
+    if (!open || !jobId || !s?.access_token || wsRef.current) return;
+    const base = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/^http/, "ws");
+    const ws = new WebSocket(
+      `${base}/ws/replacements/${encodeURIComponent(jobId)}?token=${encodeURIComponent(s.access_token)}`
+    );
+    ws.onmessage = async () => {
+      try {
+        const latest = await portalApi.get(
+          `/api/portal/bot/${s.bot_name}/replacement-jobs/${jobId}?telegram_id=${s.telegram_id}`
+        );
+        setPaymentStatus((current) => current ? { ...current, job: latest.data } : current);
+      } catch {
+        // Polling remains the reconnect-safe fallback.
+      }
+    };
+    ws.onclose = () => { wsRef.current = null; };
+    wsRef.current = ws;
+    return () => {
+      ws.close();
+      wsRef.current = null;
+    };
+  }, [open, paymentStatus?.job?.job_id]);
 
   /* ── Countdown timer ── */
   useEffect(() => {
@@ -247,7 +322,7 @@ export default function CryptoPaymentModal({
             </div>
             <h3 className="text-base font-bold text-dark-100">Pay with Crypto</h3>
             <p className="text-[11px] text-dark-500 mt-1">
-              Replace <span className="text-dark-300 font-semibold">{sessionName}</span> — <span className="text-amber-400 font-bold">${amountUsd.toFixed(2)}</span>
+              Replace <span className="text-dark-300 font-semibold">{replacementCount > 1 ? `${replacementCount} sessions` : sessionName}</span> — <span className="text-amber-400 font-bold">${(amountUsd * replacementCount).toFixed(2)}</span>
             </p>
           </div>
 
@@ -360,7 +435,7 @@ export default function CryptoPaymentModal({
                 )}
               </p>
               <p className="text-[11px] text-dark-500">
-                For: {sessionName} — ${amountUsd.toFixed(2)} USD
+                For: {invoice.replacement_count && invoice.replacement_count > 1 ? `${invoice.replacement_count} sessions` : sessionName} — ${Number(invoice.amount_usd || amountUsd).toFixed(2)} USD
               </p>
             </div>
           </div>
@@ -462,16 +537,17 @@ export default function CryptoPaymentModal({
 
       {/* ── STEP 3: Payment confirmed ── */}
       {step === "confirmed" && (
-        <div className="text-center py-6 space-y-4">
+        <div className="py-2 space-y-4">
           <div className="h-16 w-16 rounded-2xl bg-emerald-500/15 border border-emerald-500/20 flex items-center justify-center mx-auto">
             <CheckCircle className="h-8 w-8 text-emerald-400" />
           </div>
-          <div>
-            <h3 className="text-lg font-bold text-emerald-300">Payment Confirmed!</h3>
-            <p className="text-[12px] text-dark-400 mt-1.5 max-w-xs mx-auto">
-              Your payment has been verified. The session replacement for <strong className="text-dark-200">{sessionName}</strong> is now being processed.
+          <div className="text-center">
+            <h3 className="text-lg font-bold text-emerald-300">Payment received</h3>
+            <p className="text-[12px] text-dark-400 mt-1.5 max-w-sm mx-auto">
+              Keep this page open to watch the replacement live. It will continue safely if you leave.
             </p>
           </div>
+          {paymentStatus?.job && <ReplacementProgress job={paymentStatus.job} />}
           {paymentStatus?.tx_hash && (
             <div className="inline-flex items-center gap-2 rounded-lg bg-dark-800/60 border border-white/[0.06] px-3 py-2">
               <span className="text-[10px] text-dark-500 font-mono">{paymentStatus.tx_hash.slice(0, 20)}...</span>
@@ -489,13 +565,75 @@ export default function CryptoPaymentModal({
           )}
           <button
             onClick={onClose}
-            className="mt-2 px-6 py-2.5 rounded-xl text-[12px] font-bold bg-emerald-500 text-white hover:bg-emerald-600 shadow-lg shadow-emerald-500/25 transition-all"
+            className="block mx-auto mt-2 px-6 py-2.5 rounded-xl text-[12px] font-bold bg-emerald-500 text-white hover:bg-emerald-600 shadow-lg shadow-emerald-500/25 transition-all"
           >
-            Done
+            {paymentStatus?.job?.status === "completed" ? "Done" : "Continue in background"}
           </button>
         </div>
       )}
     </Modal>
+  );
+}
+
+function ReplacementProgress({ job }: { job: ReplacementJob }) {
+  const finished = job.status === "completed";
+  return (
+    <div className="rounded-2xl border border-white/[0.07] bg-dark-900/55 p-3 sm:p-4 space-y-3 text-left">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-[13px] font-bold text-dark-100">
+            {finished ? "Replacement complete" : `Replacing ${job.total} session${job.total === 1 ? "" : "s"}`}
+          </p>
+          <p className="text-[10px] text-dark-500">
+            {job.completed} of {job.total} completed
+            {job.awaiting_inventory > 0 ? ` · ${job.awaiting_inventory} waiting for inventory` : ""}
+          </p>
+        </div>
+        <span className="text-[12px] font-bold text-accent tabular-nums">{job.progress}%</span>
+      </div>
+      <div className="h-2 rounded-full bg-dark-800 overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${finished ? "bg-emerald-400" : "bg-accent"}`}
+          style={{ width: `${Math.max(2, Math.min(100, job.progress))}%` }}
+        />
+      </div>
+      <div className="space-y-2">
+        {job.items.map((item, index) => (
+          <div key={item.id} className="rounded-xl border border-white/[0.05] bg-dark-800/45 p-3">
+            <div className="flex items-start gap-2.5">
+              <div className={`mt-0.5 h-6 w-6 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                item.status === "completed" ? "bg-emerald-500/15 text-emerald-400" :
+                item.status === "awaiting_session" ? "bg-amber-500/15 text-amber-400" :
+                "bg-accent/15 text-accent"
+              }`}>
+                {item.status === "completed" ? <Check className="h-3.5 w-3.5" /> : index + 1}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="truncate text-[11px] font-semibold text-dark-200">
+                    {(item.real_name || item.session_file).replace(".session", "")}
+                  </p>
+                  <span className="text-[10px] text-dark-500 tabular-nums">{item.progress || 0}%</span>
+                </div>
+                <p className="mt-0.5 text-[10px] leading-relaxed text-dark-400">
+                  {item.stage_message || "Waiting to start"}
+                </p>
+                {item.new_session_file && (
+                  <p className="mt-1 text-[9px] text-emerald-400">
+                    New account: {item.new_session_file.replace(".session", "")}
+                  </p>
+                )}
+                {!!item.chatlist_result?.configured && (
+                  <p className="mt-1 text-[9px] text-dark-500">
+                    Chat lists: {item.chatlist_result.joined}/{item.chatlist_result.configured} joined
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

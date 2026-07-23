@@ -177,6 +177,55 @@ async def get_replacement_queue():
     }
 
 
+@router.get("/replacement-jobs")
+async def get_replacement_jobs():
+    from code.replacement import load_replacement_queue, get_replacement_job, _entry_job_id
+    queue = await asyncio.to_thread(load_replacement_queue)
+    ids = []
+    for entry in queue:
+        job_id = _entry_job_id(entry)
+        if job_id and job_id not in ids:
+            ids.append(job_id)
+    jobs = [get_replacement_job(job_id) for job_id in reversed(ids)]
+    return {"jobs": [j for j in jobs if j], "total": len([j for j in jobs if j])}
+
+
+@router.get("/replacement-jobs/{job_id}")
+async def get_replacement_job_detail(job_id: str):
+    from code.replacement import get_replacement_job
+    job = await asyncio.to_thread(get_replacement_job, job_id)
+    if not job:
+        raise HTTPException(404, "Replacement job not found")
+    return job
+
+
+@router.post("/replacement-jobs/{job_id}/continue")
+async def continue_replacement_job(job_id: str):
+    from code.replacement import (
+        get_replacement_job, update_replacement_status, process_ready_replacements,
+        retry_replacement_setup,
+    )
+    job = await asyncio.to_thread(get_replacement_job, job_id)
+    if not job:
+        raise HTTPException(404, "Replacement job not found")
+    changed = 0
+    setup_results = []
+    for item in job["items"]:
+        if item.get("status") == "awaiting_session":
+            update_replacement_status(item["id"], "ready")
+            changed += 1
+        elif item.get("status") == "needs_admin":
+            setup_results.append(await retry_replacement_setup(item["id"]))
+    results = await process_ready_replacements()
+    await wrappers.log_admin_action(
+        "web_admin", "continue_replacement_job", target=job_id
+    )
+    return {
+        "job_id": job_id, "resumed": changed,
+        "results": setup_results + results,
+    }
+
+
 @router.post("/replacements/process")
 async def process_replacement_queue():
     from code.replacement import process_queue_by_admin

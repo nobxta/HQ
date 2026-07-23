@@ -30,6 +30,7 @@ import { usePendingOrders } from "@/lib/hooks/usePayments";
 /* ── Replacement Queue types ── */
 type ReplEntry = {
   id: string;
+  job_id?: string;
   bot_name: string;
   session_file: string;
   real_name?: string;
@@ -42,6 +43,9 @@ type ReplEntry = {
   completed_at?: string;
   new_session_file?: string;
   owner_id?: number;
+  stage?: string;
+  stage_message?: string;
+  progress?: number;
 };
 
 type ReplQueueData = {
@@ -115,6 +119,9 @@ export default function DashboardPage() {
   const { data: alertsData } = useAlerts();
   const { data: replQueue, mutate: mutateRepl } = useSWR<ReplQueueData>(
     "/api/system/replacements", replFetcher, { refreshInterval: 10000 }
+  );
+  const { data: replJobs, mutate: mutateReplJobs } = useSWR<{ jobs: any[]; total: number }>(
+    "/api/system/replacement-jobs", replFetcher, { refreshInterval: 5000 }
   );
   const { data: supportData } = useSWR<{ tickets: any[]; total: number; open: number }>(
     "/api/portal/admin/support-tickets", replFetcher, { refreshInterval: 15000 }
@@ -705,6 +712,56 @@ export default function DashboardPage() {
         )}
       </div>
 
+      {replJobs?.jobs?.length ? (
+        <div className="clay-card overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-dark-800/50">
+            <div className="flex items-center gap-2.5">
+              <Layers className="h-4 w-4 text-accent" />
+              <h3 className="text-sm font-bold text-white">Replacement Operations</h3>
+              <span className="px-2 py-0.5 rounded-full bg-accent/15 text-accent text-[10px] font-bold">
+                {replJobs.total} jobs
+              </span>
+            </div>
+            <button onClick={() => mutateReplJobs()} className="clay-btn-soft p-2 text-dark-400 hover:text-white">
+              <RefreshCw className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 p-3">
+            {replJobs.jobs.slice(0, 8).map((job: any) => (
+              <div key={job.job_id} className={`rounded-xl border p-3 ${
+                job.status === "needs_admin" ? "border-red-500/25 bg-red-500/[0.04]" :
+                job.awaiting_inventory ? "border-amber-500/25 bg-amber-500/[0.04]" :
+                job.status === "completed" ? "border-emerald-500/20 bg-emerald-500/[0.03]" :
+                "border-white/[0.06] bg-dark-900/30"
+              }`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-[12px] font-bold text-dark-100">{job.bot_name || "AdBot"}</p>
+                    <p className="mt-0.5 text-[10px] text-dark-500">
+                      {job.completed}/{job.total} completed · {String(job.status).replaceAll("_", " ")}
+                    </p>
+                  </div>
+                  <span className="text-[11px] font-bold text-accent">{job.progress || 0}%</span>
+                </div>
+                <div className="mt-2 h-1.5 rounded-full bg-dark-800 overflow-hidden">
+                  <div className="h-full rounded-full bg-accent" style={{ width: `${Math.max(2, Math.min(100, job.progress || 0))}%` }} />
+                </div>
+                <div className="mt-2 space-y-1">
+                  {(job.items || []).map((item: any) => (
+                    <div key={item.id} className="flex items-center justify-between gap-2 text-[10px]">
+                      <span className="truncate text-dark-400">{(item.real_name || item.session_file || "").replace(".session", "")}</span>
+                      <span className={item.status === "needs_admin" ? "text-red-400" : item.status === "awaiting_session" ? "text-amber-400" : "text-dark-500"}>
+                        {item.stage_message || item.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {/* ══════════ Replacement Queue (kept, compact) ══════════ */}
       {replQueue && (replQueue.total_pending > 0 || (replQueue.total_awaiting_payment || 0) > 0) && (() => {
         const pending = replQueue.queue || [];
@@ -721,6 +778,7 @@ export default function DashboardPage() {
             else if (result.message) toast(result.message);
             else toast.error("No replacements could be processed");
             mutateRepl();
+            mutateReplJobs();
           } catch (e: any) {
             toast.error(e?.response?.data?.detail || "Failed to process queue");
           }
@@ -728,9 +786,23 @@ export default function DashboardPage() {
         };
         const handleCancel = async (entryId: string) => {
           setCancelling(entryId);
-          try { await api.post(`/api/system/replacements/${entryId}/cancel`); toast.success("Cancelled"); mutateRepl(); }
+          try { await api.post(`/api/system/replacements/${entryId}/cancel`); toast.success("Cancelled"); mutateRepl(); mutateReplJobs(); }
           catch (e: any) { toast.error(e?.response?.data?.detail || "Failed to cancel"); }
           setCancelling(null);
+        };
+        const handleContinue = async (jobId: string) => {
+          setProcessing(true);
+          try {
+            const { data } = await api.post(`/api/system/replacement-jobs/${jobId}/continue`);
+            const completed = (data.results || []).filter((r: any) => r.result === "replaced").length;
+            if (completed) toast.success(`${completed} replacement${completed === 1 ? "" : "s"} completed`);
+            else toast("Job checked; it is still waiting for usable inventory.");
+            mutateRepl();
+            mutateReplJobs();
+          } catch (e: any) {
+            toast.error(e?.response?.data?.detail || "Could not continue replacement");
+          }
+          setProcessing(false);
         };
 
         return (
@@ -775,8 +847,21 @@ export default function DashboardPage() {
                         <td className="px-4 py-2.5 font-mono text-xs text-accent">{entry.real_name || entry.session_file}</td>
                         <td className="px-4 py-2.5 text-xs text-dark-400">{entry.spam_status || "Unknown"}{entry.failure_rate ? <span className="text-dark-500 ml-1">({(entry.failure_rate * 100).toFixed(0)}%)</span> : ""}</td>
                         <td className="px-4 py-2.5 text-xs"><span className={entry.free_replacement ? "text-emerald-400" : "text-purple-400"}>{entry.free_replacement ? "Free" : `$${(entry.price_usd || 0).toFixed(2)}`}</span></td>
-                        <td className="px-4 py-2.5"><Badge status={entry.status} /></td>
-                        <td className="px-4 py-2.5"><button onClick={() => handleCancel(entry.id)} disabled={cancelling === entry.id} className="text-accent hover:underline text-xs font-bold">{cancelling === entry.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Cancel"}</button></td>
+                        <td className="px-4 py-2.5 min-w-[190px]">
+                          <Badge status={entry.status} />
+                          <p className="mt-1 text-[10px] text-dark-500">{entry.stage_message || entry.stage || ""}</p>
+                          <div className="mt-1 h-1 rounded-full bg-dark-800 overflow-hidden">
+                            <div className="h-full rounded-full bg-accent" style={{ width: `${Math.max(2, Math.min(100, entry.progress || 0))}%` }} />
+                          </div>
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <div className="flex items-center gap-2">
+                            {["awaiting_session", "needs_admin"].includes(entry.status) && entry.job_id && (
+                              <button onClick={() => handleContinue(entry.job_id!)} disabled={processing} className="text-emerald-400 hover:underline text-xs font-bold">Continue</button>
+                            )}
+                            <button onClick={() => handleCancel(entry.id)} disabled={cancelling === entry.id} className="text-accent hover:underline text-xs font-bold">{cancelling === entry.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Cancel"}</button>
+                          </div>
+                        </td>
                       </tr>
                     ))}
                   </tbody>

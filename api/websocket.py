@@ -5,10 +5,12 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 
 from api.deps import validate_ws_token
+from api.auth import decode_token, WEB_ADMIN_USER
 from api.runtime.pubsub import subscribe, unsubscribe
 from api.services.events import (
     CHANNEL_DASHBOARD, CHANNEL_BOT_LOGS, CHANNEL_BOT_POSTING,
     CHANNEL_CREATE_PROGRESS, CHANNEL_CHATLIST_PROGRESS, CHANNEL_BOT_CONTROL,
+    CHANNEL_REPLACEMENT_PROGRESS,
 )
 
 logger = logging.getLogger("api.websocket")
@@ -134,3 +136,38 @@ async def ws_bot_control(websocket: WebSocket, name: str, token: str = Query(Non
         pass
     finally:
         logger.info("WebSocket disconnected: bot control [%s]", name)
+
+
+@router.websocket("/ws/replacements/{job_id}")
+async def ws_replacement_progress(websocket: WebSocket, job_id: str, token: str = Query(None)):
+    if not await _ws_auth(websocket, token):
+        return
+    payload = decode_token(token)
+    subject = str((payload or {}).get("sub") or "")
+    if subject != WEB_ADMIN_USER:
+        from code.replacement import get_replacement_job
+        job = get_replacement_job(job_id)
+        parts = subject.split(":", 2)
+        owner_ids = {
+            str(item.get("owner_id"))
+            for item in (job or {}).get("items", [])
+            if item.get("owner_id") is not None
+        }
+        if (
+            not job
+            or len(parts) != 3
+            or parts[0] != "user"
+            or parts[2].strip().lower() != str(job.get("bot_name", "")).strip().lower()
+            or (owner_ids and parts[1] not in owner_ids)
+        ):
+            await websocket.close(code=4003, reason="Replacement job access denied")
+            return
+    await websocket.accept()
+    logger.info("WebSocket connected: replacement [%s]", job_id)
+    channel = CHANNEL_REPLACEMENT_PROGRESS.format(job_id=job_id)
+    try:
+        await _stream_channel(websocket, channel)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        logger.info("WebSocket disconnected: replacement [%s]", job_id)

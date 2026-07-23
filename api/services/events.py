@@ -10,6 +10,7 @@ CHANNEL_BOT_POSTING = "bot.{name}.posting"
 CHANNEL_CREATE_PROGRESS = "create.{name}"
 CHANNEL_CHATLIST_PROGRESS = "chatlist.{name}"
 CHANNEL_BOT_CONTROL = "control.{name}"
+CHANNEL_REPLACEMENT_PROGRESS = "replacement.{job_id}"
 
 
 def emit_dashboard_event(event_type: str, data: dict = None) -> None:
@@ -39,6 +40,14 @@ def emit_bot_control(bot_name: str, message: str, status: str = "progress", acti
 def emit_chatlist_progress(bot_name: str, message: str, status: str = "progress") -> None:
     channel = CHANNEL_CHATLIST_PROGRESS.format(name=bot_name)
     publish_sync(channel, {"event": "chatlist_progress", "message": message, "status": status})
+
+
+def emit_replacement_progress(job_id: str, event: str, data: dict | None = None) -> None:
+    """Publish a live replacement update. Durable state is stored in the queue first."""
+    if not job_id:
+        return
+    channel = CHANNEL_REPLACEMENT_PROGRESS.format(job_id=job_id)
+    publish_sync(channel, {"event": event, "data": data or {}})
 
 
 def emit_alert(alert_type: str, message: str) -> None:
