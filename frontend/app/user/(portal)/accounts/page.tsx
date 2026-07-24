@@ -55,18 +55,18 @@ const STATUS_CFG: Record<string, {
   },
   DEAD: {
     bg: "bg-red-500/[0.06]", border: "border-red-500/15", text: "text-red-400",
-    iconBg: "bg-red-500/15", Icon: Skull, label: "Dead Session",
-    desc: "Connection is dead — the account was revoked or banned. Replace it.",
+    iconBg: "bg-red-500/15", Icon: Skull, label: "Account Unavailable",
+    desc: "This account can no longer connect to Telegram and needs replacement.",
   },
   UNAUTHORIZED: {
     bg: "bg-rose-500/[0.06]", border: "border-rose-500/15", text: "text-rose-400",
-    iconBg: "bg-rose-500/15", Icon: WifiOff, label: "Logged Out",
-    desc: "Session is unauthorized — it can't log in (signed out elsewhere). Replace it.",
+    iconBg: "bg-rose-500/15", Icon: WifiOff, label: "Account Signed Out",
+    desc: "This assigned account is no longer authorised with Telegram.",
   },
   HARD_LIMITED: {
     bg: "bg-red-500/[0.06]", border: "border-red-500/15", text: "text-red-400",
-    iconBg: "bg-red-500/15", Icon: Ban, label: "Permanently Limited",
-    desc: "Telegram permanently limited this account. Won't recover.",
+    iconBg: "bg-red-500/15", Icon: Ban, label: "Replacement Required",
+    desc: "Telegram permanently limited this account. It is not expected to recover.",
   },
   TEMP_LIMITED: {
     bg: "bg-amber-500/[0.06]", border: "border-amber-500/15", text: "text-amber-400",
@@ -75,28 +75,28 @@ const STATUS_CFG: Record<string, {
   },
   ACTIVE: {
     bg: "bg-emerald-500/[0.06]", border: "border-emerald-500/15", text: "text-emerald-400",
-    iconBg: "bg-emerald-500/15", Icon: ShieldCheck, label: "Active & Healthy",
-    desc: "SpamBot says this account is clean.",
+    iconBg: "bg-emerald-500/15", Icon: ShieldCheck, label: "Healthy",
+    desc: "Telegram authorisation and account health checks passed.",
   },
   BUSY: {
     bg: "bg-sky-500/[0.06]", border: "border-sky-500/15", text: "text-sky-400",
-    iconBg: "bg-sky-500/15", Icon: Activity, label: "In Use",
-    desc: "Session is currently busy. Try again in a few minutes.",
+    iconBg: "bg-sky-500/15", Icon: Activity, label: "Check Unavailable",
+    desc: "This account is currently being used by your AdBot. Try again shortly.",
   },
   STATS_FAILING: {
     bg: "bg-amber-500/[0.06]", border: "border-amber-500/15", text: "text-amber-400",
-    iconBg: "bg-amber-500/15", Icon: Activity, label: "Failing (Stats)",
-    desc: "Session is alive but has high failure rate.",
+    iconBg: "bg-amber-500/15", Icon: Activity, label: "Needs Review",
+    desc: "This account is connected but recent delivery performance needs review.",
   },
   UNKNOWN: {
     bg: "bg-dark-700/20", border: "border-white/[0.06]", text: "text-dark-400",
-    iconBg: "bg-dark-700/30", Icon: HelpCircle, label: "Unknown",
-    desc: "Could not determine status. Try again or replace.",
+    iconBg: "bg-dark-700/30", Icon: HelpCircle, label: "Not Checked",
+    desc: "We could not confirm this account's health. Try the check again.",
   },
   STATS_ONLY: {
     bg: "bg-red-500/[0.06]", border: "border-red-500/15", text: "text-red-400",
-    iconBg: "bg-red-500/15", Icon: Activity, label: "High Failure Rate",
-    desc: "Stats show 90%+ message failures. Replace recommended.",
+    iconBg: "bg-red-500/15", Icon: Activity, label: "Replacement Required",
+    desc: "Recent delivery results show that this account should be replaced.",
   },
 };
 
@@ -696,34 +696,93 @@ export default function AccountsPage() {
   const pageSessions = visibleSessions.slice(pageStart, pageStart + PAGE_SIZE);
 
   return (
-    <div className="space-y-3 animate-fade-in" suppressHydrationWarning>
+    <div className="-mx-3 -mt-3 min-h-[calc(100vh-5rem)] space-y-4 bg-[#07111C] px-3 py-4 animate-fade-in sm:-mx-5 sm:px-5 md:rounded-2xl md:border md:border-[#203044]/70 lg:px-6" suppressHydrationWarning>
       {toast && <Toast msg={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
 
-      <section className="rounded-xl border border-white/[0.06] bg-[#15151f] p-2.5 sm:p-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h2 className="text-[13px] font-bold text-white">Accounts</h2>
-              <span className="rounded-md bg-white/[0.05] px-1.5 py-0.5 text-[9px] font-semibold text-dark-400">{sessions.length} connected</span>
-            </div>
-            <p className="mt-0.5 text-[9px] text-dark-500">${pricePer.toFixed(2)} per replacement · {freeRem} free available</p>
+      {/* Mobile app controls: intentionally separate from the desktop command panel. */}
+      <section className="md:hidden">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-[22px] font-bold tracking-tight text-[#F5F7FA]">Accounts</h1>
+            <p className="mt-0.5 text-[12px] text-[#9AABBC]">{bot.name || "AdBot"} · {sessions.length} assigned</p>
           </div>
-          <div className="flex items-center gap-1.5">
-            <button type="button" onClick={() => setShowRecent((value) => !value)}
-              aria-label="Recent replacements" aria-pressed={showRecent}
-              className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[10px] font-semibold ${
-                showRecent ? "border-accent/30 bg-accent/10 text-accent" : "border-white/[0.07] bg-white/[0.02] text-dark-400 hover:text-white"
-              }`}>
-              <History className="h-3.5 w-3.5" /><span className="hidden sm:inline">Recent replacements</span>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => setShowRecent((value) => !value)} aria-label="Replacement history"
+              className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-[#203044] bg-[#0D1A28] text-[#9AABBC] active:scale-95">
+              <History className="h-[18px] w-[18px]" />
             </button>
             <button type="button" onClick={() => { mutateBot(); fetchRepl(); }} aria-label="Refresh accounts"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.07] bg-white/[0.02] text-dark-400 hover:text-white">
-              <RefreshCw className="h-3.5 w-3.5" />
+              className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-[#203044] bg-[#0D1A28] text-[#9AABBC] active:scale-95">
+              <RefreshCw className="h-[18px] w-[18px]" />
             </button>
           </div>
         </div>
 
-        <div className="mt-2.5 grid grid-cols-4 gap-1" role="group" aria-label="Filter by account health">
+        <div className="mt-4 rounded-2xl border border-[#203044] bg-[#0D1A28] p-3.5">
+          <div className="grid grid-cols-3 divide-x divide-[#203044]">
+            <div className="px-2 text-center"><p className="text-lg font-bold text-[#32D583]">{healthyCount}</p><p className="text-[10px] text-[#9AABBC]">Healthy</p></div>
+            <div className="px-2 text-center"><p className="text-lg font-bold text-[#F5B942]">{attentionCount + criticalCount}</p><p className="text-[10px] text-[#9AABBC]">Needs attention</p></div>
+            <div className="px-2 text-center"><p className="text-lg font-bold text-[#9278FF]">{freeRem}</p><p className="text-[10px] text-[#9AABBC]">Free left</p></div>
+          </div>
+          <div className="mt-3 flex items-center justify-between border-t border-[#203044] pt-3 text-[11px]">
+            <span className="text-[#667789]">Additional replacement</span>
+            <span className="font-semibold text-[#F5F7FA]">${pricePer.toFixed(2)} per account</span>
+          </div>
+        </div>
+
+        <div className="-mx-1 mt-4 flex snap-x gap-2 overflow-x-auto px-1 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {[
+            { key: "all", label: "All", value: sessions.length, dot: "bg-accent" },
+            { key: "healthy", label: "Healthy", value: healthyCount, dot: "bg-emerald-400" },
+            { key: "attention", label: "Review", value: attentionCount, dot: "bg-amber-400" },
+            { key: "critical", label: "Replace", value: criticalCount, dot: "bg-red-400" },
+          ].map((item) => (
+            <button key={item.key} type="button" onClick={() => setStatusFilter(item.key as typeof statusFilter)}
+              aria-pressed={statusFilter === item.key}
+              className={`flex h-10 min-w-[5.8rem] snap-start items-center justify-between rounded-xl border px-3 text-[11px] font-semibold ${
+                statusFilter === item.key ? "border-[#7C5CFC] bg-[#7C5CFC] text-white" : "border-[#203044] bg-[#0D1A28] text-[#9AABBC]"
+              }`}>
+              <span className="inline-flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${item.dot}`} />{item.label}</span>
+              <span className="tabular-nums text-white">{item.value}</span>
+            </button>
+          ))}
+        </div>
+        <label className="relative mt-3 block">
+          <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#667789]" />
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search accounts"
+            className="h-11 w-full rounded-xl border border-[#203044] bg-[#0D1A28] pl-10 pr-4 text-[13px] text-[#F5F7FA] outline-none placeholder:text-[#667789] focus:border-[#7C5CFC]" />
+        </label>
+      </section>
+
+      {/* Desktop command panel. */}
+      <section className="hidden md:block">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold tracking-tight text-[#F5F7FA]">Accounts</h1>
+            <p className="mt-1 text-[12px] text-[#9AABBC]">Telegram accounts assigned to AdBot {bot.name || "current"}</p>
+            <div className="mt-3 inline-flex items-center gap-2 rounded-xl border border-[#203044] bg-[#0D1A28] px-3 py-2 text-[11px] text-[#9AABBC]">
+              <span className="font-semibold text-[#F5F7FA]">AdBot: {bot.name || "Current"}</span>
+              <span className="h-3 w-px bg-[#203044]" />
+              <span>{planLabel || "Current plan"} · {sessions.length} assigned</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button type="button" onClick={() => setShowRecent((value) => !value)}
+              aria-label="Recent replacements" aria-pressed={showRecent}
+              className={`inline-flex h-10 items-center gap-2 rounded-xl border px-3.5 text-[11px] font-semibold ${
+                showRecent ? "border-[#7C5CFC] bg-[#7C5CFC]/15 text-[#9278FF]" : "border-[#203044] bg-[#0D1A28] text-[#9AABBC] hover:text-white"
+              }`}>
+              <History className="h-3.5 w-3.5" /><span className="hidden sm:inline">Recent replacements</span>
+            </button>
+            <button type="button" onClick={() => { mutateBot(); fetchRepl(); }} aria-label="Refresh accounts"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-[#203044] bg-[#0D1A28] px-3.5 text-[11px] font-semibold text-[#9AABBC] hover:text-white">
+              <RefreshCw className="h-3.5 w-3.5" />
+              <span>Refresh</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-5 divide-x divide-[#203044] rounded-2xl border border-[#203044] bg-[#0D1A28] px-2 py-3" role="group" aria-label="Account summary">
           {[
             { key: "all", label: "All", value: sessions.length, dot: "bg-accent", selected: "border-accent/40 bg-accent/10 text-white" },
             { key: "healthy", label: "Healthy", value: healthyCount, dot: "bg-emerald-400", selected: "border-emerald-500/35 bg-emerald-500/[0.08] text-emerald-300" },
@@ -734,17 +793,20 @@ export default function AccountsPage() {
             return (
               <button key={item.key} type="button" onClick={() => setStatusFilter(item.key as typeof statusFilter)}
                 aria-pressed={selected}
-                className={`min-w-0 rounded-lg border px-2 py-1.5 text-left transition-colors ${
-                  selected ? item.selected : "border-white/[0.05] bg-white/[0.018] text-dark-400 hover:bg-white/[0.04]"
-                }`}>
+                className={`min-w-0 px-4 text-left transition-opacity ${selected ? "opacity-100" : "opacity-65 hover:opacity-100"}`}>
                 <span className="flex items-center gap-1.5">
-                  <span className={`h-1.5 w-1.5 rounded-full ${item.dot}`} />
-                  <span className="text-[13px] font-bold tabular-nums">{item.value}</span>
+                  <span className={`h-2 w-2 rounded-full ${item.dot}`} />
+                  <span className="text-xl font-bold tabular-nums text-[#F5F7FA]">{item.value}</span>
                 </span>
-                <span className="block truncate text-[8.5px] font-medium">{item.label}</span>
+                <span className="block truncate text-[10px] font-medium text-[#9AABBC]">{item.label}</span>
               </button>
             );
           })}
+          <div className="px-4">
+            <span className="block text-xl font-bold text-[#9278FF]">{freeRem}</span>
+            <span className="mt-0.5 block text-[10px] text-[#9AABBC]">Free replacements left</span>
+            <span className="mt-1 block text-[9px] text-[#667789]">${pricePer.toFixed(2)} additional</span>
+          </div>
         </div>
 
         <div className="mt-2 flex items-center gap-1.5">
@@ -803,7 +865,34 @@ export default function AccountsPage() {
 
       {/* Awaiting-payment jobs stay inside the compact health notice below. */}
       {visibleReplacementJobs.length > 0 && (
-        <div className="space-y-2">
+        <div className="space-y-2 md:hidden">
+          {visibleReplacementJobs.map((job: any) => {
+            const needsHelp = job.status === "needs_admin";
+            const waiting = Boolean(job.awaiting_inventory);
+            return (
+              <section key={`mobile-job-${job.job_id}`} className={`rounded-3xl border p-4 ${
+                needsHelp ? "border-red-500/25 bg-red-500/[0.06]" : waiting ? "border-sky-500/25 bg-sky-500/[0.06]" : "border-accent/25 bg-accent/[0.06]"
+              }`}>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[13px] font-bold text-white">
+                      {needsHelp ? "Replacement needs help" : waiting ? "Waiting for an account" : `Replacing ${job.total} account${job.total === 1 ? "" : "s"}`}
+                    </p>
+                    <p className="mt-1 text-[10px] text-dark-500">{job.completed}/{job.total} completed</p>
+                  </div>
+                  <span className="text-sm font-bold tabular-nums text-accent">{Math.min(100, Number(job.progress || 0))}%</span>
+                </div>
+                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/20">
+                  <div className="h-full rounded-full bg-accent" style={{ width: `${Math.max(2, Math.min(100, Number(job.progress || 0)))}%` }} />
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      )}
+
+      {visibleReplacementJobs.length > 0 && (
+        <div className="hidden space-y-2 md:block">
           {visibleReplacementJobs.map((job: any) => {
             const needsAdmin = job.status === "needs_admin";
             const waitingInventory = Boolean(job.awaiting_inventory);
@@ -862,7 +951,30 @@ export default function AccountsPage() {
       )}
 
       {(hardLimitedFiles.length > 0 || unresolvedFailFiles.length > 0) && (
-        <section className="flex flex-col gap-2 rounded-xl border border-amber-500/20 bg-amber-500/[0.035] px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+        <section className="rounded-3xl border border-amber-500/25 bg-gradient-to-br from-amber-500/[0.09] to-amber-500/[0.025] p-4 md:hidden">
+          <div className="flex items-start gap-3">
+            <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-amber-500/15">
+              <AlertTriangle className="h-5 w-5 text-amber-400" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-[14px] font-bold text-amber-200">{hardLimitedFiles.length || unresolvedFailFiles.length} account{(hardLimitedFiles.length || unresolvedFailFiles.length) === 1 ? "" : "s"} need replacement</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-dark-400">These assigned accounts can no longer work normally.</p>
+            </div>
+          </div>
+          <button type="button" onClick={openReplacementNotice}
+            className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-2xl bg-amber-400 text-[12px] font-bold text-[#18130a] active:scale-[0.98]">
+            {activeInvoiceJob ? <CreditCard className="h-4 w-4" /> : <ArrowRightLeft className="h-4 w-4" />}
+            {activeInvoiceJob
+              ? `View invoice · $${pendingActionTotal.toFixed(2)}`
+              : replacementDrafts.length
+                ? `Continue replacement · $${pendingActionTotal.toFixed(2)}`
+                : "Manage replacements"}
+          </button>
+        </section>
+      )}
+
+      {(hardLimitedFiles.length > 0 || unresolvedFailFiles.length > 0) && (
+        <section className="hidden gap-2 rounded-xl border border-amber-500/20 bg-amber-500/[0.035] px-3 py-2.5 md:flex md:items-center md:justify-between">
           <div className="flex min-w-0 items-center gap-2.5">
             <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-amber-500/10">
               <Info className="h-3.5 w-3.5 text-amber-400" />
@@ -897,8 +1009,102 @@ export default function AccountsPage() {
         </section>
       )}
 
-      {/* ══════ SESSION CARDS ══════ */}
-      <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2 xl:grid-cols-3">
+      {/* Mobile account feed: large touch targets and a separate information hierarchy. */}
+      <div className="space-y-3 md:hidden">
+        {pageSessions.map((sess, idx) => {
+          const file = sess.file;
+          const stat = sessionStats?.[file];
+          const liveDiag = diagResults[file];
+          const diag = liveDiag || cacheDiag(sess.health, sess.spam_details);
+          const diagCfg = diag ? STATUS_CFG[diag.status] || STATUS_CFG.UNKNOWN : null;
+          const tier = tierByFile[file];
+          const pendingEntry = pendingByFile.get(file);
+          const processing = Boolean(pendingEntry && pendingEntry.status !== "pending_payment");
+          const canReplace = (tier === "critical" || tier === "attention") && !pendingEntry;
+          const name = (sess.full_name || sess.real_name)?.replace(".session", "") || file.replace(".session", "");
+          const masked = maskPhone(sess.phone);
+          const checkedAgo = sess.last_checked
+            ? (() => {
+                const minutes = Math.floor((Date.now() / 1000 - sess.last_checked!) / 60);
+                return minutes < 1 ? "now" : minutes < 60 ? `${minutes}m` : minutes < 1440 ? `${Math.floor(minutes / 60)}h` : `${Math.floor(minutes / 1440)}d`;
+              })()
+            : "never";
+          const sent = filter === "24h" ? Number(stat?.last24h_sent || 0) : Number(stat?.lifetime_sent || 0);
+          const failed = filter === "24h" ? Number(stat?.last24h_failed || 0) : Number(stat?.lifetime_failed || 0);
+          const attempted = sent + failed;
+          const success = attempted > 0 ? Math.round((sent / attempted) * 100) : 0;
+          const statusLabel = processing ? "Replacing" : diagCfg?.label || (tier === "healthy" ? "Healthy" : tier === "attention" ? "Needs review" : tier === "critical" ? "Replace" : "Unchecked");
+          const statusClass = processing
+            ? "border-accent/25 bg-accent/10 text-accent"
+            : tier === "critical"
+              ? "border-red-500/25 bg-red-500/10 text-red-400"
+              : tier === "attention"
+                ? "border-amber-500/25 bg-amber-500/10 text-amber-400"
+                : tier === "healthy"
+                  ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-400"
+                  : "border-white/[0.08] bg-white/[0.04] text-dark-400";
+
+          return (
+            <article key={`mobile-${file}`} className="overflow-hidden rounded-2xl border border-[#203044] bg-[#0D1A28] shadow-lg shadow-black/10">
+              <div className="p-4">
+                <div className="flex items-start gap-3">
+                  <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br text-[17px] font-bold text-white ${AVATAR_COLORS[idx % AVATAR_COLORS.length]}`}>
+                    {name.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-[15px] font-bold text-white">{name}</p>
+                        <p className="mt-1 truncate text-[11px] text-dark-500">
+                          {masked || `ID ${sess.user_id || "—"}`} · checked {checkedAgo}
+                        </p>
+                      </div>
+                      <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[9px] font-bold ${statusClass}`}>{statusLabel}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid grid-cols-3 overflow-hidden rounded-xl border border-[#203044] bg-[#08131F]">
+                  {[
+                    { label: "Sent", value: sent.toLocaleString(), icon: Send, tone: "text-emerald-400" },
+                    { label: "Failed", value: failed.toLocaleString(), icon: XCircle, tone: failed ? "text-red-400" : "text-dark-600" },
+                    { label: "Success", value: attempted ? `${success}%` : "—", icon: Activity, tone: success >= 70 ? "text-emerald-400" : "text-amber-400" },
+                  ].map((metric, metricIndex) => (
+                    <div key={metric.label} className={`flex items-center gap-2 px-3 py-3 ${metricIndex === 1 ? "border-x border-white/[0.06]" : ""}`}>
+                      <metric.icon className={`h-4 w-4 shrink-0 ${metric.tone}`} />
+                      <div className="min-w-0">
+                        <p className="truncate text-[13px] font-bold tabular-nums text-white">{metric.value}</p>
+                        <p className="text-[8px] text-dark-500">{metric.label}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {tier !== "healthy" && diag?.reason && !processing && (
+                  <p className="mt-3 line-clamp-2 text-[11px] leading-relaxed text-dark-400">{diag.reason}</p>
+                )}
+                {processing && <p className="mt-3 text-[11px] font-medium text-accent">Replacement is running in the background</p>}
+
+                <div className="mt-3 flex gap-2">
+                  <button type="button" onClick={() => openEdit(file)}
+                    className="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-xl border border-[#203044] bg-[#122131] text-[12px] font-semibold text-[#F5F7FA] active:bg-[#182b3e]">
+                    <Eye className="h-4 w-4 text-accent" /> View details
+                  </button>
+                  {canReplace && (
+                    <button type="button" onClick={() => openReplace([file])}
+                      className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-[#7C5CFC] px-4 text-[12px] font-bold text-white active:scale-[0.98]">
+                      <ArrowRightLeft className="h-4 w-4" /> Replace
+                    </button>
+                  )}
+                </div>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+
+      {/* Desktop session grid. */}
+      <div className="hidden gap-2.5 md:grid md:grid-cols-2 xl:grid-cols-3">
         {pageSessions.map((sess, idx) => {
           const file = sess.file;
           const s = sessionStats?.[file];
@@ -939,7 +1145,7 @@ export default function AccountsPage() {
           else { badgeLabel = "Unchecked"; badgeCls = "bg-dark-700/30 border-white/[0.06] text-dark-400"; BadgeIcon = HelpCircle; }
 
           return (
-            <div key={file} className="flex h-full flex-col rounded-xl border border-white/[0.06] bg-[#171723] p-3 shadow-[0_1px_2px_rgba(0,0,0,0.35)] transition-colors hover:border-white/[0.12]">
+            <div key={file} className="flex h-full flex-col rounded-2xl border border-[#203044] bg-[#0D1A28] p-4 shadow-[0_8px_24px_rgba(0,0,0,0.12)] transition-colors hover:border-[#354a62]">
               {/* Row 1 — avatar + identity + status */}
               <div className="flex items-start gap-3">
                 <div className="relative shrink-0">
@@ -1027,12 +1233,12 @@ export default function AccountsPage() {
                       </button>
                       <button type="button" onClick={() => { setOpenMenu(null); openEdit(file); }}
                         className="w-full flex items-center gap-2.5 px-3 h-11 rounded-lg text-[12.5px] text-dark-100 hover:bg-white/[0.06] transition-colors">
-                        <Pencil className="h-4 w-4 text-dark-400" /> Edit session name
+                        <Pencil className="h-4 w-4 text-dark-400" /> Edit account profile
                       </button>
                       {replaceAllowed && (
                         <button type="button" onClick={() => { setOpenMenu(null); openReplace([file]); }}
                           className="w-full flex items-center gap-2.5 px-3 h-11 rounded-lg text-[12.5px] text-accent hover:bg-accent/10 transition-colors">
-                          <ArrowRightLeft className="h-4 w-4" /> Replace session
+                          <ArrowRightLeft className="h-4 w-4" /> Replace account
                         </button>
                       )}
                       <button type="button" onClick={() => { setOpenMenu(null); openSupportModal(file, name, diag, fi ? fi.failRate : 0); }}
@@ -1081,7 +1287,8 @@ export default function AccountsPage() {
       {sessions.length === 0 && (
         <div className="rounded-2xl border border-white/[0.06] bg-[#171723] flex flex-col items-center justify-center py-16">
           <Users className="h-10 w-10 text-dark-600 mb-2" />
-          <p className="text-sm font-medium text-dark-400">No sessions assigned</p>
+          <p className="text-sm font-semibold text-dark-300">No accounts assigned</p>
+          <p className="mt-1 text-[11px] text-dark-500">Accounts assigned to this AdBot will appear here.</p>
         </div>
       )}
       {sessions.length > 0 && visibleSessions.length === 0 && (
@@ -1101,10 +1308,10 @@ export default function AccountsPage() {
             </div>
             <div>
               <h2 className="text-base font-bold text-dark-50">
-                Replace {replTargets.length} Session{replTargets.length !== 1 ? "s" : ""}
+                Replace {replTargets.length} Account{replTargets.length !== 1 ? "s" : ""}
               </h2>
               <p className="text-[11px] text-dark-400 mt-0.5">
-                Dead sessions will be swapped with fresh accounts from the pool.
+                Eligible accounts will be replaced with prepared accounts managed by our team.
               </p>
             </div>
           </div>
@@ -1120,7 +1327,7 @@ export default function AccountsPage() {
                 <div key={sf} className="flex items-center justify-between gap-2 rounded-xl bg-dark-800/30 border border-white/[0.04] px-3 py-2.5">
                   <div className="min-w-0 flex-1">
                     <span className="text-[12px] font-semibold text-dark-200 truncate block">{nm}</span>
-                    <span className="text-[9px] text-dark-500">{dg ? dg.reason : fi2 ? `${Math.round(fi2.failRate * 100)}% failure rate` : "Session marked for replacement"}</span>
+                    <span className="text-[9px] text-dark-500">{dg ? dg.reason : fi2 ? `${Math.round(fi2.failRate * 100)}% failure rate` : "Account marked for replacement"}</span>
                   </div>
                   {dg && th && (
                     <span className={`text-[8px] font-semibold rounded-full ${th.bg} border ${th.border} px-1.5 py-0.5 ${th.text}`}>
@@ -1303,16 +1510,16 @@ export default function AccountsPage() {
             </div>
             <div>
               <h3 className="text-sm font-bold text-dark-50">Contact Support</h3>
-              <p className="text-[11px] text-dark-500 mt-0.5">Report an issue with your session</p>
+              <p className="text-[11px] text-dark-500 mt-0.5">Report an issue with this assigned account</p>
             </div>
           </div>
 
           {/* Session Info — auto-filled */}
           <div className="rounded-xl bg-dark-800/30 border border-white/[0.04] p-3 space-y-2">
-            <p className="text-[10px] font-semibold text-dark-400 uppercase tracking-wider">Session Details</p>
+            <p className="text-[10px] font-semibold text-dark-400 uppercase tracking-wider">Account details</p>
             <div className="grid grid-cols-2 gap-2 text-[11px]">
               <div>
-                <span className="text-dark-500">Session:</span>
+                <span className="text-dark-500">Account:</span>
                 <span className="ml-1.5 font-semibold text-dark-200">{supportName}</span>
               </div>
               <div>
