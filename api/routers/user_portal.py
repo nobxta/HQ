@@ -1115,6 +1115,38 @@ async def portal_replacement_job(
     return public_replacement_job(job)
 
 
+@router.post("/bot/{bot_name}/replacement-jobs/{job_id}/cancel")
+async def portal_cancel_replacement_job(
+    bot_name: str, job_id: str, telegram_id: int = Query(...)
+):
+    """Cancel a replacement draft before a blockchain invoice is created."""
+    await _get_user_bot(telegram_id, bot_name)
+    from code.replacement import (
+        cancel_replacement, get_replacement_job, public_replacement_job
+    )
+
+    job = get_replacement_job(job_id, bot_name=bot_name)
+    if not job:
+        raise HTTPException(404, "Replacement job not found")
+    items = job.get("items") or []
+    cancellable = [item for item in items if item.get("status") == "pending_payment"]
+    if not cancellable:
+        raise HTTPException(400, "This replacement can no longer be cancelled")
+    if any(
+        item.get("payment_id") or (item.get("invoice_data") or {}).get("pay_address")
+        for item in cancellable
+    ):
+        raise HTTPException(
+            400,
+            "An invoice is already active. Let it expire or complete the payment."
+        )
+
+    for item in cancellable:
+        cancel_replacement(item["id"])
+    updated = get_replacement_job(job_id, bot_name=bot_name)
+    return {"ok": True, "job": public_replacement_job(updated)}
+
+
 class PortalDiagnoseRequest(BaseModel):
     session_files: list[str]
 

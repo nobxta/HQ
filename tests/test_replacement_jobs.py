@@ -202,6 +202,46 @@ class ReplacementJobTests(unittest.TestCase):
         self.assertEqual(2, active["replacement_count"])
         self.assertEqual(["Old A", "Old B"], active["sessions"])
 
+    def test_uninvoiced_replacement_draft_can_be_cancelled(self):
+        from api.routers import user_portal
+        entries = replacement.create_replacement_request(
+            "token", "Example Bot", 42, self._sessions(), free_count=0
+        )
+        with patch.object(
+            user_portal, "_get_user_bot",
+            new=unittest.mock.AsyncMock(return_value=("token", {})),
+        ):
+            result = asyncio.run(user_portal.portal_cancel_replacement_job(
+                "Example Bot", entries[0]["job_id"], telegram_id=42
+            ))
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            {"cancelled"},
+            {entry["status"] for entry in replacement.load_replacement_queue()},
+        )
+
+    def test_active_replacement_invoice_cannot_be_cancelled(self):
+        from api.routers import user_portal
+        from fastapi import HTTPException
+        entries = replacement.create_replacement_request(
+            "token", "Example Bot", 42, self._sessions()[:1], free_count=0
+        )
+        queue = replacement.load_replacement_queue()
+        queue[0]["payment_id"] = "pay-live"
+        queue[0]["invoice_data"] = {"pay_address": "blockchain-address"}
+        replacement.save_replacement_queue(queue)
+        with (
+            patch.object(
+                user_portal, "_get_user_bot",
+                new=unittest.mock.AsyncMock(return_value=("token", {})),
+            ),
+            self.assertRaises(HTTPException) as raised,
+        ):
+            asyncio.run(user_portal.portal_cancel_replacement_job(
+                "Example Bot", entries[0]["job_id"], telegram_id=42
+            ))
+        self.assertEqual(400, raised.exception.status_code)
+
     def test_legacy_entry_without_job_id_remains_readable(self):
         replacement.save_replacement_queue([{
             "id": "legacy-1",
@@ -220,6 +260,7 @@ class ReplacementJobTests(unittest.TestCase):
         paths = {getattr(route, "path", "") for route in app.routes}
         self.assertIn("/api/portal/bot/{bot_name}/replacement-jobs", paths)
         self.assertIn("/api/portal/bot/{bot_name}/replacement-jobs/{job_id}", paths)
+        self.assertIn("/api/portal/bot/{bot_name}/replacement-jobs/{job_id}/cancel", paths)
         self.assertIn("/api/portal/bot/{bot_name}/replacement/{entry_id}/invoice", paths)
         self.assertIn("/api/system/replacement-jobs", paths)
         self.assertIn("/api/system/replacement-jobs/{job_id}/continue", paths)

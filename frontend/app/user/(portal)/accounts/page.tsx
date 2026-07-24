@@ -11,6 +11,7 @@ import {
   Timer, HelpCircle, CircleDollarSign, Gift,
   CreditCard, WifiOff, Activity, ShieldCheck, Info,
   Clock, ChevronRight, ChevronLeft, ChevronDown, Zap, Send, Eye, Settings, Copy,
+  History, X, SlidersHorizontal,
 } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import CryptoPaymentModal from "@/components/portal/CryptoPaymentModal";
@@ -267,6 +268,9 @@ export default function AccountsPage() {
   const [pricePer, setPricePer] = useState(2.0);
   const [pendingReplacements, setPendingReplacements] = useState<any[]>([]);
   const [replacementJobs, setReplacementJobs] = useState<any[]>([]);
+  const [showSearch, setShowSearch] = useState(false);
+  const [showRecent, setShowRecent] = useState(false);
+  const [cancellingJob, setCancellingJob] = useState("");
 
   // Crypto payment
   const [payModal, setPayModal] = useState(false);
@@ -353,6 +357,26 @@ export default function AccountsPage() {
 
   // Reset to the first page whenever the filters change.
   useEffect(() => { setPage(1); }, [search, statusFilter, filter]);
+
+  const cancelReplacementDraft = useCallback(async (jobId: string) => {
+    const s = getPortalSession();
+    if (!s?.bot_name || s?.telegram_id == null) {
+      showToast("Please log in again", "err");
+      return;
+    }
+    setCancellingJob(jobId);
+    try {
+      await portalApi.post(
+        `/api/portal/bot/${s.bot_name}/replacement-jobs/${jobId}/cancel?telegram_id=${s.telegram_id}`
+      );
+      showToast("Replacement request cancelled", "ok");
+      await fetchRepl();
+    } catch (err: any) {
+      showToast(err?.response?.data?.detail || "Could not cancel replacement", "err");
+    } finally {
+      setCancellingJob("");
+    }
+  }, [fetchRepl, showToast]);
 
   /* ══════════════════════════════════════════════════════
      DIAGNOSE
@@ -644,6 +668,19 @@ export default function AccountsPage() {
   const activeReplacementJobs = replacementJobs.filter(
     (job: any) => !["completed", "cancelled", "failed"].includes(job.status)
   );
+  const replacementDrafts = activeReplacementJobs.filter((job: any) => {
+    if (job.status !== "awaiting_payment") return false;
+    const pendingItems = (job.items || []).filter((item: any) => item.status === "pending_payment");
+    return pendingItems.length > 0 && !pendingItems.some(
+      (item: any) => item.payment_id && item.invoice_data?.pay_address
+    );
+  });
+  const visibleReplacementJobs = activeReplacementJobs.filter(
+    (job: any) => !replacementDrafts.some((draft: any) => draft.job_id === job.job_id)
+  );
+  const recentReplacementJobs = replacementJobs
+    .filter((job: any) => ["completed", "cancelled", "failed"].includes(job.status))
+    .slice(0, 6);
 
   // Client-side pagination over the filtered list.
   const totalPages = Math.max(1, Math.ceil(visibleSessions.length / PAGE_SIZE));
@@ -652,25 +689,34 @@ export default function AccountsPage() {
   const pageSessions = visibleSessions.slice(pageStart, pageStart + PAGE_SIZE);
 
   return (
-    <div className="space-y-5 animate-fade-in" suppressHydrationWarning>
+    <div className="space-y-3 animate-fade-in" suppressHydrationWarning>
       {toast && <Toast msg={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
 
-      {/* Compact health overview: the counts also act as the status filter. */}
-      <section className="rounded-2xl border border-white/[0.06] bg-[#15151f] p-3 sm:p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h2 className="text-[14px] font-bold text-white">Telegram accounts</h2>
-            <p className="mt-0.5 text-[10px] text-dark-500">
-              {sessions.length} connected · {freeRem} free replacement{freeRem === 1 ? "" : "s"}
-            </p>
+      <section className="rounded-xl border border-white/[0.06] bg-[#15151f] p-2.5 sm:p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h2 className="text-[13px] font-bold text-white">Accounts</h2>
+              <span className="rounded-md bg-white/[0.05] px-1.5 py-0.5 text-[9px] font-semibold text-dark-400">{sessions.length} connected</span>
+            </div>
+            <p className="mt-0.5 text-[9px] text-dark-500">${pricePer.toFixed(2)} per replacement · {freeRem} free available</p>
           </div>
-          <button type="button" onClick={() => { mutateBot(); fetchRepl(); }} aria-label="Refresh accounts"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.025] text-dark-300 hover:bg-white/[0.06] hover:text-white active:scale-95 transition-all">
-            <RefreshCw className="h-3.5 w-3.5" />
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button type="button" onClick={() => setShowRecent((value) => !value)}
+              aria-label="Recent replacements" aria-pressed={showRecent}
+              className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[10px] font-semibold ${
+                showRecent ? "border-accent/30 bg-accent/10 text-accent" : "border-white/[0.07] bg-white/[0.02] text-dark-400 hover:text-white"
+              }`}>
+              <History className="h-3.5 w-3.5" /><span className="hidden sm:inline">Recent replacements</span>
+            </button>
+            <button type="button" onClick={() => { mutateBot(); fetchRepl(); }} aria-label="Refresh accounts"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.07] bg-white/[0.02] text-dark-400 hover:text-white">
+              <RefreshCw className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
 
-        <div className="mt-3 grid grid-cols-4 gap-1.5" role="group" aria-label="Filter by account health">
+        <div className="mt-2.5 grid grid-cols-4 gap-1" role="group" aria-label="Filter by account health">
           {[
             { key: "all", label: "All", value: sessions.length, dot: "bg-accent", selected: "border-accent/40 bg-accent/10 text-white" },
             { key: "healthy", label: "Healthy", value: healthyCount, dot: "bg-emerald-400", selected: "border-emerald-500/35 bg-emerald-500/[0.08] text-emerald-300" },
@@ -681,41 +727,110 @@ export default function AccountsPage() {
             return (
               <button key={item.key} type="button" onClick={() => setStatusFilter(item.key as typeof statusFilter)}
                 aria-pressed={selected}
-                className={`min-w-0 rounded-xl border px-2 py-2 text-left transition-colors ${
+                className={`min-w-0 rounded-lg border px-2 py-1.5 text-left transition-colors ${
                   selected ? item.selected : "border-white/[0.05] bg-white/[0.018] text-dark-400 hover:bg-white/[0.04]"
                 }`}>
                 <span className="flex items-center gap-1.5">
                   <span className={`h-1.5 w-1.5 rounded-full ${item.dot}`} />
-                  <span className="text-[15px] font-bold tabular-nums">{item.value}</span>
+                  <span className="text-[13px] font-bold tabular-nums">{item.value}</span>
                 </span>
-                <span className="mt-0.5 block truncate text-[9px] font-medium">{item.label}</span>
+                <span className="block truncate text-[8.5px] font-medium">{item.label}</span>
               </button>
             );
           })}
         </div>
 
-        <div className="mt-3 flex items-center gap-2">
-          <div className="relative min-w-0 flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-dark-500" />
-            <input value={search} onChange={(e) => setSearch(e.target.value)} inputMode="search" placeholder="Search accounts"
-              className="h-10 w-full rounded-xl border border-white/[0.06] bg-[#101018] pl-9 pr-3 text-[12px] text-dark-200 outline-none placeholder:text-dark-600 focus:border-accent/40" />
-          </div>
-          <div className="relative w-[7.5rem] shrink-0">
+        <div className="mt-2 flex items-center gap-1.5">
+          <button type="button" onClick={() => setShowSearch((value) => !value)}
+            aria-label="Search accounts" aria-pressed={showSearch}
+            className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border ${
+              showSearch ? "border-accent/30 bg-accent/10 text-accent" : "border-white/[0.07] bg-[#101018] text-dark-400 hover:text-white"
+            }`}>
+            {showSearch ? <X className="h-3.5 w-3.5" /> : <Search className="h-3.5 w-3.5" />}
+          </button>
+          {showSearch && (
+            <div className="relative min-w-0 flex-1">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-dark-500" />
+              <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} inputMode="search" placeholder="Name, username, phone or ID"
+                className="h-8 w-full rounded-lg border border-white/[0.06] bg-[#101018] pl-8 pr-2.5 text-[11px] text-dark-200 outline-none placeholder:text-dark-600 focus:border-accent/40" />
+            </div>
+          )}
+          <div className={`relative shrink-0 ${showSearch ? "w-[6.5rem]" : "ml-auto w-[7rem]"}`}>
+            <SlidersHorizontal className="pointer-events-none absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-dark-500" />
             <select value={filter} onChange={(e) => setFilter(e.target.value as TimeFilter)} aria-label="Statistics period"
-              className="h-10 w-full appearance-none rounded-xl border border-white/[0.06] bg-[#101018] pl-3 pr-7 text-[11px] font-medium text-dark-300 outline-none focus:border-accent/40">
+              className="h-8 w-full appearance-none rounded-lg border border-white/[0.06] bg-[#101018] pl-7 pr-6 text-[10px] font-medium text-dark-300 outline-none focus:border-accent/40">
               <option value="24h">Last 24h</option>
               <option value="overall">All time</option>
             </select>
-            <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-dark-500" />
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-dark-500" />
           </div>
         </div>
       </section>
 
-      {/* Only unfinished work belongs on the operational screen; completed history is
-          intentionally omitted so it does not compete with current account health. */}
-      {activeReplacementJobs.length > 0 && (
+      {showRecent && (
+        <section className="rounded-xl border border-white/[0.06] bg-[#15151f] p-2.5">
+          <div className="flex items-center justify-between">
+            <h3 className="text-[11px] font-bold text-dark-200">Recent replacements</h3>
+            <span className="text-[9px] text-dark-600">Latest {recentReplacementJobs.length}</span>
+          </div>
+          {recentReplacementJobs.length ? (
+            <div className="mt-2 divide-y divide-white/[0.05]">
+              {recentReplacementJobs.map((job: any) => (
+                <div key={job.job_id} className="flex items-center justify-between gap-3 py-2 first:pt-0 last:pb-0">
+                  <div className="min-w-0">
+                    <p className="truncate text-[10px] font-semibold text-dark-300">
+                      {(job.items || []).map((item: any) => (item.real_name || item.session_file || "").replace(".session", "")).join(", ")}
+                    </p>
+                    <p className="mt-0.5 text-[8.5px] text-dark-600">{job.total} account{job.total === 1 ? "" : "s"} · {job.completed || 0} completed</p>
+                  </div>
+                  <span className={`rounded-md px-2 py-1 text-[8.5px] font-semibold ${
+                    job.status === "completed" ? "bg-emerald-500/10 text-emerald-400" :
+                    job.status === "failed" ? "bg-red-500/10 text-red-400" : "bg-white/[0.05] text-dark-500"
+                  }`}>{job.status === "completed" ? "Completed" : job.status === "failed" ? "Needs review" : "Cancelled"}</span>
+                </div>
+              ))}
+            </div>
+          ) : <p className="py-3 text-center text-[10px] text-dark-600">No recent replacements</p>}
+        </section>
+      )}
+
+      {/* No invoice yet: show a compact, cancellable draft instead of a payment warning. */}
+      {replacementDrafts.map((job: any) => {
+        const items = (job.items || []).filter((item: any) => item.status === "pending_payment");
+        const names = items.map((item: any) => (item.real_name || item.session_file || "").replace(".session", ""));
+        const total = items.reduce((sum: number, item: any) => sum + Number(item.price_usd || pricePer), 0);
+        const continuePayment = () => {
+          if (!items[0]) return;
+          setPayEntryId(items[0].id);
+          setPaySessionName(names.join(", "));
+          setPayAmountUsd(total);
+          setPayReplacementCount(items.length);
+          setPayModal(true);
+        };
+        return (
+          <section key={job.job_id} className="flex flex-col gap-2 rounded-xl border border-white/[0.06] bg-white/[0.018] px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold text-dark-200">{items.length} replacement{items.length === 1 ? "" : "s"} ready</p>
+              <p className="mt-0.5 truncate text-[9px] text-dark-500">{names.join(", ")} · ${total.toFixed(2)} total</p>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5 sm:flex">
+              <button type="button" onClick={() => cancelReplacementDraft(job.job_id)} disabled={cancellingJob === job.job_id}
+                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-white/[0.07] px-3 text-[10px] font-semibold text-dark-400 hover:text-white disabled:opacity-50">
+                {cancellingJob === job.job_id ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />} Cancel
+              </button>
+              <button type="button" onClick={continuePayment}
+                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-accent px-3 text-[10px] font-bold text-white hover:bg-accent/90">
+                <CreditCard className="h-3 w-3" /> Continue · ${total.toFixed(2)}
+              </button>
+            </div>
+          </section>
+        );
+      })}
+
+      {/* Once an invoice exists, or work has started, show live status. */}
+      {visibleReplacementJobs.length > 0 && (
         <div className="space-y-2">
-          {activeReplacementJobs.map((job: any) => {
+          {visibleReplacementJobs.map((job: any) => {
             const awaitingPayment = job.status === "awaiting_payment";
             const needsAdmin = job.status === "needs_admin";
             const waitingInventory = Boolean(job.awaiting_inventory);
@@ -758,10 +873,10 @@ export default function AccountsPage() {
             };
 
             return (
-              <section key={job.job_id} className={`rounded-2xl border p-3 sm:p-4 ${tone}`}>
-                <div className="flex items-start gap-3">
-                  <span className={`mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-black/15 ${iconTone}`}>
-                    <Icon className={`h-4 w-4 ${!awaitingPayment && !needsAdmin && !waitingInventory ? "animate-spin" : ""}`} />
+              <section key={job.job_id} className={`rounded-xl border p-2.5 sm:p-3 ${tone}`}>
+                <div className="flex items-start gap-2.5">
+                  <span className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-black/15 ${iconTone}`}>
+                    <Icon className={`h-3.5 w-3.5 ${!awaitingPayment && !needsAdmin && !waitingInventory ? "animate-spin" : ""}`} />
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
@@ -846,7 +961,7 @@ export default function AccountsPage() {
       )}
 
       {/* ══════ SESSION CARDS ══════ */}
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
         {pageSessions.map((sess, idx) => {
           const file = sess.file;
           const s = sessionStats?.[file];
@@ -858,7 +973,9 @@ export default function AccountsPage() {
           const tier = tierByFile[file];
           const pendingEntry = pendingByFile.get(file);
           const isPendingRepl = Boolean(pendingEntry);
-          const isAwaitingPayment = pendingEntry?.status === "pending_payment";
+          const hasReplacementInvoice = Boolean(pendingEntry?.payment_id && pendingEntry?.invoice_data?.pay_address);
+          const isAwaitingPayment = pendingEntry?.status === "pending_payment" && hasReplacementInvoice;
+          const isReplacementDraft = pendingEntry?.status === "pending_payment" && !hasReplacementInvoice;
           const replaceAllowed = (tier === "critical" || tier === "attention") && !isPendingRepl;
           const menuOpen = openMenu === file;
 
@@ -879,7 +996,8 @@ export default function AccountsPage() {
           const pctTone = pct >= 70 ? "text-emerald-400" : pct >= 40 ? "text-amber-400" : "text-red-400";
 
           let badgeLabel: string, badgeCls: string, BadgeIcon: any, badgeSpin = false;
-          if (isAwaitingPayment) { badgeLabel = "Payment required"; badgeCls = "bg-amber-500/10 border-amber-500/20 text-amber-300"; BadgeIcon = CircleDollarSign; }
+          if (isAwaitingPayment) { badgeLabel = "Invoice active"; badgeCls = "bg-amber-500/10 border-amber-500/20 text-amber-300"; BadgeIcon = CircleDollarSign; }
+          else if (isReplacementDraft) { badgeLabel = "Ready to replace"; badgeCls = "bg-sky-500/10 border-sky-500/20 text-sky-300"; BadgeIcon = ArrowRightLeft; }
           else if (isPendingRepl) { badgeLabel = "Replacing"; badgeCls = "bg-accent/10 border-accent/20 text-accent"; BadgeIcon = Clock; }
           else if (isChk && !liveDiag) { badgeLabel = "Checking"; badgeCls = "bg-sky-500/10 border-sky-500/20 text-sky-400"; BadgeIcon = Loader2; badgeSpin = true; }
           else if (diagCfg) { badgeLabel = diagCfg.label; badgeCls = `${diagCfg.bg} ${diagCfg.border} ${diagCfg.text}`; BadgeIcon = diagCfg.Icon; }
@@ -888,11 +1006,11 @@ export default function AccountsPage() {
           else { badgeLabel = "Unchecked"; badgeCls = "bg-dark-700/30 border-white/[0.06] text-dark-400"; BadgeIcon = HelpCircle; }
 
           return (
-            <div key={file} className="flex h-full flex-col rounded-2xl border border-white/[0.06] bg-[#171723] p-3.5 shadow-[0_1px_2px_rgba(0,0,0,0.35)] transition-colors hover:border-white/[0.12] sm:p-4">
+            <div key={file} className="flex h-full flex-col rounded-xl border border-white/[0.06] bg-[#171723] p-3 shadow-[0_1px_2px_rgba(0,0,0,0.35)] transition-colors hover:border-white/[0.12]">
               {/* Row 1 — avatar + identity + status */}
               <div className="flex items-start gap-3">
                 <div className="relative shrink-0">
-                  <div className={`flex h-10 w-10 items-center justify-center rounded-xl text-[14px] font-bold text-white bg-gradient-to-br ${AVATAR_COLORS[idx % AVATAR_COLORS.length]}`}>
+                  <div className={`flex h-9 w-9 items-center justify-center rounded-lg text-[13px] font-bold text-white bg-gradient-to-br ${AVATAR_COLORS[idx % AVATAR_COLORS.length]}`}>
                     {name.charAt(0).toUpperCase()}
                   </div>
                   <span className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ring-2 ring-[#171723] ${dotTone}`} />
@@ -900,8 +1018,8 @@ export default function AccountsPage() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
-                      <span className="text-[14px] font-bold text-white truncate max-w-[9rem]">{name}</span>
-                      {sess.username ? <span className="text-[12px] text-sky-400/80 truncate">@{sess.username}</span> : null}
+                      <span className="text-[13px] font-bold text-white truncate max-w-[9rem]">{name}</span>
+                      {sess.username ? <span className="text-[10px] text-sky-400/80 truncate">@{sess.username}</span> : null}
                       {planLabel && <span className="text-[9px] font-semibold rounded-md px-1.5 py-0.5 bg-white/[0.06] border border-white/[0.06] text-dark-300 whitespace-nowrap">{planLabel}</span>}
                     </div>
                     <span className={`inline-flex items-center gap-1 text-[10px] font-semibold rounded-full border px-2 py-0.5 whitespace-nowrap shrink-0 ${badgeCls}`}>
@@ -910,7 +1028,7 @@ export default function AccountsPage() {
                   </div>
                   {masked && (
                     <button type="button" onClick={() => copyPhone(sess.phone)} title="Copy phone"
-                      className="group mt-1 inline-flex items-center gap-1.5 text-[12.5px] font-mono text-dark-300 hover:text-dark-100 transition-colors">
+                      className="group mt-0.5 inline-flex items-center gap-1.5 text-[11px] font-mono text-dark-300 hover:text-dark-100 transition-colors">
                       {masked}<Copy className="h-3 w-3 text-dark-600 group-hover:text-dark-400" />
                     </button>
                   )}
@@ -924,26 +1042,26 @@ export default function AccountsPage() {
               </div>
 
               {/* Row 2 — metrics */}
-              <div className="mt-3 grid grid-cols-3 rounded-xl bg-white/[0.02] border border-white/[0.05]">
-                <div className="flex items-center gap-2 px-3 py-2.5 min-w-0">
-                  <Send className="h-4 w-4 text-emerald-400 shrink-0" />
+              <div className="mt-2.5 grid grid-cols-3 rounded-lg bg-white/[0.02] border border-white/[0.05]">
+                <div className="flex items-center gap-1.5 px-2.5 py-2 min-w-0">
+                  <Send className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
                   <div className="min-w-0">
-                    <p className="text-[13px] font-bold text-white tabular-nums leading-none truncate">{sent.toLocaleString()}</p>
-                    <p className="text-[9px] text-dark-500 mt-1">Sent</p>
+                    <p className="text-[12px] font-bold text-white tabular-nums leading-none truncate">{sent.toLocaleString()}</p>
+                    <p className="text-[8px] text-dark-500 mt-0.5">Sent</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 px-3 py-2.5 border-x border-white/[0.05] min-w-0">
-                  <XCircle className={`h-4 w-4 shrink-0 ${failed > 0 ? "text-red-400" : "text-dark-600"}`} />
+                <div className="flex items-center gap-1.5 px-2.5 py-2 border-x border-white/[0.05] min-w-0">
+                  <XCircle className={`h-3.5 w-3.5 shrink-0 ${failed > 0 ? "text-red-400" : "text-dark-600"}`} />
                   <div className="min-w-0">
-                    <p className={`text-[13px] font-bold tabular-nums leading-none truncate ${failed > 0 ? "text-white" : "text-dark-400"}`}>{failed.toLocaleString()}</p>
-                    <p className="text-[9px] text-dark-500 mt-1">Failed</p>
+                    <p className={`text-[12px] font-bold tabular-nums leading-none truncate ${failed > 0 ? "text-white" : "text-dark-400"}`}>{failed.toLocaleString()}</p>
+                    <p className="text-[8px] text-dark-500 mt-0.5">Failed</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 px-3 py-2.5 min-w-0">
-                  <Activity className={`h-4 w-4 shrink-0 ${pctTone}`} />
+                <div className="flex items-center gap-1.5 px-2.5 py-2 min-w-0">
+                  <Activity className={`h-3.5 w-3.5 shrink-0 ${pctTone}`} />
                   <div className="min-w-0">
-                    <p className={`text-[13px] font-bold tabular-nums leading-none ${pctTone}`}>{hasData ? `${pct}%` : "—"}</p>
-                    <p className="text-[9px] text-dark-500 mt-1">Success</p>
+                    <p className={`text-[12px] font-bold tabular-nums leading-none ${pctTone}`}>{hasData ? `${pct}%` : "—"}</p>
+                    <p className="text-[8px] text-dark-500 mt-0.5">Success</p>
                   </div>
                 </div>
               </div>
@@ -957,21 +1075,26 @@ export default function AccountsPage() {
                   <CircleDollarSign className="h-3 w-3" /> Not started — complete payment first
                 </p>
               )}
-              {isPendingRepl && !isAwaitingPayment && (
+              {isReplacementDraft && (
+                <p className="mt-2 inline-flex items-center gap-1 text-[10.5px] font-medium text-sky-300">
+                  <ArrowRightLeft className="h-3 w-3" /> Review the replacement request above
+                </p>
+              )}
+              {isPendingRepl && !isAwaitingPayment && !isReplacementDraft && (
                 <p className="mt-2 inline-flex items-center gap-1 text-[10.5px] text-accent font-medium"><Clock className="h-3 w-3" /> Replacement in progress</p>
               )}
 
               {/* Row 4 — actions (pinned to the bottom of the card) */}
-              <div className="mt-auto flex items-center gap-2 pt-3">
+              <div className="mt-auto flex items-center gap-1.5 pt-2.5">
                 <button type="button" onClick={() => openEdit(file)}
-                  className="inline-flex h-10 flex-1 items-center justify-center gap-1.5 rounded-xl border border-white/[0.08] bg-white/[0.02] text-[11px] font-semibold text-dark-200 hover:bg-white/[0.05] active:scale-[0.98] transition-all">
-                  <Eye className="h-3.5 w-3.5 text-accent" /> Details
+                  className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.02] text-[10px] font-semibold text-dark-200 hover:bg-white/[0.05] active:scale-[0.98] transition-all">
+                  <Eye className="h-3 w-3 text-accent" /> Details
                 </button>
                 <div className="relative">
                   <button type="button" onClick={() => setOpenMenu(menuOpen ? null : file)} aria-haspopup="menu" aria-expanded={menuOpen}
                     aria-label={`Manage ${name}`}
-                    className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.02] text-dark-300 hover:bg-white/[0.05] hover:text-white active:scale-[0.98] transition-all">
-                    <Settings className="h-3.5 w-3.5" />
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.02] text-dark-300 hover:bg-white/[0.05] hover:text-white active:scale-[0.98] transition-all">
+                    <Settings className="h-3 w-3" />
                   </button>
                   {menuOpen && (
                     <div className="absolute right-0 bottom-full mb-2 z-40 w-56 rounded-xl border border-white/[0.08] bg-[#1c1c2b] p-1 shadow-xl shadow-black/50">
