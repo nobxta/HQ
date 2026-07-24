@@ -270,7 +270,6 @@ export default function AccountsPage() {
   const [replacementJobs, setReplacementJobs] = useState<any[]>([]);
   const [showSearch, setShowSearch] = useState(false);
   const [showRecent, setShowRecent] = useState(false);
-  const [cancellingJob, setCancellingJob] = useState("");
 
   // Crypto payment
   const [payModal, setPayModal] = useState(false);
@@ -357,26 +356,6 @@ export default function AccountsPage() {
 
   // Reset to the first page whenever the filters change.
   useEffect(() => { setPage(1); }, [search, statusFilter, filter]);
-
-  const cancelReplacementDraft = useCallback(async (jobId: string) => {
-    const s = getPortalSession();
-    if (!s?.bot_name || s?.telegram_id == null) {
-      showToast("Please log in again", "err");
-      return;
-    }
-    setCancellingJob(jobId);
-    try {
-      await portalApi.post(
-        `/api/portal/bot/${s.bot_name}/replacement-jobs/${jobId}/cancel?telegram_id=${s.telegram_id}`
-      );
-      showToast("Replacement request cancelled", "ok");
-      await fetchRepl();
-    } catch (err: any) {
-      showToast(err?.response?.data?.detail || "Could not cancel replacement", "err");
-    } finally {
-      setCancellingJob("");
-    }
-  }, [fetchRepl, showToast]);
 
   /* ══════════════════════════════════════════════════════
      DIAGNOSE
@@ -675,12 +654,40 @@ export default function AccountsPage() {
       (item: any) => item.payment_id && item.invoice_data?.pay_address
     );
   });
-  const visibleReplacementJobs = activeReplacementJobs.filter(
-    (job: any) => !replacementDrafts.some((draft: any) => draft.job_id === job.job_id)
+  const activeInvoiceJob = activeReplacementJobs.find((job: any) =>
+    job.status === "awaiting_payment" && (job.items || []).some(
+      (item: any) => item.status === "pending_payment" && item.payment_id && item.invoice_data?.pay_address
+    )
   );
+  const visibleReplacementJobs = activeReplacementJobs.filter(
+    (job: any) => job.status !== "awaiting_payment"
+  );
+  const hardLimitedFiles = sessions
+    .filter((session) => tierByFile[session.file] === "critical")
+    .map((session) => session.file);
   const recentReplacementJobs = replacementJobs
     .filter((job: any) => ["completed", "cancelled", "failed"].includes(job.status))
     .slice(0, 6);
+  const pendingActionJob = activeInvoiceJob || replacementDrafts[0];
+  const pendingActionItems = (pendingActionJob?.items || []).filter(
+    (item: any) => item.status === "pending_payment"
+  );
+  const pendingActionTotal = pendingActionItems.reduce(
+    (sum: number, item: any) => sum + Number(item.price_usd || pricePer), 0
+  );
+  const openReplacementNotice = () => {
+    if (pendingActionItems.length) {
+      setPayEntryId(pendingActionItems[0].id);
+      setPaySessionName(pendingActionItems.map(
+        (item: any) => (item.real_name || item.session_file || "").replace(".session", "")
+      ).join(", "));
+      setPayAmountUsd(pendingActionTotal);
+      setPayReplacementCount(pendingActionItems.length);
+      setPayModal(true);
+      return;
+    }
+    openReplace(hardLimitedFiles.length ? hardLimitedFiles : unresolvedFailFiles);
+  };
 
   // Client-side pagination over the filtered list.
   const totalPages = Math.max(1, Math.ceil(visibleSessions.length / PAGE_SIZE));
@@ -794,89 +801,31 @@ export default function AccountsPage() {
         </section>
       )}
 
-      {/* No invoice yet: show a compact, cancellable draft instead of a payment warning. */}
-      {replacementDrafts.map((job: any) => {
-        const items = (job.items || []).filter((item: any) => item.status === "pending_payment");
-        const names = items.map((item: any) => (item.real_name || item.session_file || "").replace(".session", ""));
-        const total = items.reduce((sum: number, item: any) => sum + Number(item.price_usd || pricePer), 0);
-        const continuePayment = () => {
-          if (!items[0]) return;
-          setPayEntryId(items[0].id);
-          setPaySessionName(names.join(", "));
-          setPayAmountUsd(total);
-          setPayReplacementCount(items.length);
-          setPayModal(true);
-        };
-        return (
-          <section key={job.job_id} className="flex flex-col gap-2 rounded-xl border border-white/[0.06] bg-white/[0.018] px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
-            <div className="min-w-0">
-              <p className="text-[11px] font-semibold text-dark-200">{items.length} replacement{items.length === 1 ? "" : "s"} ready</p>
-              <p className="mt-0.5 truncate text-[9px] text-dark-500">{names.join(", ")} · ${total.toFixed(2)} total</p>
-            </div>
-            <div className="grid grid-cols-2 gap-1.5 sm:flex">
-              <button type="button" onClick={() => cancelReplacementDraft(job.job_id)} disabled={cancellingJob === job.job_id}
-                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-white/[0.07] px-3 text-[10px] font-semibold text-dark-400 hover:text-white disabled:opacity-50">
-                {cancellingJob === job.job_id ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />} Cancel
-              </button>
-              <button type="button" onClick={continuePayment}
-                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-accent px-3 text-[10px] font-bold text-white hover:bg-accent/90">
-                <CreditCard className="h-3 w-3" /> Continue · ${total.toFixed(2)}
-              </button>
-            </div>
-          </section>
-        );
-      })}
-
-      {/* Once an invoice exists, or work has started, show live status. */}
+      {/* Awaiting-payment jobs stay inside the compact health notice below. */}
       {visibleReplacementJobs.length > 0 && (
         <div className="space-y-2">
           {visibleReplacementJobs.map((job: any) => {
-            const awaitingPayment = job.status === "awaiting_payment";
             const needsAdmin = job.status === "needs_admin";
             const waitingInventory = Boolean(job.awaiting_inventory);
-            const paidItems = (job.items || []).filter((item: any) => item.status === "pending_payment");
-            const paymentTotal = paidItems.reduce((sum: number, item: any) => sum + Number(item.price_usd || 0), 0);
-            const firstPaid = paidItems[0];
-            const hasActiveInvoice = Boolean(firstPaid?.payment_id && firstPaid?.invoice_data?.pay_address);
-            const names = (job.items || [])
-              .map((item: any) => (item.real_name || item.session_file || "").replace(".session", ""))
-              .filter(Boolean);
-            const title = awaitingPayment
-              ? "Payment required"
-              : needsAdmin
-                ? "Setup needs help"
-                : waitingInventory
-                  ? "Waiting for an available account"
-                  : `Replacing ${job.total} account${job.total === 1 ? "" : "s"}`;
-            const description = awaitingPayment
-              ? hasActiveInvoice
-                ? `${job.total} account${job.total === 1 ? "" : "s"} · invoice active · replacement starts after confirmation`
-                : `${job.total} account${job.total === 1 ? "" : "s"} selected · replacement has not started`
-              : `${job.completed}/${job.total} complete${waitingInventory ? ` · ${job.awaiting_inventory} waiting` : ""}${needsAdmin ? ` · ${job.needs_attention} needs review` : ""}`;
-            const tone = awaitingPayment
-              ? "border-amber-500/25 bg-amber-500/[0.045]"
-              : needsAdmin
-                ? "border-red-500/20 bg-red-500/[0.04]"
-                : waitingInventory
-                  ? "border-sky-500/20 bg-sky-500/[0.035]"
-                  : "border-accent/20 bg-accent/[0.03]";
-            const Icon = awaitingPayment ? CircleDollarSign : needsAdmin ? AlertTriangle : waitingInventory ? Clock : Loader2;
-            const iconTone = awaitingPayment ? "text-amber-400" : needsAdmin ? "text-red-400" : waitingInventory ? "text-sky-400" : "text-accent";
-
-            const openGroupedPayment = () => {
-              if (!firstPaid) return;
-              setPayEntryId(firstPaid.id);
-              setPaySessionName(names.join(", "));
-              setPayAmountUsd(Number(firstPaid.price_usd || pricePer));
-              setPayReplacementCount(Math.max(1, paidItems.length));
-              setPayModal(true);
-            };
+            const title = needsAdmin
+              ? "Setup needs help"
+              : waitingInventory
+                ? "Waiting for an available account"
+                : `Replacing ${job.total} account${job.total === 1 ? "" : "s"}`;
+            const description = `${job.completed}/${job.total} complete${waitingInventory ? ` · ${job.awaiting_inventory} waiting` : ""}${needsAdmin ? ` · ${job.needs_attention} needs review` : ""}`;
+            const tone = needsAdmin
+              ? "border-red-500/20 bg-red-500/[0.04]"
+              : waitingInventory
+                ? "border-sky-500/20 bg-sky-500/[0.035]"
+                : "border-accent/20 bg-accent/[0.03]";
+            const Icon = needsAdmin ? AlertTriangle : waitingInventory ? Clock : Loader2;
+            const iconTone = needsAdmin ? "text-red-400" : waitingInventory ? "text-sky-400" : "text-accent";
 
             return (
               <section key={job.job_id} className={`rounded-xl border p-2.5 sm:p-3 ${tone}`}>
                 <div className="flex items-start gap-2.5">
                   <span className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-black/15 ${iconTone}`}>
-                    <Icon className={`h-3.5 w-3.5 ${!awaitingPayment && !needsAdmin && !waitingInventory ? "animate-spin" : ""}`} />
+                    <Icon className={`h-3.5 w-3.5 ${!needsAdmin && !waitingInventory ? "animate-spin" : ""}`} />
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
@@ -884,44 +833,26 @@ export default function AccountsPage() {
                         <h3 className="text-[13px] font-bold text-dark-100">{title}</h3>
                         <p className="mt-0.5 text-[10px] text-dark-500">{description}</p>
                       </div>
-                      {awaitingPayment && firstPaid ? (
-                        <button type="button" onClick={openGroupedPayment}
-                          className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-amber-400 px-3 text-[11px] font-bold text-[#17120a] shadow-sm shadow-amber-950/30 transition-colors hover:bg-amber-300">
-                          <CircleDollarSign className="h-3.5 w-3.5" />
-                          {hasActiveInvoice ? "View payment" : "Choose payment"} · ${paymentTotal.toFixed(2)}
-                        </button>
-                      ) : (
-                        <span className={`text-[11px] font-bold tabular-nums ${iconTone}`}>{Math.min(100, Number(job.progress || 0))}%</span>
-                      )}
+                      <span className={`text-[11px] font-bold tabular-nums ${iconTone}`}>{Math.min(100, Number(job.progress || 0))}%</span>
                     </div>
 
-                    {awaitingPayment ? (
-                      <div className="mt-2.5 flex flex-wrap gap-1.5">
-                        {names.map((name: string) => (
-                          <span key={name} className="rounded-md border border-amber-500/15 bg-black/10 px-2 py-1 text-[9px] font-medium text-amber-100/75">{name}</span>
+                    <div className="mt-2.5 h-1 rounded-full bg-black/20 overflow-hidden">
+                      <div className={`h-full rounded-full transition-all duration-500 ${needsAdmin ? "bg-red-400" : waitingInventory ? "bg-sky-400" : "bg-accent"}`}
+                        style={{ width: `${Math.max(2, Math.min(100, Number(job.progress || 0)))}%` }} />
+                    </div>
+                    <details className="group mt-2">
+                      <summary className="list-none cursor-pointer text-[10px] font-medium text-dark-400 hover:text-dark-200">
+                        <span className="inline-flex items-center gap-1">View account progress <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-180" /></span>
+                      </summary>
+                      <div className="mt-2 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                        {(job.items || []).map((item: any) => (
+                          <div key={item.id} className="rounded-lg border border-white/[0.05] bg-black/10 px-2.5 py-2">
+                            <p className="truncate text-[10px] font-semibold text-dark-200">{(item.real_name || item.session_file || "").replace(".session", "")}</p>
+                            <p className="mt-0.5 truncate text-[9px] text-dark-500">{item.stage_message || item.status}</p>
+                          </div>
                         ))}
                       </div>
-                    ) : (
-                      <>
-                        <div className="mt-2.5 h-1 rounded-full bg-black/20 overflow-hidden">
-                          <div className={`h-full rounded-full transition-all duration-500 ${needsAdmin ? "bg-red-400" : waitingInventory ? "bg-sky-400" : "bg-accent"}`}
-                            style={{ width: `${Math.max(2, Math.min(100, Number(job.progress || 0)))}%` }} />
-                        </div>
-                        <details className="group mt-2">
-                          <summary className="list-none cursor-pointer text-[10px] font-medium text-dark-400 hover:text-dark-200">
-                            <span className="inline-flex items-center gap-1">View account progress <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-180" /></span>
-                          </summary>
-                          <div className="mt-2 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
-                            {(job.items || []).map((item: any) => (
-                              <div key={item.id} className="rounded-lg border border-white/[0.05] bg-black/10 px-2.5 py-2">
-                                <p className="truncate text-[10px] font-semibold text-dark-200">{(item.real_name || item.session_file || "").replace(".session", "")}</p>
-                                <p className="mt-0.5 truncate text-[9px] text-dark-500">{item.stage_message || item.status}</p>
-                              </div>
-                            ))}
-                          </div>
-                        </details>
-                      </>
-                    )}
+                    </details>
                   </div>
                 </div>
               </section>
@@ -930,38 +861,44 @@ export default function AccountsPage() {
         </div>
       )}
 
-      {/* ══════ ACTION BAR — compact alert + actions ══════ */}
-      {unresolvedFailFiles.length > 0 && (
-        <div className="rounded-2xl border border-amber-500/15 bg-amber-500/[0.035] overflow-hidden">
-          {/* Failing sessions — compact bar */}
-          {unresolvedFailFiles.length > 0 && (
-            <div className="flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-4">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="p-1.5 rounded-lg bg-amber-500/10 shrink-0">
-                  <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />
-                </div>
-                <p className="text-[12px] font-semibold text-dark-200">
-                  <span className="text-amber-400">{unresolvedFailFiles.length}</span> session{unresolvedFailFiles.length !== 1 ? "s" : ""} need{unresolvedFailFiles.length === 1 ? "s" : ""} attention
-                </p>
-              </div>
-              <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center shrink-0">
-                <button type="button" onClick={() => doCheckAll(unresolvedFailFiles)} disabled={anyLoading}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-semibold bg-dark-800 hover:bg-dark-700 text-dark-300 border border-white/[0.06] disabled:opacity-50 transition-all cursor-pointer">
-                  {anyLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Search className="h-3 w-3" />}
-                  Check health
-                </button>
-                <button type="button" onClick={() => openReplace(unresolvedFailFiles)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold bg-accent text-white hover:bg-accent/90 transition-all cursor-pointer">
-                  <ArrowRightLeft className="h-3 w-3" /> Replace selected
-                </button>
-              </div>
+      {(hardLimitedFiles.length > 0 || unresolvedFailFiles.length > 0) && (
+        <section className="flex flex-col gap-2 rounded-xl border border-amber-500/20 bg-amber-500/[0.035] px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-amber-500/10">
+              <Info className="h-3.5 w-3.5 text-amber-400" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold text-dark-200">
+                <span className="text-amber-400">{hardLimitedFiles.length || unresolvedFailFiles.length}</span> account{(hardLimitedFiles.length || unresolvedFailFiles.length) === 1 ? "" : "s"} hard limited
+              </p>
+              <p className="mt-0.5 text-[9px] text-dark-500">
+                Replacement is recommended to keep campaigns running.
+              </p>
             </div>
-          )}
-        </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <button type="button" onClick={() => doCheckAll(hardLimitedFiles.length ? hardLimitedFiles : unresolvedFailFiles)} disabled={anyLoading}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-white/[0.07] bg-white/[0.025] px-2.5 text-[9.5px] font-semibold text-dark-400 hover:text-white disabled:opacity-50">
+              {anyLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Search className="h-3 w-3" />}
+              Check
+            </button>
+            <button type="button" onClick={openReplacementNotice}
+              className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[10px] font-bold ${
+                activeInvoiceJob ? "bg-amber-400 text-[#17120a] hover:bg-amber-300" : "bg-accent text-white hover:bg-accent/90"
+              }`}>
+              {activeInvoiceJob ? <CreditCard className="h-3 w-3" /> : <ArrowRightLeft className="h-3 w-3" />}
+              {activeInvoiceJob
+                ? `View invoice · $${pendingActionTotal.toFixed(2)}`
+                : replacementDrafts.length
+                  ? `Continue · $${pendingActionTotal.toFixed(2)}`
+                  : "Replace accounts"}
+            </button>
+          </div>
+        </section>
       )}
 
       {/* ══════ SESSION CARDS ══════ */}
-      <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2 xl:grid-cols-3">
         {pageSessions.map((sess, idx) => {
           const file = sess.file;
           const s = sessionStats?.[file];
@@ -973,9 +910,7 @@ export default function AccountsPage() {
           const tier = tierByFile[file];
           const pendingEntry = pendingByFile.get(file);
           const isPendingRepl = Boolean(pendingEntry);
-          const hasReplacementInvoice = Boolean(pendingEntry?.payment_id && pendingEntry?.invoice_data?.pay_address);
-          const isAwaitingPayment = pendingEntry?.status === "pending_payment" && hasReplacementInvoice;
-          const isReplacementDraft = pendingEntry?.status === "pending_payment" && !hasReplacementInvoice;
+          const isReplacementProcessing = isPendingRepl && pendingEntry?.status !== "pending_payment";
           const replaceAllowed = (tier === "critical" || tier === "attention") && !isPendingRepl;
           const menuOpen = openMenu === file;
 
@@ -992,13 +927,11 @@ export default function AccountsPage() {
                        return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.floor(m / 60)}h ago` : `${Math.floor(m / 1440)}d ago`; })()
             : null;
 
-          const dotTone = isAwaitingPayment ? "bg-amber-400" : isPendingRepl ? "bg-accent" : tier === "critical" ? "bg-red-500" : tier === "attention" ? "bg-amber-400" : tier === "healthy" ? "bg-emerald-400" : "bg-dark-600";
+          const dotTone = isReplacementProcessing ? "bg-accent" : tier === "critical" ? "bg-red-500" : tier === "attention" ? "bg-amber-400" : tier === "healthy" ? "bg-emerald-400" : "bg-dark-600";
           const pctTone = pct >= 70 ? "text-emerald-400" : pct >= 40 ? "text-amber-400" : "text-red-400";
 
           let badgeLabel: string, badgeCls: string, BadgeIcon: any, badgeSpin = false;
-          if (isAwaitingPayment) { badgeLabel = "Invoice active"; badgeCls = "bg-amber-500/10 border-amber-500/20 text-amber-300"; BadgeIcon = CircleDollarSign; }
-          else if (isReplacementDraft) { badgeLabel = "Ready to replace"; badgeCls = "bg-sky-500/10 border-sky-500/20 text-sky-300"; BadgeIcon = ArrowRightLeft; }
-          else if (isPendingRepl) { badgeLabel = "Replacing"; badgeCls = "bg-accent/10 border-accent/20 text-accent"; BadgeIcon = Clock; }
+          if (isReplacementProcessing) { badgeLabel = "Replacing"; badgeCls = "bg-accent/10 border-accent/20 text-accent"; BadgeIcon = Clock; }
           else if (isChk && !liveDiag) { badgeLabel = "Checking"; badgeCls = "bg-sky-500/10 border-sky-500/20 text-sky-400"; BadgeIcon = Loader2; badgeSpin = true; }
           else if (diagCfg) { badgeLabel = diagCfg.label; badgeCls = `${diagCfg.bg} ${diagCfg.border} ${diagCfg.text}`; BadgeIcon = diagCfg.Icon; }
           else if (tier === "attention") { badgeLabel = "Needs attention"; badgeCls = "bg-amber-500/10 border-amber-500/20 text-amber-400"; BadgeIcon = AlertTriangle; }
@@ -1067,20 +1000,10 @@ export default function AccountsPage() {
               </div>
 
               {/* Reason line for non-healthy states */}
-              {diag && diagCfg && tier !== "healthy" && !isPendingRepl && (
+              {diag && diagCfg && tier !== "healthy" && !isReplacementProcessing && (
                 <p className="mt-2 text-[10.5px] text-dark-400 leading-snug line-clamp-2">{diag.reason}</p>
               )}
-              {isAwaitingPayment && (
-                <p className="mt-2 inline-flex items-center gap-1 text-[10.5px] font-medium text-amber-300">
-                  <CircleDollarSign className="h-3 w-3" /> Not started — complete payment first
-                </p>
-              )}
-              {isReplacementDraft && (
-                <p className="mt-2 inline-flex items-center gap-1 text-[10.5px] font-medium text-sky-300">
-                  <ArrowRightLeft className="h-3 w-3" /> Review the replacement request above
-                </p>
-              )}
-              {isPendingRepl && !isAwaitingPayment && !isReplacementDraft && (
+              {isReplacementProcessing && (
                 <p className="mt-2 inline-flex items-center gap-1 text-[10.5px] text-accent font-medium"><Clock className="h-3 w-3" /> Replacement in progress</p>
               )}
 
