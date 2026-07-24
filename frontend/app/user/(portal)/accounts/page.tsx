@@ -6,12 +6,12 @@ import Modal from "@/components/ui/Modal";
 import { PageSkeleton } from "@/components/ui/Skeleton";
 import {
   Users, AlertTriangle, CheckCircle, XCircle,
-  Loader2, Pencil, Camera, RefreshCw, ArrowRightLeft,
+  Loader2, Pencil, RefreshCw, ArrowRightLeft,
   User, AlertOctagon, Search, Skull, Ban,
   Timer, HelpCircle, CircleDollarSign, Gift,
   CreditCard, WifiOff, Activity, ShieldCheck, Info,
   Clock, ChevronRight, ChevronLeft, ChevronDown, Zap, Send, Eye, Settings, Copy,
-  History, X, SlidersHorizontal,
+  History, X, SlidersHorizontal, Wrench, Power,
 } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import CryptoPaymentModal from "@/components/portal/CryptoPaymentModal";
@@ -28,6 +28,9 @@ interface AccountInfo {
   last_name: string;
   username: string;
   phone: string;
+  disabled?: boolean;
+  health?: string;
+  last_checked?: number | null;
 }
 
 interface DiagResult {
@@ -250,19 +253,20 @@ export default function AccountsPage() {
   // Edit modal
   const [editFile, setEditFile] = useState<string | null>(null);
   const [editLoading, setEditLoading] = useState(false);
+  const [editingName, setEditingName] = useState(false);
   const [accountInfo, setAccountInfo] = useState<AccountInfo | null>(null);
   const [infoLoading, setInfoLoading] = useState(false);
   const [editFirstName, setEditFirstName] = useState("");
-  const [editLastName, setEditLastName] = useState("");
-  const [editBio, setEditBio] = useState("");
-  const [editUsername, setEditUsername] = useState("");
-  const [editPhoto, setEditPhoto] = useState<File | null>(null);
   const [editMsg, setEditMsg] = useState<{ ok?: boolean; error?: string } | null>(null);
+  const [fixFile, setFixFile] = useState<string | null>(null);
+  const [fixLoading, setFixLoading] = useState(false);
+  const [fixSteps, setFixSteps] = useState<Array<{ key: string; status: string; message: string; details?: string[] }>>([]);
 
   // Replace modal
   const [replModal, setReplModal] = useState(false);
   const [replTargets, setReplTargets] = useState<string[]>([]);
   const [replLoading, setReplLoading] = useState(false);
+  const [voluntaryReplacement, setVoluntaryReplacement] = useState(false);
   const [replMsg, setReplMsg] = useState<{ ok?: boolean; error?: string; text?: string } | null>(null);
   const [freeRem, setFreeRem] = useState(0);
   const [pricePer, setPricePer] = useState(2.0);
@@ -458,7 +462,11 @@ export default function AccountsPage() {
      ══════════════════════════════════════════════════════ */
   const openReplace = useCallback((targets: string[]) => {
     console.log("[Accounts] Replace modal →", targets);
-    setReplTargets(targets); setReplMsg(null); setReplModal(true); fetchRepl();
+    setVoluntaryReplacement(false); setReplTargets(targets); setReplMsg(null); setReplModal(true); fetchRepl();
+  }, [fetchRepl]);
+
+  const openVoluntaryReplace = useCallback((target: string) => {
+    setVoluntaryReplacement(true); setReplTargets([target]); setReplMsg(null); setReplModal(true); fetchRepl();
   }, [fetchRepl]);
 
   const confirmReplace = useCallback(async () => {
@@ -469,7 +477,7 @@ export default function AccountsPage() {
     try {
       const r = await portalApi.post(
         `/api/portal/bot/${s.bot_name}/replace?telegram_id=${s.telegram_id}`,
-        { session_files: replTargets }, { timeout: 90000 }
+        { session_files: replTargets, voluntary: voluntaryReplacement }, { timeout: 90000 }
       );
       const d = r.data;
       console.log("[Accounts] Replace response:", JSON.stringify(d));
@@ -519,20 +527,19 @@ export default function AccountsPage() {
       console.error("[Accounts] Replace error:", err?.response?.status, detail);
       setReplMsg({ error: detail }); showToast(detail, "err");
     } finally { setReplLoading(false); }
-  }, [replTargets, fetchRepl, mutateBot, showToast]);
+  }, [replTargets, voluntaryReplacement, fetchRepl, mutateBot, showToast]);
 
   /* ══════════════════════════════════════════════════════
      EDIT
      ══════════════════════════════════════════════════════ */
   const openEdit = useCallback(async (file: string) => {
     const s = getPortalSession();
-    setEditFile(file); setEditMsg(null); setEditPhoto(null); setAccountInfo(null); setInfoLoading(true);
+    setEditFile(file); setEditMsg(null); setAccountInfo(null); setEditingName(false); setInfoLoading(true);
     try {
       const r = await portalApi.get(`/api/portal/bot/${s?.bot_name}/account/${encodeURIComponent(file)}/info?telegram_id=${s?.telegram_id}`);
       const info = r.data as AccountInfo;
       setAccountInfo(info);
-      setEditFirstName(info.first_name || ""); setEditLastName(info.last_name || "");
-      setEditBio(""); setEditUsername(info.username || "");
+      setEditFirstName((info.first_name || "").split("|", 1)[0].trim());
     } catch (e: any) { setEditMsg({ error: e?.response?.data?.detail || "Failed to load account info" }); }
     finally { setInfoLoading(false); }
   }, []);
@@ -544,18 +551,51 @@ export default function AccountsPage() {
     try {
       const fd = new FormData();
       if (editFirstName) fd.append("first_name", editFirstName);
-      if (editLastName) fd.append("last_name", editLastName);
-      if (editBio) fd.append("bio", editBio);
-      if (editUsername) fd.append("username", editUsername);
-      if (editPhoto) fd.append("photo", editPhoto);
       await portalApi.post(
         `/api/portal/bot/${s.bot_name}/account/${encodeURIComponent(editFile)}/profile?telegram_id=${s.telegram_id}`,
         fd, { headers: { "Content-Type": "multipart/form-data" } }
       );
-      setEditMsg({ ok: true }); showToast("Profile updated!", "ok"); mutateBot();
+      const brandedName = `${editFirstName.trim()} | @HQAdz`;
+      setAccountInfo((current) => current ? { ...current, first_name: brandedName } : current);
+      setEditingName(false);
+      setEditMsg({ ok: true }); showToast("Account name updated!", "ok"); mutateBot();
     } catch (e: any) { setEditMsg({ error: e?.response?.data?.detail || "Update failed" }); }
     finally { setEditLoading(false); }
-  }, [editFile, editFirstName, editLastName, editBio, editUsername, editPhoto, mutateBot, showToast]);
+  }, [editFile, editFirstName, mutateBot, showToast]);
+
+  const setAccountEnabled = useCallback(async (file: string, enabled: boolean) => {
+    const s = getPortalSession();
+    if (!s) return;
+    try {
+      await portalApi.post(
+        `/api/portal/bot/${s.bot_name}/account/${encodeURIComponent(file)}/enabled?telegram_id=${s.telegram_id}&enabled=${enabled}`
+      );
+      showToast(enabled ? "Account enabled" : "Account disabled", "ok");
+      mutateBot();
+    } catch (error: any) {
+      showToast(error?.response?.data?.detail || "Could not update account", "err");
+    }
+  }, [mutateBot, showToast]);
+
+  const runAccountFix = useCallback(async () => {
+    const s = getPortalSession();
+    if (!s || !fixFile) return;
+    setFixLoading(true); setFixSteps([]);
+    try {
+      const response = await portalApi.post(
+        `/api/portal/bot/${s.bot_name}/account/${encodeURIComponent(fixFile)}/fix?telegram_id=${s.telegram_id}`,
+        {}, { timeout: 180000 }
+      );
+      setFixSteps(response.data?.steps || []);
+      showToast(response.data?.ok ? "Account checks completed" : "Account needs attention", response.data?.ok ? "ok" : "warn");
+      mutateBot();
+    } catch (error: any) {
+      setFixSteps([{ key: "repair", status: "failed", message: error?.response?.data?.detail || "The account could not be fixed" }]);
+      showToast("The account could not be fixed", "err");
+    } finally {
+      setFixLoading(false);
+    }
+  }, [fixFile, mutateBot, showToast]);
 
   /* ══════════════════════════════════════════════════════
      RENDER
@@ -587,7 +627,7 @@ export default function AccountsPage() {
   const sessions: Array<{
     file: string; real_name: string; user_id?: number;
     health?: string; spam_status?: string | null; spam_details?: string | null; last_checked?: number | null;
-    full_name?: string | null; username?: string | null; phone?: string | null;
+    full_name?: string | null; username?: string | null; phone?: string | null; disabled?: boolean;
   }> = bot.sessions || [];
   const sessionStats = stats?.session_stats as Record<string, any> | undefined;
 
@@ -696,7 +736,7 @@ export default function AccountsPage() {
   const pageSessions = visibleSessions.slice(pageStart, pageStart + PAGE_SIZE);
 
   return (
-    <div className="-mx-3 -mt-3 min-h-[calc(100vh-5rem)] space-y-4 bg-[#07111C] px-3 py-4 animate-fade-in sm:-mx-5 sm:px-5 md:rounded-2xl md:border md:border-[#203044]/70 lg:px-6" suppressHydrationWarning>
+    <div className="space-y-4 animate-fade-in" suppressHydrationWarning>
       {toast && <Toast msg={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
 
       {/* Mobile app controls: intentionally separate from the desktop command panel. */}
@@ -718,7 +758,7 @@ export default function AccountsPage() {
           </div>
         </div>
 
-        <div className="mt-4 rounded-2xl border border-[#203044] bg-[#0D1A28] p-3.5">
+        <div className="mt-4 rounded-2xl border border-white/[0.07] bg-[#171723] p-3.5">
           <div className="grid grid-cols-3 divide-x divide-[#203044]">
             <div className="px-2 text-center"><p className="text-lg font-bold text-[#32D583]">{healthyCount}</p><p className="text-[10px] text-[#9AABBC]">Healthy</p></div>
             <div className="px-2 text-center"><p className="text-lg font-bold text-[#F5B942]">{attentionCount + criticalCount}</p><p className="text-[10px] text-[#9AABBC]">Needs attention</p></div>
@@ -1045,7 +1085,7 @@ export default function AccountsPage() {
                   : "border-white/[0.08] bg-white/[0.04] text-dark-400";
 
           return (
-            <article key={`mobile-${file}`} className="overflow-hidden rounded-2xl border border-[#203044] bg-[#0D1A28] shadow-lg shadow-black/10">
+            <article key={`mobile-${file}`} className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#171723] shadow-lg shadow-black/10">
               <div className="p-4">
                 <div className="flex items-start gap-3">
                   <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br text-[17px] font-bold text-white ${AVATAR_COLORS[idx % AVATAR_COLORS.length]}`}>
@@ -1145,7 +1185,7 @@ export default function AccountsPage() {
           else { badgeLabel = "Unchecked"; badgeCls = "bg-dark-700/30 border-white/[0.06] text-dark-400"; BadgeIcon = HelpCircle; }
 
           return (
-            <div key={file} className="flex h-full flex-col rounded-2xl border border-[#203044] bg-[#0D1A28] p-4 shadow-[0_8px_24px_rgba(0,0,0,0.12)] transition-colors hover:border-[#354a62]">
+            <div key={file} className="flex h-full flex-col rounded-2xl border border-white/[0.07] bg-[#171723] p-4 shadow-[0_8px_24px_rgba(0,0,0,0.12)] transition-colors hover:border-white/[0.14]">
               {/* Row 1 — avatar + identity + status */}
               <div className="flex items-start gap-3">
                 <div className="relative shrink-0">
@@ -1226,24 +1266,40 @@ export default function AccountsPage() {
                     <Settings className="h-3 w-3" />
                   </button>
                   {menuOpen && (
-                    <div className="absolute right-0 bottom-full mb-2 z-40 w-56 rounded-xl border border-white/[0.08] bg-[#1c1c2b] p-1 shadow-xl shadow-black/50">
+                    <div className="absolute right-0 bottom-full mb-2 z-40 w-64 overflow-hidden rounded-2xl border border-[#2a3e53] bg-[#0D1A28] p-1.5 shadow-2xl shadow-black/60">
+                      <div className="border-b border-[#203044] px-3 py-2">
+                        <p className="truncate text-[11px] font-semibold text-[#F5F7FA]">{name}</p>
+                        <p className="mt-0.5 text-[9px] text-[#667789]">Account controls</p>
+                      </div>
                       <button type="button" onClick={() => { setOpenMenu(null); doCheckWhy(file); }} disabled={isChk}
-                        className="w-full flex items-center gap-2.5 px-3 h-11 rounded-lg text-[12.5px] text-dark-100 hover:bg-white/[0.06] disabled:opacity-50 transition-colors">
-                        <Search className="h-4 w-4 text-dark-400" /> Run health check
+                        className="mt-1 flex h-11 w-full items-center gap-3 rounded-xl px-3 text-[12px] text-[#F5F7FA] hover:bg-[#122131] disabled:opacity-50">
+                        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-sky-500/10"><ShieldCheck className="h-4 w-4 text-sky-400" /></span>
+                        <span className="text-left"><span className="block font-semibold">Check Telegram status</span><span className="block text-[9px] text-[#667789]">Authorisation and SpamBot</span></span>
                       </button>
                       <button type="button" onClick={() => { setOpenMenu(null); openEdit(file); }}
-                        className="w-full flex items-center gap-2.5 px-3 h-11 rounded-lg text-[12.5px] text-dark-100 hover:bg-white/[0.06] transition-colors">
-                        <Pencil className="h-4 w-4 text-dark-400" /> Edit account profile
+                        className="flex h-11 w-full items-center gap-3 rounded-xl px-3 text-[12px] text-[#F5F7FA] hover:bg-[#122131]">
+                        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-500/10"><Pencil className="h-4 w-4 text-[#9278FF]" /></span>
+                        <span className="font-semibold">Edit account name</span>
                       </button>
-                      {replaceAllowed && (
-                        <button type="button" onClick={() => { setOpenMenu(null); openReplace([file]); }}
-                          className="w-full flex items-center gap-2.5 px-3 h-11 rounded-lg text-[12.5px] text-accent hover:bg-accent/10 transition-colors">
-                          <ArrowRightLeft className="h-4 w-4" /> Replace account
-                        </button>
-                      )}
+                      <button type="button" onClick={() => { setOpenMenu(null); setFixFile(file); setFixSteps([]); }}
+                        className="flex h-11 w-full items-center gap-3 rounded-xl px-3 text-[12px] text-[#F5F7FA] hover:bg-[#122131]">
+                        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/10"><Wrench className="h-4 w-4 text-emerald-400" /></span>
+                        <span className="text-left"><span className="block font-semibold">Fix this account</span><span className="block text-[9px] text-[#667789]">Groups, chat lists and health</span></span>
+                      </button>
+                      <button type="button" onClick={() => { setOpenMenu(null); setAccountEnabled(file, Boolean(sess.disabled)); }}
+                        className="flex h-11 w-full items-center gap-3 rounded-xl px-3 text-[12px] text-[#F5F7FA] hover:bg-[#122131]">
+                        <span className={`flex h-7 w-7 items-center justify-center rounded-lg ${sess.disabled ? "bg-emerald-500/10" : "bg-amber-500/10"}`}><Power className={`h-4 w-4 ${sess.disabled ? "text-emerald-400" : "text-amber-400"}`} /></span>
+                        <span className="font-semibold">{sess.disabled ? "Enable account" : "Disable account"}</span>
+                      </button>
+                      <button type="button" onClick={() => { setOpenMenu(null); openVoluntaryReplace(file); }}
+                        className="flex h-11 w-full items-center gap-3 rounded-xl px-3 text-[12px] text-[#F5F7FA] hover:bg-[#122131]">
+                        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-red-500/10"><ArrowRightLeft className="h-4 w-4 text-red-400" /></span>
+                        <span className="font-semibold">Replace account</span>
+                      </button>
                       <button type="button" onClick={() => { setOpenMenu(null); openSupportModal(file, name, diag, fi ? fi.failRate : 0); }}
-                        className="w-full flex items-center gap-2.5 px-3 h-11 rounded-lg text-[12.5px] text-dark-100 hover:bg-white/[0.06] transition-colors">
-                        <HelpCircle className="h-4 w-4 text-dark-400" /> Contact support
+                        className="flex h-11 w-full items-center gap-3 rounded-xl px-3 text-[12px] text-[#F5F7FA] hover:bg-[#122131]">
+                        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/5"><HelpCircle className="h-4 w-4 text-[#9AABBC]" /></span>
+                        <span className="font-semibold">Report this account</span>
                       </button>
                     </div>
                   )}
@@ -1346,7 +1402,7 @@ export default function AccountsPage() {
             </p>
             {(() => {
               const n = replTargets.length;
-              const fu = Math.min(freeRem, n);
+              const fu = voluntaryReplacement ? 0 : Math.min(freeRem, n);
               const pd = Math.max(0, n - fu);
               const tc = pd * pricePer;
               return (
@@ -1370,7 +1426,8 @@ export default function AccountsPage() {
                     </span>
                   </div>
                   {pd > 0 && <p className="text-[9px] text-dark-500">Pay with crypto after confirming.</p>}
-                  {freeRem > 0 && <p className="text-[9px] text-dark-500">{freeRem} free replacement{freeRem !== 1 ? "s" : ""} remaining on your plan.</p>}
+                  {freeRem > 0 && !voluntaryReplacement && <p className="text-[9px] text-dark-500">{freeRem} free replacement{freeRem !== 1 ? "s" : ""} remaining on your plan.</p>}
+                  {voluntaryReplacement && <p className="text-[9px] text-dark-500">Replacing a working account is a paid voluntary replacement.</p>}
                 </div>
               );
             })()}
@@ -1404,7 +1461,7 @@ export default function AccountsPage() {
       </Modal>
 
       {/* ══════ EDIT MODAL ══════ */}
-      <Modal open={!!editFile} onClose={() => { setEditFile(null); setEditMsg(null); }} title="Edit Profile" size="md">
+      <Modal open={!!editFile} onClose={() => { setEditFile(null); setEditMsg(null); }} title="Account details" size="md">
         {infoLoading ? (
           <div className="flex flex-col items-center py-10">
             <Loader2 className="h-8 w-8 text-accent animate-spin" />
@@ -1423,47 +1480,33 @@ export default function AccountsPage() {
                   <User className="h-4 w-4 text-accent" />
                 </div>
                 <div>
-                  <p className="text-[13px] font-semibold text-dark-100">{accountInfo.first_name} {accountInfo.last_name}</p>
+                  <p className="text-[13px] font-semibold text-dark-100">{accountInfo.first_name}</p>
                   <p className="text-[10px] text-dark-500">
                     {accountInfo.username ? `@${accountInfo.username}` : "No username"} · ID: {accountInfo.user_id}
                   </p>
                 </div>
               </div>
             )}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[10px] font-semibold text-dark-400 mb-1">First Name</label>
-                <input type="text" value={editFirstName} onChange={(e) => setEditFirstName(e.target.value)}
-                  className="w-full rounded-lg border border-white/[0.06] bg-dark-800/50 px-3 py-2 text-sm text-dark-100 focus:border-accent outline-none" placeholder="First" />
+            {editingName ? <div>
+              <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-dark-400">First name</label>
+              <div className="flex overflow-hidden rounded-xl border border-[#203044] bg-[#08131F] focus-within:border-[#7C5CFC]">
+                <input type="text" value={editFirstName} maxLength={50}
+                  onChange={(e) => setEditFirstName(e.target.value.replace(/\|.*$/, ""))}
+                  className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-sm text-dark-100 outline-none" placeholder="Account name" />
+                <span className="flex items-center border-l border-[#203044] bg-[#122131] px-3 text-[11px] font-semibold text-[#9278FF]">| @HQAdz</span>
               </div>
-              <div>
-                <label className="block text-[10px] font-semibold text-dark-400 mb-1">Last Name</label>
-                <input type="text" value={editLastName} onChange={(e) => setEditLastName(e.target.value)}
-                  className="w-full rounded-lg border border-white/[0.06] bg-dark-800/50 px-3 py-2 text-sm text-dark-100 focus:border-accent outline-none" placeholder="Last" />
+              <p className="mt-2 text-[10px] leading-relaxed text-dark-500">Only the first name can be changed. The HQAdz suffix is applied automatically.</p>
+              <div className="mt-3 rounded-xl border border-[#203044] bg-[#0D1A28] px-3 py-2.5">
+                <p className="text-[9px] uppercase tracking-wider text-dark-500">Saved as</p>
+                <p className="mt-1 text-[13px] font-semibold text-dark-100">{editFirstName.trim() || "Account name"} | @HQAdz</p>
               </div>
-            </div>
-            <div>
-              <label className="block text-[10px] font-semibold text-dark-400 mb-1">Bio</label>
-              <textarea value={editBio} onChange={(e) => setEditBio(e.target.value)} rows={2} maxLength={70}
-                className="w-full rounded-lg border border-white/[0.06] bg-dark-800/50 px-3 py-2 text-sm text-dark-100 focus:border-accent outline-none resize-none" placeholder="Bio (70 chars max)" />
-              <div className="text-[9px] text-dark-600 text-right">{editBio.length}/70</div>
-            </div>
-            <div>
-              <label className="block text-[10px] font-semibold text-dark-400 mb-1">Username</label>
-              <div className="flex items-center gap-1">
-                <span className="text-sm text-dark-500">@</span>
-                <input type="text" value={editUsername} onChange={(e) => setEditUsername(e.target.value.replace(/[^a-zA-Z0-9_]/g, ""))}
-                  className="flex-1 rounded-lg border border-white/[0.06] bg-dark-800/50 px-3 py-2 text-sm text-dark-100 focus:border-accent outline-none" placeholder="username" />
+            </div> : (
+              <div className="rounded-xl border border-white/[0.06] bg-dark-800/30 p-3">
+                <p className="text-[9px] font-semibold uppercase tracking-wider text-dark-500">Saved account name</p>
+                <p className="mt-1.5 text-[14px] font-semibold text-dark-100">{accountInfo?.first_name || "Unknown account"}</p>
+                <p className="mt-2 text-[10px] leading-relaxed text-dark-500">These details come from your saved account record. Opening this panel does not reconnect to Telegram.</p>
               </div>
-            </div>
-            <div>
-              <label className="block text-[10px] font-semibold text-dark-400 mb-1">Photo</label>
-              <label className="flex items-center gap-2 cursor-pointer rounded-lg border border-dashed border-dark-600/30 bg-dark-800/20 hover:bg-dark-800/40 px-3 py-3 transition-colors">
-                <Camera className="h-4 w-4 text-dark-400" />
-                <span className="text-[11px] text-dark-400">{editPhoto ? editPhoto.name : "Choose photo..."}</span>
-                <input type="file" accept="image/*" className="hidden" onChange={(e) => setEditPhoto(e.target.files?.[0] || null)} />
-              </label>
-            </div>
+            )}
             {editMsg?.ok && (
               <div className="flex items-center gap-2 rounded-xl bg-emerald-500/[0.06] border border-emerald-500/15 px-3 py-2 text-[11px] text-emerald-400 font-medium">
                 <CheckCircle className="h-3.5 w-3.5" /> Updated!
@@ -1476,12 +1519,19 @@ export default function AccountsPage() {
             )}
             <div className="flex items-center justify-end gap-2 pt-1">
               <button type="button" onClick={() => { setEditFile(null); setEditMsg(null); }}
-                className="px-4 py-2 rounded-lg text-[12px] text-dark-400 hover:text-dark-200 cursor-pointer">Cancel</button>
-              <button type="button" onClick={submitEdit} disabled={editLoading}
-                className="inline-flex items-center gap-2 px-5 py-2 rounded-xl text-[12px] font-bold bg-accent text-white hover:bg-accent/90 disabled:opacity-50 shadow-lg shadow-accent/20 transition-all cursor-pointer">
-                {editLoading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                Save
-              </button>
+                className="px-4 py-2 rounded-lg text-[12px] text-dark-400 hover:text-dark-200 cursor-pointer">{editingName ? "Cancel" : "Close"}</button>
+              {editingName ? (
+                <button type="button" onClick={submitEdit} disabled={editLoading}
+                  className="inline-flex items-center gap-2 px-5 py-2 rounded-xl text-[12px] font-bold bg-accent text-white hover:bg-accent/90 disabled:opacity-50 shadow-lg shadow-accent/20 transition-all cursor-pointer">
+                  {editLoading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  Save name
+                </button>
+              ) : (
+                <button type="button" onClick={() => setEditingName(true)}
+                  className="inline-flex items-center gap-2 px-5 py-2 rounded-xl text-[12px] font-bold bg-accent text-white hover:bg-accent/90 shadow-lg shadow-accent/20 transition-all cursor-pointer">
+                  <Pencil className="h-3.5 w-3.5" /> Change name
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -1502,6 +1552,54 @@ export default function AccountsPage() {
       />
 
       {/* ══════ SUPPORT TICKET MODAL ══════ */}
+      <Modal open={!!fixFile} onClose={() => { if (!fixLoading) { setFixFile(null); setFixSteps([]); } }} title="Fix this account" size="md">
+        <div className="space-y-4">
+          {!fixSteps.length && !fixLoading && (
+            <>
+              <div className="rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-4">
+                <div className="flex items-start gap-3">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-500/10"><Wrench className="h-5 w-5 text-amber-400" /></span>
+                  <div>
+                    <p className="text-[13px] font-semibold text-dark-100">Are you sure?</p>
+                    <p className="mt-1 text-[11px] leading-relaxed text-dark-400">This checks Telegram authorisation and SpamBot, reconnects the log group, and repairs configured chat lists.</p>
+                  </div>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setFixFile(null)} className="h-10 rounded-xl border border-[#203044] px-4 text-[11px] font-semibold text-dark-300">Cancel</button>
+                <button type="button" onClick={runAccountFix} className="h-10 rounded-xl bg-[#7C5CFC] px-4 text-[11px] font-bold text-white">Run account fix</button>
+              </div>
+            </>
+          )}
+          {fixLoading && (
+            <div className="flex flex-col items-center py-10 text-center">
+              <Loader2 className="h-8 w-8 animate-spin text-[#9278FF]" />
+              <p className="mt-3 text-[13px] font-semibold text-dark-100">Checking and repairing account</p>
+              <p className="mt-1 text-[10px] text-dark-500">This can take a minute while Telegram responds.</p>
+            </div>
+          )}
+          {!!fixSteps.length && !fixLoading && (
+            <>
+              <div className="space-y-2">
+                {fixSteps.map((step) => (
+                  <div key={step.key} className="flex items-start gap-3 rounded-xl border border-[#203044] bg-[#0D1A28] p-3">
+                    {step.status === "done" ? <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" /> :
+                     step.status === "warning" ? <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" /> :
+                     <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />}
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-semibold capitalize text-dark-200">{step.key.replaceAll("_", " ")}</p>
+                      <p className="mt-0.5 text-[10px] leading-relaxed text-dark-500">{step.message}</p>
+                      {!!step.details?.length && <p className="mt-1 text-[9px] text-red-300">{step.details.join(" · ")}</p>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button type="button" onClick={() => { setFixFile(null); setFixSteps([]); }} className="h-10 w-full rounded-xl bg-[#7C5CFC] text-[11px] font-bold text-white">Done</button>
+            </>
+          )}
+        </div>
+      </Modal>
+
       <Modal open={supportModal} onClose={() => { setSupportModal(false); setSupportResult(null); }} size="md">
         <div className="space-y-4">
           <div className="flex items-start gap-3">

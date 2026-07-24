@@ -1456,6 +1456,7 @@ async def portal_diagnose_sessions(bot_name: str, body: PortalDiagnoseRequest, t
 
 class PortalReplaceRequest(BaseModel):
     session_files: list[str]
+    voluntary: bool = False
 
 
 @router.post("/bot/{bot_name}/replace")
@@ -1603,6 +1604,21 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
             else:
                 _log.info("  Session %s: LIVE CHECK = ALIVE. Skipping.", sf)
 
+    if not valid_sessions and body.voluntary:
+        assigned = {
+            item.get("file"): item for item in sessions_cfg
+            if isinstance(item, dict) and item.get("file")
+        }
+        for session_file in body.session_files:
+            item = assigned.get(session_file)
+            if item:
+                valid_sessions.append({
+                    "session_file": session_file,
+                    "real_name": item.get("real_name", session_file),
+                    "failure_rate": 0,
+                    "spam_status": "VOLUNTARY",
+                })
+
     if not valid_sessions:
         _log.warning("  No valid failing sessions. Requested: %s, Failing: %s, Diagnosed: %s",
                       body.session_files, list(failing_map.keys()), diag_statuses)
@@ -1618,7 +1634,7 @@ async def portal_request_replacement(bot_name: str, body: PortalReplaceRequest, 
         bot_name=bot_name,
         owner_id=owner_id,
         sessions=valid_sessions,
-        free_count=min(free_remaining, len(valid_sessions)),
+        free_count=0 if body.voluntary else min(free_remaining, len(valid_sessions)),
     )
     _log.info("  ✓ Created %d replacement entries: %s", len(entries),
               [(e["id"], e["session_file"], e["status"]) for e in entries])
@@ -1768,13 +1784,24 @@ async def portal_update_account_profile(
     bio: Optional[str] = Form(None), username: Optional[str] = Form(None),
     photo: Optional[UploadFile] = File(None),
 ):
-    """Update Telegram profile (name, bio, username, photo) for a session account."""
+    """Update the customer-editable account name.
+
+    The public brand suffix is enforced server-side. Customers never control the
+    last name, username, bio, or session identity through this endpoint.
+    """
     bot_token, cfg = await _get_user_bot(telegram_id, bot_name)
     _ensure_not_frozen(cfg)
     # Verify session belongs to this bot
     session_files = [s.get("file", "") for s in cfg.get("sessions", [])]
     if session_file not in session_files:
         raise HTTPException(404, "Session not found on this bot")
+
+    clean_name = (first_name or "").split("|", 1)[0].strip()
+    if not clean_name:
+        raise HTTPException(400, "Enter a first name")
+    if len(clean_name) > 50:
+        raise HTTPException(400, "First name is too long")
+    branded_name = f"{clean_name} | @HQAdz"
 
     photo_bytes = None
     if photo:
@@ -1785,11 +1812,11 @@ async def portal_update_account_profile(
     try:
         result = await _update_session_profile(
             session_file,
-            first_name=first_name,
-            last_name=last_name,
-            bio=bio,
-            username=username,
-            photo_bytes=photo_bytes,
+            first_name=branded_name,
+            last_name="",
+            bio=None,
+            username=None,
+            photo_bytes=None,
         )
     except HTTPException:
         raise
@@ -1797,64 +1824,138 @@ async def portal_update_account_profile(
         logger.warning("Profile update failed for %s: %s", session_file, e)
         raise HTTPException(500, f"Profile update failed: {e}")
 
-    # Update real_name in bot config if first_name changed
-    if first_name is not None:
-        from code.utils import load_user_data, save_user_data, get_name_by_token
-        name = get_name_by_token(bot_token)
-        if name:
-            user_cfg = load_user_data(name)
-            if user_cfg:
-                for s in user_cfg.get("sessions", []):
-                    if s.get("file") == session_file:
-                        display = first_name
-                        if last_name:
-                            display += f" {last_name}"
-                        s["real_name"] = display
-                        break
-                save_user_data(name, user_cfg)
+    from code.utils import load_user_data, save_user_data, get_name_by_token
+    name = get_name_by_token(bot_token)
+    if name:
+        user_cfg = load_user_data(name)
+        if user_cfg:
+            for item in user_cfg.get("sessions", []):
+                if item.get("file") == session_file:
+                    item["real_name"] = branded_name
+                    break
+            save_user_data(name, user_cfg)
 
-    return {"ok": True, **result}
+    return {"ok": True, "first_name": branded_name, **result}
 
 
 @router.get("/bot/{bot_name}/account/{session_file}/info")
 async def portal_get_account_info(
     bot_name: str, session_file: str, telegram_id: int = Query(...),
 ):
-    """Get Telegram profile info for a session account."""
-    bot_token, cfg = await _get_user_bot(telegram_id, bot_name)
-    session_files = [s.get("file", "") for s in cfg.get("sessions", [])]
-    if session_file not in session_files:
+    """Return saved account data without opening the live Telegram session."""
+    _bot_token, cfg = await _get_user_bot(telegram_id, bot_name)
+    saved = next((s for s in cfg.get("sessions", []) if s.get("file") == session_file), None)
+    if not saved:
         raise HTTPException(404, "Session not found on this bot")
+    from code.utils import get_session_meta
+    meta = get_session_meta(session_file) or {}
+    display = str(saved.get("real_name") or meta.get("full_name") or "").strip()
+    return {
+        "user_id": saved.get("user_id") or meta.get("user_id") or 0,
+        "first_name": display,
+        "last_name": "",
+        "username": meta.get("username") or "",
+        "phone": meta.get("phone") or "",
+        "bio": "",
+        "disabled": session_file in (cfg.get("disabled_sessions") or []),
+        "health": meta.get("spam_status") or meta.get("health") or "UNKNOWN",
+        "last_checked": meta.get("last_checked"),
+    }
+
+
+@router.post("/bot/{bot_name}/account/{session_file}/enabled")
+async def portal_set_account_enabled(
+    bot_name: str, session_file: str, enabled: bool = Query(...),
+    telegram_id: int = Query(...),
+):
+    """Enable or park one owned assigned account without exposing admin APIs."""
+    bot_token, cfg = await _get_user_bot(telegram_id, bot_name)
+    _ensure_not_frozen(cfg)
+    sessions = cfg.get("sessions") or []
+    if not any(s.get("file") == session_file for s in sessions):
+        raise HTTPException(404, "Account not found on this AdBot")
+    disabled = [f for f in (cfg.get("disabled_sessions") or []) if f]
+    if not enabled:
+        remaining = [s for s in sessions if s.get("file") not in disabled and s.get("file") != session_file]
+        if not remaining:
+            raise HTTPException(400, "At least one account must remain enabled")
+        if session_file not in disabled:
+            disabled.append(session_file)
+    else:
+        disabled = [f for f in disabled if f != session_file]
+    cfg["disabled_sessions"] = disabled
+    from code.utils import save_user_data, get_name_by_token
+    name = get_name_by_token(bot_token)
+    if name:
+        save_user_data(name, cfg)
+    try:
+        if cfg.get("state") == "running":
+            from code.admin_ptb import submit_main_loop_job
+            submit_main_loop_job("restart_bot_preserve", (bot_token,))
+    except Exception:
+        logger.warning("Could not queue account enable-state refresh", exc_info=True)
+    return {"ok": True, "enabled": enabled, "applied": "live" if cfg.get("state") == "running" else "next_start"}
+
+
+@router.post("/bot/{bot_name}/account/{session_file}/fix")
+async def portal_fix_account(
+    bot_name: str, session_file: str, telegram_id: int = Query(...),
+):
+    """Run the real per-account repair checks and return customer-safe step results."""
+    bot_token, cfg = await _get_user_bot(telegram_id, bot_name)
+    _ensure_not_frozen(cfg)
+    if not any(s.get("file") == session_file for s in (cfg.get("sessions") or [])):
+        raise HTTPException(404, "Account not found on this AdBot")
 
     from code import config
+    from code.session_guard import open_session
+    from code.utils import join_chat_by_link, record_session_meta
+    from code.repair import _check_session_spambot
+    from code.replacement import _join_chatlist_for_new_session
+
+    steps = []
     path = config.SESSIONS_ACTIVE / session_file
     if not path.is_file():
-        raise HTTPException(404, "Session file not on disk")
+        return {"ok": False, "steps": [{"key": "validation", "status": "failed", "message": "Account file is unavailable"}]}
 
-    from code.session_guard import SessionBusyError, guarded_client
-    client = guarded_client(path, "reading account info", wait_timeout=8, expected_sec=20)
     try:
-        try:
-            await client.connect()
-        except SessionBusyError as e:
-            raise HTTPException(423, str(e))
-        if not await client.is_user_authorized():
-            raise HTTPException(400, "Session not authorized")
-        me = await client.get_me()
-        return {
-            "user_id": me.id,
-            "first_name": me.first_name or "",
-            "last_name": me.last_name or "",
-            "username": me.username or "",
-            "phone": me.phone or "",
-            "bio": "",  # Need separate call
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"Could not fetch account info: {e}")
-    finally:
-        await client.disconnect()
+        async with open_session(path, "portal account repair", wait_timeout=15, expected_sec=120) as client:
+            authorised = await client.is_user_authorized()
+            steps.append({"key": "validation", "status": "done" if authorised else "failed",
+                          "message": "Telegram authorisation confirmed" if authorised else "Account is signed out"})
+            if not authorised:
+                return {"ok": False, "steps": steps}
+            log_group = cfg.get("log_group")
+            if log_group:
+                try:
+                    await join_chat_by_link(client, log_group)
+                    steps.append({"key": "log_group", "status": "done", "message": "Log group is connected"})
+                except Exception as exc:
+                    steps.append({"key": "log_group", "status": "failed", "message": f"Log group could not be joined: {str(exc)[:120]}"})
+            else:
+                steps.append({"key": "log_group", "status": "failed", "message": "Log group is not configured"})
+    except Exception as exc:
+        return {"ok": False, "steps": [{"key": "validation", "status": "failed", "message": f"Account check failed: {str(exc)[:120]}"}]}
+
+    spam_status, _text, spam_details = await _check_session_spambot(path)
+    spam_ok = spam_status == "ACTIVE"
+    steps.append({"key": "spambot", "status": "done" if spam_ok else "warning",
+                  "message": "No Telegram restriction detected" if spam_ok else f"Telegram status: {spam_status.replace('_', ' ').title()}"})
+    record_session_meta(session_file, None, spam_status=spam_status, spam_details=spam_details)
+
+    chatlists = await _join_chatlist_for_new_session(bot_token, session_file)
+    configured = int(chatlists.get("configured") or 0)
+    failed = int(chatlists.get("failed") or 0)
+    steps.append({
+        "key": "chatlists",
+        "status": "done" if failed == 0 else "failed",
+        "message": "No chat lists are configured" if configured == 0 else
+                   f"{int(chatlists.get('joined') or 0)} of {configured} chat lists connected" if failed == 0 else
+                   f"{failed} chat list connection failed",
+        "details": chatlists.get("errors") or [],
+    })
+    ok = all(step["status"] == "done" for step in steps)
+    return {"ok": ok, "steps": steps, "message": "Account checks completed" if ok else "Account needs attention"}
 
 
 # ── Portal Notifications ──────────────────────────────────────────────────────
