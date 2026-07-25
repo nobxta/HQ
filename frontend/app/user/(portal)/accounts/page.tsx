@@ -11,7 +11,7 @@ import {
   Timer, HelpCircle, CircleDollarSign, Gift,
   CreditCard, WifiOff, Activity, ShieldCheck, Info,
   Clock, ChevronRight, ChevronLeft, ChevronDown, Zap, Send, Eye, Settings, Copy,
-  History, X, SlidersHorizontal, Wrench, Power,
+  History, X, SlidersHorizontal, Wrench, Power, MoreHorizontal,
 } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import CryptoPaymentModal from "@/components/portal/CryptoPaymentModal";
@@ -263,6 +263,7 @@ export default function AccountsPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "healthy" | "attention" | "critical">("all");
   const [openMenu, setOpenMenu] = useState<string | null>(null); // per-card "Manage" dropdown
+  const [mobileMenuFile, setMobileMenuFile] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [nowMs, setNowMs] = useState(0);
   const PAGE_SIZE = 12;
@@ -767,6 +768,13 @@ export default function AccountsPage() {
   const safePage = Math.min(page, totalPages);
   const pageStart = (safePage - 1) * PAGE_SIZE;
   const pageSessions = visibleSessions.slice(pageStart, pageStart + PAGE_SIZE);
+  const mobileMenuSession = mobileMenuFile ? sessions.find((session) => session.file === mobileMenuFile) || null : null;
+  const mobileMenuDiag = mobileMenuSession
+    ? diagResults[mobileMenuSession.file] || cacheDiag(mobileMenuSession.health, mobileMenuSession.spam_details)
+    : null;
+  const mobileMenuName = mobileMenuSession
+    ? (mobileMenuSession.full_name || mobileMenuSession.real_name || mobileMenuSession.file).replace(".session", "")
+    : "";
 
   return (
     <div className="space-y-4 animate-fade-in" suppressHydrationWarning>
@@ -1094,7 +1102,6 @@ export default function AccountsPage() {
           const tier = tierByFile[file];
           const pendingEntry = pendingByFile.get(file);
           const processing = Boolean(pendingEntry && pendingEntry.status !== "pending_payment");
-          const canReplace = (tier === "critical" || tier === "attention") && !pendingEntry;
           const name = (sess.full_name || sess.real_name)?.replace(".session", "") || file.replace(".session", "");
           const masked = maskPhone(sess.phone);
           const checkedAgo = sess.last_checked
@@ -1190,30 +1197,140 @@ export default function AccountsPage() {
 
                 <div className="mt-3 flex gap-2">
                   <button type="button" onClick={() => openEdit(file)}
-                    className="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-xl border border-[#203044] bg-[#122131] text-[12px] font-semibold text-[#F5F7FA] active:bg-[#182b3e]">
-                    <Eye className="h-4 w-4 text-accent" /> View details
+                    className="inline-flex h-12 flex-1 items-center justify-center gap-2.5 rounded-xl border border-violet-500/25 bg-gradient-to-r from-violet-500/15 to-indigo-500/10 text-[13px] font-bold text-white active:scale-[0.99]">
+                    <SlidersHorizontal className="h-4 w-4 text-[#9278FF]" /> Manage account
                   </button>
-                  <button type="button" onClick={() => setAccountEnabled(file, Boolean(sess.disabled))}
-                    aria-label={sess.disabled ? `Enable ${name}` : `Disable ${name}`}
-                    className={`inline-flex h-11 items-center justify-center gap-1.5 rounded-xl border px-3 text-[11px] font-semibold ${
-                      sess.disabled
-                        ? "border-emerald-500/20 bg-emerald-500/[0.07] text-emerald-400"
-                        : "border-slate-400/15 bg-slate-400/[0.05] text-slate-300"
-                    }`}>
-                    <Power className="h-4 w-4" /> {sess.disabled ? "Enable" : "Disable"}
+                  <button type="button" onClick={() => setMobileMenuFile(file)}
+                    aria-label={`More actions for ${name}`}
+                    className="inline-flex h-12 w-14 shrink-0 items-center justify-center rounded-xl border border-white/[0.10] bg-white/[0.035] text-dark-300 active:bg-white/[0.08]">
+                    <MoreHorizontal className="h-5 w-5" />
                   </button>
-                  {canReplace && (
-                    <button type="button" onClick={() => openReplace([file])}
-                      className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-[#7C5CFC] px-4 text-[12px] font-bold text-white active:scale-[0.98]">
-                      <ArrowRightLeft className="h-4 w-4" /> Replace
-                    </button>
-                  )}
                 </div>
               </div>
             </article>
           );
         })}
       </div>
+
+      {mobileMenuSession && (
+        <div className="fixed inset-0 z-[70] md:hidden" role="dialog" aria-modal="true" aria-label={`Actions for ${mobileMenuName}`}>
+          <button type="button" aria-label="Close account actions" onClick={() => setMobileMenuFile(null)}
+            className="absolute inset-0 bg-black/70 backdrop-blur-[2px]" />
+          <section className="absolute inset-x-0 bottom-0 max-h-[82dvh] overflow-y-auto rounded-t-[28px] border-t border-white/[0.10] bg-[#11111d] px-4 pb-[calc(env(safe-area-inset-bottom)+20px)] pt-3 shadow-2xl shadow-black">
+            <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-white/20" />
+            <div className="flex items-center gap-3 border-b border-white/[0.07] pb-4">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-indigo-700 text-[15px] font-bold text-white">
+                {mobileMenuName.charAt(0).toUpperCase()}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[14px] font-bold text-white">{mobileMenuName}</p>
+                <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                  <span className={`rounded-full border px-2 py-0.5 text-[8px] font-semibold ${
+                    tierByFile[mobileMenuSession.file] === "critical"
+                      ? "border-red-500/20 bg-red-500/10 text-red-400"
+                      : tierByFile[mobileMenuSession.file] === "attention"
+                        ? "border-amber-500/20 bg-amber-500/10 text-amber-400"
+                        : "border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
+                  }`}>
+                    {(STATUS_CFG[mobileMenuDiag?.status || ""] || STATUS_CFG.UNKNOWN).label}
+                  </span>
+                  <span className={`rounded-full border px-2 py-0.5 text-[8px] font-semibold ${
+                    mobileMenuSession.disabled
+                      ? "border-slate-400/20 bg-slate-400/[0.07] text-slate-300"
+                      : "border-emerald-500/20 bg-emerald-500/[0.07] text-emerald-400"
+                  }`}>
+                    {mobileMenuSession.disabled ? "Disabled" : "Enabled"}
+                  </span>
+                </div>
+              </div>
+              <button type="button" onClick={() => setMobileMenuFile(null)} aria-label="Close"
+                className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/[0.05] text-dark-400">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 py-4">
+              <button type="button" onClick={() => { const file = mobileMenuSession.file; setMobileMenuFile(null); openEdit(file); }}
+                className="flex min-h-20 flex-col items-start justify-between rounded-2xl border border-violet-500/20 bg-violet-500/[0.07] p-3 text-left">
+                <Eye className="h-4 w-4 text-[#9278FF]" />
+                <span><span className="block text-[11px] font-bold text-white">Account details</span><span className="mt-0.5 block text-[8px] text-dark-500">Saved profile and identity</span></span>
+              </button>
+              <button type="button" onClick={() => { const file = mobileMenuSession.file; setMobileMenuFile(null); doCheckWhy(file); }}
+                className="flex min-h-20 flex-col items-start justify-between rounded-2xl border border-sky-500/20 bg-sky-500/[0.06] p-3 text-left">
+                <ShieldCheck className="h-4 w-4 text-sky-400" />
+                <span><span className="block text-[11px] font-bold text-white">Check Telegram</span><span className="mt-0.5 block text-[8px] text-dark-500">Authorisation and SpamBot</span></span>
+              </button>
+            </div>
+
+            <div className="overflow-hidden rounded-2xl border border-white/[0.07] bg-white/[0.025]">
+              {[
+                {
+                  label: "Edit account name",
+                  note: "Change the saved first name",
+                  Icon: Pencil,
+                  tone: "text-violet-400",
+                  action: () => openEdit(mobileMenuSession.file),
+                },
+                {
+                  label: "Fix this account",
+                  note: "Repair groups, chat lists and validation",
+                  Icon: Wrench,
+                  tone: "text-emerald-400",
+                  action: () => { setFixFile(mobileMenuSession.file); setFixSteps([]); },
+                },
+                {
+                  label: mobileMenuSession.disabled ? "Enable account" : "Disable account",
+                  note: mobileMenuSession.disabled ? "Allow the AdBot to use this account" : "Pause without removing the account",
+                  Icon: Power,
+                  tone: mobileMenuSession.disabled ? "text-emerald-400" : "text-amber-400",
+                  action: () => setAccountEnabled(mobileMenuSession.file, Boolean(mobileMenuSession.disabled)),
+                },
+                {
+                  label: "Replace account",
+                  note: pendingByFile.has(mobileMenuSession.file) ? "Replacement is already in progress" : "Request a different Telegram session",
+                  Icon: ArrowRightLeft,
+                  tone: "text-red-400",
+                  action: () => {
+                    if (!pendingByFile.has(mobileMenuSession.file)) {
+                      const tier = tierByFile[mobileMenuSession.file];
+                      if (tier === "critical" || tier === "attention") openReplace([mobileMenuSession.file]);
+                      else openVoluntaryReplace(mobileMenuSession.file);
+                    }
+                  },
+                },
+                {
+                  label: "Report this account",
+                  note: "Send the saved diagnosis to support",
+                  Icon: HelpCircle,
+                  tone: "text-slate-300",
+                  action: () => openSupportModal(
+                    mobileMenuSession.file,
+                    mobileMenuName,
+                    mobileMenuDiag,
+                    failMap[mobileMenuSession.file]?.failRate || 0
+                  ),
+                },
+              ].map((item, index) => (
+                <button type="button" key={item.label}
+                  disabled={item.label === "Replace account" && pendingByFile.has(mobileMenuSession.file)}
+                  onClick={() => { setMobileMenuFile(null); item.action(); }}
+                  className={`flex w-full items-center gap-3 px-3.5 py-3 text-left disabled:opacity-40 ${
+                    index ? "border-t border-white/[0.06]" : ""
+                  }`}>
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/[0.045]">
+                    <item.Icon className={`h-4 w-4 ${item.tone}`} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[11px] font-semibold text-dark-100">{item.label}</span>
+                    <span className="mt-0.5 block text-[8.5px] text-dark-500">{item.note}</span>
+                  </span>
+                  <ChevronRight className="h-4 w-4 shrink-0 text-dark-600" />
+                </button>
+              ))}
+            </div>
+          </section>
+        </div>
+      )}
 
       {/* Desktop session grid. */}
       <div className="hidden gap-2.5 md:grid md:grid-cols-2 xl:grid-cols-3">
