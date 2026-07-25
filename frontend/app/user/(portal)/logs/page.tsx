@@ -736,48 +736,35 @@ export default function UserLogsPage() {
   const acctLabel = accountFilter === "all" || !_activeAcct ? "All Accounts" : `Account ${_activeAcct.index}`;
 
   return (
-    <div className="animate-fade-in" onClick={() => { setAcctOpen(false); setFunnelOpen(false); }}>
+    <div className="animate-fade-in lg:px-1" onClick={() => { setAcctOpen(false); setFunnelOpen(false); }}>
       {/* ── Header ── */}
       <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
-        <div>
+        <div className="hidden lg:block">
           <div className="flex items-center gap-2.5">
             <h1 className="text-2xl font-bold tracking-tight text-dark-100">Live Logs</h1>
-            {bot?.running && (
-              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-success">
-                <span className="relative flex h-1.5 w-1.5">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75" />
-                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-success" />
-                </span>
-                Live
-              </span>
-            )}
           </div>
-          <p className="text-sm text-dark-500 mt-1">
-            {searching
-              ? "Searching across your full log history"
-              : "Real-time activity from all your accounts"}
-          </p>
+          <p className="mt-1 text-xs text-dark-500">Home <span className="mx-2 text-dark-700">›</span> Logs <span className="mx-2 text-dark-700">›</span> <span className="text-accent-300">Live Logs</span></p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex w-full items-center justify-between gap-2 lg:w-auto lg:justify-end">
           {/* Segmented time range (timestamp-wise) */}
-          <div className="flex items-center rounded-xl border border-dark-700 bg-dark-900 p-1">
-            {TIME_RANGES.map((r) => {
-              const active = range === r.key;
-              return (
-                <button
-                  key={r.key}
-                  onClick={() => setRange(r.key)}
-                  className={`rounded-lg px-2.5 sm:px-3 py-1.5 text-xs font-semibold transition-colors ${active ? "bg-accent text-white shadow-sm" : "text-dark-400 hover:text-dark-200"}`}
-                >
-                  {r.label}
-                </button>
-              );
-            })}
+          <div className="relative">
+            <Clock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-dark-400" />
+            <select value={range} onChange={(e) => setRange(e.target.value)}
+              className="h-11 appearance-none rounded-xl border border-white/[0.09] bg-[#11111d] pl-10 pr-10 text-[13px] font-semibold text-dark-200 outline-none focus:border-accent/50">
+              {TIME_RANGES.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-dark-500" />
           </div>
+          {bot?.running && (
+            <span className="inline-flex h-11 items-center gap-2 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.04] px-4 text-[12px] font-semibold text-dark-200">
+              <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" /><span className="relative h-2 w-2 rounded-full bg-emerald-400" /></span>
+              Live
+            </span>
+          )}
           <button
             onClick={(e) => { e.stopPropagation(); refresh(); }}
-            className="flex items-center justify-center h-9 w-9 rounded-xl border border-dark-700 bg-dark-900 text-dark-400 hover:text-dark-200 hover:border-dark-600 transition-colors"
+            className="hidden h-11 w-11 items-center justify-center rounded-xl border border-white/[0.08] bg-[#11111d] text-dark-400 transition-colors hover:text-white lg:flex"
             aria-label="Refresh"
           >
             <RotateCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
@@ -786,32 +773,32 @@ export default function UserLogsPage() {
       </div>
 
       {/* ── Stat cards ── */}
-      <div className="flex sm:grid sm:grid-cols-3 lg:grid-cols-5 gap-2 sm:gap-3 mb-4 overflow-x-auto sm:overflow-visible no-scrollbar -mx-4 px-4 sm:mx-0 sm:px-0">
-        <StatCard icon={Send} label="Total Sent" value={stats.total} tint="accent" sub="All attempts" />
-        <StatCard icon={CheckCircle2} label="Successful" value={stats.success} tint="success" sub={`${pct(stats.success)}% success rate`} subTint="success" />
-        <StatCard icon={XCircle} label="Failed" value={stats.failure} tint="danger" sub={`${pct(stats.failure)}% failure rate`} subTint="danger" />
-        <StatCard icon={Clock} label="Waiting" value={stats.flood} tint="warning" sub="In queue" subTint="warning" />
-        <StatCard icon={Users} label="Active Accounts" value={accountList.length} tint="info" sub="Active sessions" />
+      <div className="mb-5 grid grid-cols-6 gap-2.5 lg:grid-cols-5 lg:gap-4">
+        <StatCard className="col-span-3 lg:col-span-1" icon={Send} label="Total Sent" value={stats.total} tint="accent" sub="All attempts" />
+        <StatCard className="col-span-3 lg:col-span-1" icon={CheckCircle2} label="Successful" value={stats.success} tint="success" sub={`${pct(stats.success)}% success rate`} subTint="success" />
+        <StatCard className="col-span-2 lg:col-span-1" icon={XCircle} label="Failed" value={stats.failure} tint="danger" sub={`${pct(stats.failure)}% failure rate`} subTint="danger" />
+        <StatCard className="col-span-2 lg:col-span-1" icon={Clock} label="Waiting" value={stats.flood} tint="warning" sub="In queue" subTint="warning" />
+        <StatCard className="col-span-2 lg:col-span-1" icon={Users} label="Active Accounts" value={accountList.length} tint="info" sub="Active sessions" />
       </div>
       {stats.usingLifetime && (
         <p className="text-[11px] text-dark-600 -mt-2 mb-3">Showing lifetime totals (match the Dashboard) · pick a range to see recent activity.</p>
       )}
 
       {/* ── View + account controls (status filtering lives in the funnel next to search) ── */}
-      <div className="flex flex-wrap items-center gap-2 mb-3">
-        <div className="flex items-center gap-2 ml-auto">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="flex w-full items-center justify-between gap-2">
           {/* Timeline / By Group */}
-          <div className="flex items-center rounded-xl border border-dark-700 bg-dark-900 overflow-hidden">
-            <button onClick={() => setView("timeline")} className={`px-3 py-2 text-xs font-semibold transition-colors ${view === "timeline" ? "bg-dark-700 text-dark-100" : "text-dark-500 hover:text-dark-300"}`}>Timeline</button>
-            <button onClick={() => setView("groups")} className={`px-3 py-2 text-xs font-semibold transition-colors ${view === "groups" ? "bg-dark-700 text-dark-100" : "text-dark-500 hover:text-dark-300"}`}>By Group</button>
+          <div className="flex h-11 flex-1 items-center overflow-hidden rounded-xl border border-white/[0.10] bg-[#11111d] p-1 sm:max-w-[255px]">
+            <button onClick={() => setView("timeline")} className={`h-full flex-1 rounded-lg px-3 text-xs font-semibold transition-colors ${view === "timeline" ? "bg-accent/20 text-white shadow-inner shadow-accent/10" : "text-dark-500 hover:text-dark-300"}`}>Timeline</button>
+            <button onClick={() => setView("groups")} className={`h-full flex-1 rounded-lg px-3 text-xs font-semibold transition-colors ${view === "groups" ? "bg-accent/20 text-white shadow-inner shadow-accent/10" : "text-dark-500 hover:text-dark-300"}`}>By Group</button>
           </div>
 
           {/* Account-wise dropdown — lists every configured account (even non-posting ones) */}
-          {accountList.length > 1 && (
+          {(
             <div className="relative" onClick={(e) => e.stopPropagation()}>
               <button
                 onClick={() => setAcctOpen((v) => !v)}
-                className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${accountFilter !== "all" ? "border-accent/40 bg-accent/10 text-accent" : "border-dark-700 bg-dark-900 text-dark-300 hover:border-dark-600"}`}
+                className={`flex h-11 min-w-[150px] items-center justify-between gap-2 rounded-xl border px-3 text-xs font-semibold transition-colors ${accountFilter !== "all" ? "border-accent/40 bg-accent/10 text-accent" : "border-white/[0.10] bg-[#11111d] text-dark-300 hover:border-dark-600"}`}
               >
                 {acctLabel}
                 <ChevronDown className="h-3 w-3 opacity-70" />
@@ -836,16 +823,16 @@ export default function UserLogsPage() {
       </div>
 
       {/* ── Table / group card ── */}
-      <div className="rounded-2xl border border-dark-700/50 bg-dark-900 overflow-hidden">
+      <div className="overflow-hidden rounded-2xl border border-white/[0.09] bg-[#11111d] shadow-[0_18px_55px_rgba(0,0,0,0.18)]">
         {/* Toolbar: search + sort + export */}
-        <div className="flex flex-wrap items-center gap-2 p-2.5 sm:p-3 border-b border-dark-800">
+        <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.07] p-3 sm:p-4">
           <div className="relative flex-1 min-w-[160px]">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-dark-500" />
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder={view === "groups" ? "Search a group…" : "Search group or account…"}
-              className="w-full rounded-xl border border-dark-700 bg-dark-950 pl-10 pr-9 py-2 text-sm text-dark-100 placeholder:text-dark-500 outline-none focus:border-accent/60 focus:ring-4 focus:ring-accent/10 transition-all"
+              placeholder={view === "groups" ? "Search a group…" : "Search group or event"}
+              className="h-11 w-full rounded-xl border border-white/[0.09] bg-[#0d0d18] pl-10 pr-9 text-sm text-dark-100 placeholder:text-dark-500 outline-none transition-all focus:border-accent/60 focus:ring-4 focus:ring-accent/10"
             />
             {search && (
               <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-dark-500 hover:text-dark-300">
@@ -858,7 +845,7 @@ export default function UserLogsPage() {
               <select
                 value={sort}
                 onChange={(e) => setSort(e.target.value as "newest" | "oldest")}
-                className="appearance-none rounded-xl border border-dark-700 bg-dark-950 pl-3 pr-8 py-2 text-sm text-dark-200 outline-none focus:border-accent/60"
+                className="h-11 appearance-none rounded-xl border border-white/[0.09] bg-[#0d0d18] pl-3 pr-9 text-sm text-dark-200 outline-none focus:border-accent/60"
               >
                 <option value="newest">Newest First</option>
                 <option value="oldest">Oldest First</option>
@@ -870,7 +857,7 @@ export default function UserLogsPage() {
           <div className="relative" onClick={(e) => e.stopPropagation()}>
             <button
               onClick={() => setFunnelOpen((v) => !v)}
-              className={`flex items-center justify-center h-[38px] w-[38px] rounded-xl border transition-colors ${filter !== "all" || accountFilter !== "all" ? "border-accent/40 bg-accent/10 text-accent" : "border-dark-700 bg-dark-950 text-dark-400 hover:text-dark-200 hover:border-dark-600"}`}
+              className={`flex h-11 w-11 items-center justify-center rounded-xl border transition-colors ${filter !== "all" || accountFilter !== "all" ? "border-accent/40 bg-accent/10 text-accent" : "border-white/[0.09] bg-[#0d0d18] text-dark-400 hover:text-dark-200 hover:border-dark-600"}`}
               aria-label="Filters"
             >
               <Filter className="h-4 w-4" />
@@ -902,7 +889,7 @@ export default function UserLogsPage() {
           </div>
           <button
             onClick={exportLogs}
-            className="flex items-center justify-center h-[38px] w-[38px] rounded-xl border border-dark-700 bg-dark-950 text-dark-400 hover:text-dark-200 hover:border-dark-600 transition-colors"
+            className="flex h-11 w-11 items-center justify-center rounded-xl border border-white/[0.09] bg-[#0d0d18] text-dark-400 transition-colors hover:border-dark-600 hover:text-dark-200"
             aria-label="Export logs"
           >
             <Download className="h-4 w-4" />
@@ -920,11 +907,10 @@ export default function UserLogsPage() {
         ) : (
           <>
             {/* Header row (desktop) */}
-            <div className="hidden md:grid grid-cols-[96px_112px_1fr_120px_28px] gap-3 px-4 py-2 border-b border-dark-800 text-[10px] font-bold uppercase tracking-wider text-dark-500">
+            <div className="hidden md:grid grid-cols-[130px_150px_1fr_28px] gap-3 border-b border-white/[0.07] px-5 py-3 text-[10px] font-bold uppercase tracking-wider text-dark-500">
+              <span>Type</span>
               <span>Time</span>
-              <span>Status</span>
-              <span>Group / Channel</span>
-              <span>Account</span>
+              <span>Event</span>
               <span />
             </div>
 
@@ -1033,29 +1019,29 @@ function statusMeta(type: LogType): { label: string; dot: string; text: string; 
 
 /* ────────────────────── Stat card ────────────────────── */
 
-function StatCard({ icon: Icon, label, value, tint, sub, subTint }: {
+function StatCard({ icon: Icon, label, value, tint, sub, subTint, className = "" }: {
   icon: any; label: string; value: number; tint: "accent" | "success" | "danger" | "warning" | "info";
-  sub?: string; subTint?: "success" | "danger" | "warning" | "muted";
+  sub?: string; subTint?: "success" | "danger" | "warning" | "muted"; className?: string;
 }) {
-  const t: Record<string, { text: string; bg: string; ring: string }> = {
-    accent: { text: "text-accent", bg: "bg-accent/10", ring: "ring-accent/20" },
-    success: { text: "text-success", bg: "bg-success/10", ring: "ring-success/20" },
-    danger: { text: "text-danger", bg: "bg-danger/10", ring: "ring-danger/20" },
-    warning: { text: "text-warning", bg: "bg-warning/10", ring: "ring-warning/20" },
-    info: { text: "text-blue-400", bg: "bg-blue-500/10", ring: "ring-blue-500/20" },
+  const t: Record<string, { text: string; bg: string; ring: string; border: string; glow: string }> = {
+    accent: { text: "text-cyan-400", bg: "bg-cyan-500/10", ring: "ring-cyan-400/40", border: "border-cyan-500/45", glow: "shadow-cyan-950/30" },
+    success: { text: "text-emerald-400", bg: "bg-emerald-500/10", ring: "ring-emerald-400/40", border: "border-emerald-500/45", glow: "shadow-emerald-950/30" },
+    danger: { text: "text-red-400", bg: "bg-red-500/10", ring: "ring-red-400/40", border: "border-red-500/45", glow: "shadow-red-950/30" },
+    warning: { text: "text-amber-400", bg: "bg-amber-500/10", ring: "ring-amber-400/40", border: "border-amber-500/45", glow: "shadow-amber-950/30" },
+    info: { text: "text-violet-400", bg: "bg-violet-500/10", ring: "ring-violet-400/40", border: "border-violet-500/40", glow: "shadow-violet-950/30" },
   };
   const c = t[tint];
   const subColor = subTint === "success" ? "text-success" : subTint === "danger" ? "text-danger" : subTint === "warning" ? "text-warning" : "text-dark-500";
   return (
-    <div className="shrink-0 w-[132px] sm:w-auto rounded-xl sm:rounded-2xl border border-dark-700/50 bg-dark-900 p-2.5 sm:p-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-dark-600">
-      <div className="flex items-center gap-2 sm:justify-between">
-        <span className={`flex items-center justify-center h-7 w-7 sm:h-8 sm:w-8 rounded-lg shrink-0 ring-1 sm:order-2 ${c.bg} ${c.ring}`}>
-          <Icon className={`h-3.5 w-3.5 sm:h-4 sm:w-4 ${c.text}`} />
+    <div className={`${className} min-w-0 rounded-2xl border bg-gradient-to-br from-[#11111d] to-[#0b0b15] p-3 shadow-lg transition-all duration-200 hover:-translate-y-0.5 sm:p-4 ${c.border} ${c.glow}`}>
+      <div className="flex items-center gap-2.5">
+        <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ring-1 sm:h-11 sm:w-11 ${c.bg} ${c.ring}`}>
+          <Icon className={`h-4 w-4 sm:h-5 sm:w-5 ${c.text}`} />
         </span>
-        <span className="text-[11px] sm:text-[13px] font-medium text-dark-400 truncate sm:order-1">{label}</span>
+        <span className="truncate text-[11px] font-medium text-dark-400 sm:text-[13px]">{label}</span>
       </div>
-      <p className="mt-1.5 sm:mt-2.5 text-xl sm:text-[28px] font-bold leading-none tracking-tight tabular-nums text-dark-100">{value.toLocaleString()}</p>
-      {sub && <p className={`mt-1 sm:mt-2 text-[10px] sm:text-xs font-medium truncate ${subColor}`}>{sub}</p>}
+      <p className="mt-3 text-[25px] font-bold leading-none tracking-tight tabular-nums text-white sm:text-[30px]">{value.toLocaleString()}</p>
+      {sub && <p className={`mt-2 truncate text-[9px] font-medium sm:text-xs ${subColor}`}>{sub}</p>}
     </div>
   );
 }
@@ -1087,13 +1073,13 @@ function LogTableRow({ entry, accountIndex, expanded, onToggle, botName }: {
       {/* Row (denser: py-2.5) */}
       <div
         onClick={onToggle}
-        className={`grid grid-cols-[1fr_auto] md:grid-cols-[96px_112px_1fr_120px_28px] items-center gap-2 md:gap-3 px-4 py-2.5 cursor-pointer transition-colors ${expanded ? "" : "hover:bg-white/[0.02]"}`}
+        className={`grid grid-cols-[1fr_auto] items-center gap-2 px-4 py-3.5 cursor-pointer transition-colors md:grid-cols-[130px_150px_1fr_28px] md:gap-3 md:px-5 ${expanded ? "" : "hover:bg-white/[0.025]"}`}
       >
-        <span className="hidden md:block text-[13px] font-mono text-dark-400 tabular-nums">{timeShort}</span>
         <span className="hidden md:flex items-center gap-1.5">
           <span className={`h-2 w-2 rounded-full ${s.dot}`} />
           <span className={`text-[13px] font-medium ${s.text}`}>{statusLabel}</span>
         </span>
+        <span className="hidden md:block text-[13px] font-mono text-dark-400 tabular-nums">{timeShort}</span>
         <div className="min-w-0">
           <div className="flex items-center gap-2 md:hidden mb-0.5">
             <span className={`h-2 w-2 rounded-full ${s.dot}`} />
@@ -1103,7 +1089,6 @@ function LogTableRow({ entry, accountIndex, expanded, onToggle, botName }: {
           <p className="text-sm font-semibold text-dark-100 truncate">{groupPrimary}</p>
           {groupSecondary && <p className="text-[11px] text-dark-600 font-mono truncate">{groupSecondary}</p>}
         </div>
-        <span className="hidden md:block text-[13px] text-dark-400 truncate">{accountIndex > 0 ? `Account ${accountIndex}` : "—"}</span>
         <ChevronRight className={`h-4 w-4 shrink-0 justify-self-end transition-transform ${expanded ? "rotate-90 text-accent" : "text-dark-600"}`} />
       </div>
 

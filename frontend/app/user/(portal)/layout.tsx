@@ -64,7 +64,7 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
             >
               <Menu className="h-5 w-5" />
             </button>
-            {pageTitle && <h1 className="text-lg font-bold text-white truncate">{pageTitle}</h1>}
+            {pageTitle && <h1 className={`text-lg font-bold text-white truncate ${pathname === "/user/logs" ? "lg:hidden" : ""}`}>{pageTitle}</h1>}
           </div>
           <div className="flex items-center gap-3">
             {/* Live date / time pill — desktop */}
