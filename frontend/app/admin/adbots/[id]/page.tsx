@@ -28,7 +28,7 @@ import {
   CheckSquare, MinusSquare, Bold, Italic, Underline, Strikethrough,
   Code, Link2, Activity, Zap as ZapIcon, Layout, Smartphone, Server,
   Power, Send, Upload, Filter, MoreVertical, Wifi, Check, AlertOctagon,
-  AlertTriangle, Folder,
+  AlertTriangle, Folder, Gift,
 } from "lucide-react";
 import api from "@/lib/api";
 import TelegramPostPreview, { parseTelegramPostUrl } from "@/components/ui/TelegramPostPreview";
@@ -1626,6 +1626,9 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
   const [bulkAction, setBulkAction] = useState<"" | "validating" | "spambot" | "info">("");
   const [bulkResult, setBulkResult] = useState<any>(null);
   const [spambotResults, setSpambotResults] = useState<Record<string, { status: string; details?: string | null }>>({});
+  const [creditAmount, setCreditAmount] = useState(1);
+  const [creditReason, setCreditReason] = useState("");
+  const [creditLoading, setCreditLoading] = useState<"add" | "remove" | "">("");
 
   // Real, backend-backed session view (no mock data, no live Telethon on load).
   const [range, setRange] = useState<"1h" | "6h" | "24h" | "7d" | "all">("24h");
@@ -1637,6 +1640,23 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
 
   // Action handlers refresh the real overview (and the parent bot detail via onUpdate).
   const fetchDetails = async () => { await reloadOverview(); };
+
+  const adjustReplacementCredits = async (direction: 1 | -1) => {
+    const amount = Math.max(1, Math.min(100, Math.floor(Number(creditAmount) || 1)));
+    setCreditLoading(direction > 0 ? "add" : "remove");
+    try {
+      const { data } = await api.post(`/api/bots/${encodeURIComponent(name)}/replacement-credits`, {
+        delta: direction * amount,
+        reason: creditReason.trim(),
+      });
+      toast.success(data.message || "Replacement credits updated");
+      setCreditReason("");
+      onUpdate();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Could not update replacement credits");
+    }
+    setCreditLoading("");
+  };
 
   const runValidateAll = async () => {
     setBulkAction("validating");
@@ -1834,6 +1854,11 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
     );
   });
   const deadFiles = allSessions.filter((s) => s.status === "dead").map((s) => s.file);
+  const planReplacementLimit = Number(bot.free_replacements_limit ?? bot.plan?.free_replacements ?? 0);
+  const planReplacementRemaining = Number(bot.plan_free_replacements_remaining ?? Math.max(0, planReplacementLimit - Number(bot.replacements_used || 0)));
+  const adminReplacementCredits = Number(bot.admin_free_replacement_credits || 0);
+  const totalReplacementCredits = Number(bot.free_replacements_remaining ?? (planReplacementRemaining + adminReplacementCredits));
+  const latestCreditChange = [...(bot.replacement_credit_history || [])].reverse()[0];
 
   const RANGES: Array<typeof range> = ["1h", "6h", "24h", "7d", "all"];
   const rangeLabel = (r: string) => (r === "all" ? "All time" : r);
@@ -1897,6 +1922,59 @@ function SessionsTab({ bot, name, onUpdate }: { bot: any; name: string; onUpdate
           </HqCard>
         ))}
       </div>
+
+      <HqCard className="p-4 sm:p-5">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-center">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <Gift className="h-4 w-4 text-hq-accent" />
+              <h3 className="text-[14px] font-semibold text-hq-text">Free replacement credits</h3>
+            </div>
+            <p className="mt-1 text-[11px] leading-relaxed text-hq-muted">
+              Plan credits are consumed first. Admin bonus credits stay in this bot&apos;s bucket until they are used and are preserved when the subscription renews.
+            </p>
+          </div>
+          <div className="grid grid-cols-3 gap-2 sm:min-w-[390px]">
+            {[
+              { label: "Plan left", value: planReplacementLimit < 0 ? "∞" : planReplacementRemaining, tone: "text-hq-sub" },
+              { label: "Admin bonus", value: adminReplacementCredits, tone: "text-hq-accent" },
+              { label: "Total free", value: planReplacementLimit < 0 ? "∞" : totalReplacementCredits, tone: "text-hq-success" },
+            ].map((item) => (
+              <div key={item.label} className="rounded-[12px] border border-hq-border bg-hq-bg px-3 py-2.5 text-center">
+                <p className={`text-[20px] font-semibold tabular-nums ${item.tone}`}>{item.value}</p>
+                <p className="mt-0.5 text-[9px] text-hq-muted">{item.label}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="mt-4 grid gap-2 border-t border-hq-border/60 pt-4 md:grid-cols-[110px_1fr_auto_auto]">
+          <label className="relative">
+            <span className="sr-only">Credit amount</span>
+            <input type="number" min={1} max={100} value={creditAmount}
+              onChange={(e) => setCreditAmount(Math.max(1, Math.min(100, Number(e.target.value) || 1)))}
+              className="h-10 w-full rounded-[11px] border border-hq-border bg-hq-bg px-3 text-[13px] font-semibold tabular-nums text-hq-text outline-none focus:border-hq-accent/60" />
+          </label>
+          <input value={creditReason} onChange={(e) => setCreditReason(e.target.value)} maxLength={200}
+            placeholder="Optional reason, e.g. service recovery or goodwill"
+            className="h-10 min-w-0 rounded-[11px] border border-hq-border bg-hq-bg px-3 text-[12px] text-hq-text outline-none placeholder:text-hq-muted focus:border-hq-accent/60" />
+          <HqBtn tone="primary" onClick={() => adjustReplacementCredits(1)} loading={creditLoading === "add"} disabled={!!creditLoading} icon={Plus}>
+            Add credits
+          </HqBtn>
+          <HqBtn tone="secondary" onClick={() => adjustReplacementCredits(-1)} loading={creditLoading === "remove"}
+            disabled={!!creditLoading || adminReplacementCredits < creditAmount} icon={Minus}>
+            Remove
+          </HqBtn>
+        </div>
+        {latestCreditChange && (
+          <p className="mt-2 text-[10px] text-hq-muted">
+            Last adjustment: <span className={Number(latestCreditChange.delta) >= 0 ? "text-hq-success" : "text-hq-warning"}>
+              {Number(latestCreditChange.delta) >= 0 ? "+" : ""}{latestCreditChange.delta}
+            </span>
+            {latestCreditChange.reason ? ` · ${latestCreditChange.reason}` : ""}
+            {latestCreditChange.timestamp ? ` · ${timeAgo(latestCreditChange.timestamp)}` : ""}
+          </p>
+        )}
+      </HqCard>
 
       {/* Filter / search / actions row */}
       <div className="flex flex-wrap items-center gap-2">

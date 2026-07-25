@@ -79,6 +79,10 @@ def serialize_bot_detail(token: str, cfg: dict) -> dict:
     """Full bot detail (still no raw token)."""
     base = serialize_bot_summary(token, cfg)
     disabled_set = {(f or "").strip() for f in (cfg.get("disabled_sessions") or []) if f}
+    replacement_limit = int(cfg.get("free_replacements_limit", 0))
+    replacements_used = max(0, int(cfg.get("replacements_used", 0)))
+    replacement_bonus = max(0, int(cfg.get("admin_free_replacement_credits", 0)))
+    plan_remaining = 999 if replacement_limit < 0 else max(0, replacement_limit - replacements_used)
     base.update({
         "sessions": [
             {
@@ -115,6 +119,12 @@ def serialize_bot_detail(token: str, cfg: dict) -> dict:
         "web_token": cfg.get("web_token", ""),
         "last_web_login": cfg.get("last_web_login"),
         "web_login_history": cfg.get("web_login_history", []),
+        "free_replacements_limit": replacement_limit,
+        "replacements_used": replacements_used,
+        "admin_free_replacement_credits": replacement_bonus,
+        "plan_free_replacements_remaining": plan_remaining,
+        "free_replacements_remaining": 999 if replacement_limit < 0 else plan_remaining + replacement_bonus,
+        "replacement_credit_history": (cfg.get("replacement_credit_history") or [])[-20:],
     })
     return base
 

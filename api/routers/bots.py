@@ -108,6 +108,52 @@ async def get_bot(name: str):
     return serialize_bot_detail(token, cfg)
 
 
+class ReplacementCreditRequest(BaseModel):
+    delta: int
+    reason: str = ""
+
+
+@router.post("/{name}/replacement-credits")
+async def adjust_replacement_credits(name: str, body: ReplacementCreditRequest):
+    """Add or remove admin-granted free replacement credits for one AdBot."""
+    if body.delta == 0 or abs(body.delta) > 100:
+        raise HTTPException(400, "Credit adjustment must be between -100 and 100, excluding zero")
+    cfg = await wrappers.load_user_data(name)
+    if not cfg:
+        raise HTTPException(404, f"Bot '{name}' config not found")
+
+    before = max(0, int(cfg.get("admin_free_replacement_credits", 0)))
+    after = before + body.delta
+    if after < 0:
+        raise HTTPException(400, f"Only {before} admin replacement credit(s) can be removed")
+
+    cfg["admin_free_replacement_credits"] = after
+    history = cfg.setdefault("replacement_credit_history", [])
+    history.append({
+        "timestamp": time.time(),
+        "delta": body.delta,
+        "before": before,
+        "after": after,
+        "reason": body.reason.strip()[:200],
+        "actor": "web_admin",
+    })
+    cfg["replacement_credit_history"] = history[-100:]
+    await wrappers.save_user_data(name, cfg)
+    await wrappers.log_admin_action(
+        "web_admin",
+        f"adjust_replacement_credits:{body.delta:+d}:{before}->{after}",
+        target=name,
+    )
+
+    from code.replacement import get_free_replacements_remaining
+    return {
+        "ok": True,
+        "admin_credits": after,
+        "free_replacements_remaining": get_free_replacements_remaining(cfg),
+        "message": f"{abs(body.delta)} free replacement credit(s) {'added' if body.delta > 0 else 'removed'}",
+    }
+
+
 @router.post("", response_model=BotControlResponse)
 async def create_bot(body: BotCreateRequest):
     from code.admin_ptb import submit_create_job

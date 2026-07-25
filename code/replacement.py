@@ -282,7 +282,25 @@ def get_free_replacements_remaining(cfg: dict) -> int:
     limit, used = get_free_replacements_for_bot(cfg)
     if limit < 0:
         return 999
-    return max(0, limit - used)
+    bonus = max(0, int(cfg.get("admin_free_replacement_credits", 0)))
+    return max(0, limit - used) + bonus
+
+
+def consume_free_replacement(cfg: dict) -> str:
+    """Consume one free replacement from the plan first, then admin bonus credits."""
+    limit, used = get_free_replacements_for_bot(cfg)
+    if limit < 0:
+        return "unlimited"
+    if used < max(0, limit):
+        cfg["replacements_used"] = used + 1
+        return "plan"
+    bonus = max(0, int(cfg.get("admin_free_replacement_credits", 0)))
+    if bonus > 0:
+        cfg["admin_free_replacement_credits"] = bonus - 1
+        return "admin_bonus"
+    # Defensive accounting for a legacy/oversubscribed request.
+    cfg["replacements_used"] = used + 1
+    return "unfunded"
 
 
 def _reset_free_replacements_on_renewal(cfg: dict, plan: dict) -> None:
@@ -703,7 +721,8 @@ async def process_ready_replacements() -> list[dict[str, Any]]:
         name = get_name_by_token(item["bot_token"])
         cfg = load_user_data(name) if name else None
         if cfg:
-            cfg["replacements_used"] = int(cfg.get("replacements_used", 0)) + 1
+            if entry.get("free_replacement"):
+                consume_free_replacement(cfg)
             save_user_data(name, cfg)
         message = (
             "Replacement installed and the running AdBot worker refresh was queued."
@@ -830,7 +849,8 @@ async def retry_replacement_setup(entry_id: str) -> dict[str, Any]:
         )
         return {"result": "needs_admin", "errors": reasons}
 
-    cfg["replacements_used"] = int(cfg.get("replacements_used", 0)) + 1
+    if entry.get("free_replacement"):
+        consume_free_replacement(cfg)
     save_user_data(name, cfg)
     worker_refresh = cfg.get("state") == "running"
     if worker_refresh:
