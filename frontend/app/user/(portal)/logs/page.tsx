@@ -535,6 +535,8 @@ export default function UserLogsPage() {
     const hit = accountList.find((a) => matchesAccount(entry, a));
     return hit ? hit.index : 0;
   };
+  const resolveAcct = (entry: ParsedLog): AcctItem | undefined =>
+    accountList.find((a) => matchesAccount(entry, a));
   // Raw account ids exactly as they appear in the logs (group.byAccount is keyed by these).
   const logAccountIds = useMemo(() => {
     const set = new Set<string>();
@@ -733,7 +735,9 @@ export default function UserLogsPage() {
   }
 
   const _activeAcct = accountList.find((a) => a.id === accountFilter);
-  const acctLabel = accountFilter === "all" || !_activeAcct ? "All Accounts" : `Account ${_activeAcct.index}`;
+  const acctLabel = accountFilter === "all" || !_activeAcct
+    ? "All Accounts"
+    : `Account ${_activeAcct.index} · ${_activeAcct.name}`;
 
   return (
     <div className="animate-fade-in lg:px-1" onClick={() => { setAcctOpen(false); setFunnelOpen(false); }}>
@@ -810,7 +814,10 @@ export default function UserLogsPage() {
                     const st = accountStats[a.id];
                     return (
                       <button key={a.id} onClick={() => { setAccountFilter(a.id); setAcctOpen(false); }} className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-[13px] transition-colors ${accountFilter === a.id ? "bg-dark-800 text-dark-100 font-semibold" : "text-dark-400 hover:bg-dark-800/60"}`}>
-                        <span className="truncate">Account {a.index}</span>
+                        <span className="min-w-0 truncate text-left">
+                          <span className="block">Account {a.index} · {a.name}</span>
+                          {a.digits && <span className="block font-mono text-[10px] text-dark-600">•••{a.digits}</span>}
+                        </span>
                         <span className="text-[11px] text-dark-500 tabular-nums shrink-0">{st ? `${st.sent}/${st.sent + st.failed}` : "0/0"}</span>
                       </button>
                     );
@@ -877,7 +884,7 @@ export default function UserLogsPage() {
                     <p className="text-[11px] font-bold uppercase tracking-wider text-dark-500 mb-2">Account</p>
                     <select value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)} className="w-full rounded-lg border border-dark-700 bg-dark-900 px-2.5 py-2 text-[13px] text-dark-200 outline-none focus:border-accent/60">
                       <option value="all">All accounts</option>
-                      {accountList.map((a) => <option key={a.id} value={a.id}>Account {a.index}</option>)}
+                      {accountList.map((a) => <option key={a.id} value={a.id}>Account {a.index} · {a.name}</option>)}
                     </select>
                   </>
                 )}
@@ -937,7 +944,7 @@ export default function UserLogsPage() {
                   <LogTableRow
                     key={i}
                     entry={entry}
-                    accountIndex={resolveAcctIndex(entry)}
+                    account={resolveAcct(entry)}
                     expanded={selected === entry}
                     botName={bot?.name}
                     onToggle={() => setSelected(selected === entry ? null : entry)}
@@ -1048,8 +1055,12 @@ function StatCard({ icon: Icon, label, value, tint, sub, subTint, className = ""
 
 /* ────────────────────── Table row (with inline expand) ────────────────────── */
 
-function LogTableRow({ entry, accountIndex, expanded, onToggle, botName }: {
-  entry: ParsedLog; accountIndex: number; expanded: boolean; onToggle: () => void; botName?: string;
+function LogTableRow({ entry, account, expanded, onToggle, botName }: {
+  entry: ParsedLog;
+  account?: { id: string; index: number; name: string; digits: string };
+  expanded: boolean;
+  onToggle: () => void;
+  botName?: string;
 }) {
   const s = statusMeta(entry.type);
   const groupPrimary = entry.groupName || entry.message || "System event";
@@ -1058,8 +1069,12 @@ function LogTableRow({ entry, accountIndex, expanded, onToggle, botName }: {
   const statusLabel = entry.type === "flood" && entry.waitSeconds ? `${entry.waitSeconds}s` : s.label;
 
   const isPost = entry.type === "success" || entry.type === "failure" || entry.type === "flood";
-  const accLabel = accountIndex > 0 ? `Account ${accountIndex}` : entry.account || "—";
-  const hasAccount = accountIndex > 0 || !!entry.account;
+  const accLabel = account ? `Account ${account.index} · ${account.name}` : entry.account || "Unknown account";
+  const accountTail = account?.digits || digitsKey(entry.account || entry.accountShort);
+  const accountRowLabel = account
+    ? `Account ${account.index} · ${account.name}`
+    : entry.accountShort || entry.account || "Account unavailable";
+  const hasAccount = !!account || !!entry.account || !!entry.accountShort;
   const link = messageLink(entry);
   const response = entry.type === "success" ? "Message delivered successfully"
     : entry.type === "failure" ? (entry.error || "Send failed")
@@ -1087,7 +1102,11 @@ function LogTableRow({ entry, accountIndex, expanded, onToggle, botName }: {
             <span className="text-[11px] font-mono text-dark-600 tabular-nums">{timeShort}</span>
           </div>
           <p className="text-sm font-semibold text-dark-100 truncate">{groupPrimary}</p>
-          {groupSecondary && <p className="text-[11px] text-dark-600 font-mono truncate">{groupSecondary}</p>}
+          <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
+            <span className="truncate font-medium text-accent-300">{accountRowLabel}</span>
+            {accountTail && <span className="font-mono text-dark-600">•••{accountTail}</span>}
+            {groupSecondary && <span className="truncate font-mono text-dark-600">{groupSecondary}</span>}
+          </div>
         </div>
         <ChevronRight className={`h-4 w-4 shrink-0 justify-self-end transition-transform ${expanded ? "rotate-90 text-accent" : "text-dark-600"}`} />
       </div>
