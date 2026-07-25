@@ -12,7 +12,12 @@ import {
 
 /* ────────────────────── Types ────────────────────── */
 
-type LogType = "success" | "failure" | "flood" | "cycle_start" | "cycle_end" | "connect" | "system" | "noise";
+type LogType =
+  | "success" | "failure" | "flood"
+  | "cycle_start" | "cycle_end" | "connect"
+  | "replacement" | "started" | "stopped" | "maintenance"
+  | "health" | "payment" | "user_action"
+  | "system" | "noise";
 
 type ParsedLog = {
   raw: string;
@@ -333,6 +338,39 @@ function parseLine(line: string): ParsedLog {
   }
 
   // ─── Timestamp prefix: "2026-05-11 02:47:57 Message" ───
+  const replaced = trimmed.match(/^\[Fix Sessions\]\s+Replaced\s+(\S+)\s+with\s+(\S+)\s+\(status was\s+([^)]+)\)/i);
+  if (replaced) {
+    const newSession = replaced[2].replace(/\.session$/i, "");
+    return {
+      raw: line,
+      type: "replacement",
+      account: newSession,
+      accountShort: shortAccount(newSession),
+      message: "Session replaced",
+      detail: `${replaced[1]} → ${replaced[2]} · Previous status: ${replaced[3].replaceAll("_", " ")}`,
+    };
+  }
+  if (/^\[Fix (?:Log Group|Config|Bot Token)\]/i.test(trimmed)) {
+    const area = trimmed.match(/^\[([^\]]+)\]/)?.[1] || "Maintenance";
+    return {
+      raw: line,
+      type: "maintenance",
+      message: area,
+      detail: trimmed.replace(/^\[[^\]]+\]\s*/, "") || "Maintenance completed",
+    };
+  }
+  if (trimmed.startsWith("[WorkerRestart]")) {
+    const session = (trimmed.match(/(?:session=|Session=)(\S+)/)?.[1] || "").replace(/\.session$/i, "");
+    return {
+      raw: line,
+      type: "maintenance",
+      account: session || undefined,
+      accountShort: shortAccount(session),
+      message: "Session worker restarted",
+      detail: trimmed.replace(/^\[WorkerRestart\]\s*/, ""),
+    };
+  }
+
   const tsMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+(.*)/);
   if (tsMatch) {
     const msg = tsMatch[2];
@@ -346,11 +384,28 @@ function parseLine(line: string): ParsedLog {
   }
 
   // ─── Generic system/info ───
-  if (trimmed.includes("AdBot started") || trimmed.includes("started")) {
-    return { raw: line, type: "system", message: trimmed };
+  if (/AdBot started|clicked Run/i.test(trimmed)) {
+    return { raw: line, type: "started", message: "AdBot started", detail: trimmed };
   }
-  if (trimmed.includes("AdBot stopped") || trimmed.includes("stopped")) {
-    return { raw: line, type: "system", message: trimmed };
+  if (/AdBot stopped|stopped posting/i.test(trimmed)) {
+    return { raw: line, type: "stopped", message: "AdBot stopped", detail: trimmed };
+  }
+  if (/Run failed|Run error|already running/i.test(trimmed)) {
+    return { raw: line, type: "user_action", message: "Start request", detail: trimmed };
+  }
+  if (/set custom text|added post link|Ownership claimed|opened (?:menu|repair menu)/i.test(trimmed)) {
+    return { raw: line, type: "user_action", message: "Account setting changed", detail: trimmed };
+  }
+  if (/health|spam.?bot|hard.?limited|temporar(?:y|ily).?limited|session.*(?:dead|frozen|unauthori[sz]ed)/i.test(trimmed)) {
+    const session = (trimmed.match(/(?:session=|Session=)(\S+)/)?.[1] || "").replace(/\.session$/i, "");
+    return {
+      raw: line, type: "health",
+      account: session || undefined, accountShort: shortAccount(session),
+      message: "Session health notification", detail: trimmed,
+    };
+  }
+  if (/payment|invoice|blockchain|transaction|renewal/i.test(trimmed)) {
+    return { raw: line, type: "payment", message: "Billing notification", detail: trimmed };
   }
   // "+1908…368.session - cycle completed (no groups assigned)" — session-scoped idle notice
   const cycleCompleteMatch = trimmed.match(/^(\S+)\.session\s*-\s*cycle completed\s*(\(.*\))?/);
@@ -421,6 +476,13 @@ function matchesSearch(p: ParsedLog, q: string): boolean {
     p.account, p.accountShort, p.groupName, p.groupId, p.error, p.message, p.waitSeconds, statusWord, p.raw,
   ].filter(Boolean).join(" ").toLowerCase();
   return hay.includes(q);
+}
+
+function isSystemType(type: LogType): boolean {
+  return [
+    "system", "cycle_start", "cycle_end", "connect", "replacement",
+    "started", "stopped", "maintenance", "health", "payment", "user_action",
+  ].includes(type);
 }
 
 /* ────────────────────── Component ────────────────────── */
@@ -593,7 +655,7 @@ export default function UserLogsPage() {
     if (filter === "success") result = result.filter((p) => p.type === "success");
     else if (filter === "failure") result = result.filter((p) => p.type === "failure");
     else if (filter === "flood") result = result.filter((p) => p.type === "flood");
-    else if (filter === "system") result = result.filter((p) => ["system", "cycle_start", "cycle_end", "connect"].includes(p.type));
+    else if (filter === "system") result = result.filter((p) => isSystemType(p.type));
     if (accountFilter !== "all") {
       const acct = accountList.find((a) => a.id === accountFilter);
       if (acct) result = result.filter((p) => matchesAccount(p, acct));
@@ -687,7 +749,7 @@ export default function UserLogsPage() {
       if (p.type === "success") success++;
       else if (p.type === "failure") failure++;
       else if (p.type === "flood") flood++;
-      else if (["system", "cycle_start", "cycle_end", "connect"].includes(p.type)) system++;
+      else if (isSystemType(p.type)) system++;
     }
     return { success, failure, flood, system, total: src.length };
   }, [inRange, accountFilter, accountList]);
@@ -816,7 +878,7 @@ export default function UserLogsPage() {
                       <button key={a.id} onClick={() => { setAccountFilter(a.id); setAcctOpen(false); }} className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-[13px] transition-colors ${accountFilter === a.id ? "bg-dark-800 text-dark-100 font-semibold" : "text-dark-400 hover:bg-dark-800/60"}`}>
                         <span className="min-w-0 truncate text-left">
                           <span className="block">Account {a.index} · {a.name}</span>
-                          {a.digits && <span className="block font-mono text-[10px] text-dark-600">•••{a.digits}</span>}
+                          {a.id && <span className="block font-mono text-[10px] text-dark-600">{a.id}</span>}
                         </span>
                         <span className="text-[11px] text-dark-500 tabular-nums shrink-0">{st ? `${st.sent}/${st.sent + st.failed}` : "0/0"}</span>
                       </button>
@@ -914,10 +976,11 @@ export default function UserLogsPage() {
         ) : (
           <>
             {/* Header row (desktop) */}
-            <div className="hidden md:grid grid-cols-[130px_150px_1fr_28px] gap-3 border-b border-white/[0.07] px-5 py-3 text-[10px] font-bold uppercase tracking-wider text-dark-500">
-              <span>Type</span>
+            <div className="hidden md:grid grid-cols-[180px_120px_150px_1fr_28px] gap-3 border-b border-white/[0.07] px-5 py-3 text-[10px] font-bold uppercase tracking-wider text-dark-500">
+              <span>Account</span>
+              <span>Result</span>
               <span>Time</span>
-              <span>Event</span>
+              <span>Name and ID / Notification</span>
               <span />
             </div>
 
@@ -1018,6 +1081,13 @@ function statusMeta(type: LogType): { label: string; dot: string; text: string; 
     case "failure": return { label: "Failed", dot: "bg-danger", text: "text-danger", action: "Send Failed" };
     case "flood": return { label: "Waiting", dot: "bg-warning", text: "text-warning", action: "Rate Limited (FloodWait)" };
     case "connect": return { label: "Connected", dot: "bg-blue-400", text: "text-blue-400", action: "Account Connected" };
+    case "replacement": return { label: "Replaced", dot: "bg-violet-400", text: "text-violet-300", action: "Session Replacement" };
+    case "started": return { label: "Started", dot: "bg-emerald-400", text: "text-emerald-300", action: "AdBot Started" };
+    case "stopped": return { label: "Stopped", dot: "bg-rose-400", text: "text-rose-300", action: "AdBot Stopped" };
+    case "maintenance": return { label: "Fixed", dot: "bg-sky-400", text: "text-sky-300", action: "Maintenance" };
+    case "health": return { label: "Health", dot: "bg-amber-400", text: "text-amber-300", action: "Health Notification" };
+    case "payment": return { label: "Payment", dot: "bg-cyan-400", text: "text-cyan-300", action: "Billing Notification" };
+    case "user_action": return { label: "Action", dot: "bg-indigo-400", text: "text-indigo-300", action: "User Action" };
     case "cycle_start":
     case "cycle_end": return { label: "Cycle", dot: "bg-accent", text: "text-accent", action: "Scheduler" };
     default: return { label: "System", dot: "bg-dark-500", text: "text-dark-400", action: "System Event" };
@@ -1064,16 +1134,19 @@ function LogTableRow({ entry, account, expanded, onToggle, botName }: {
 }) {
   const s = statusMeta(entry.type);
   const groupPrimary = entry.groupName || entry.message || "System event";
-  const groupSecondary = entry.groupId ? entry.groupId : entry.type === "flood" && entry.waitSeconds ? `wait ${entry.waitSeconds}s` : "";
+  const groupSecondary = entry.groupId
+    ? entry.groupId
+    : entry.type === "flood" && entry.waitSeconds
+      ? `Wait ${entry.waitSeconds}s`
+      : entry.detail || "";
   const timeShort = entry.timestamp ? toLocalTime(entry.timestamp).time : "—";
   const statusLabel = entry.type === "flood" && entry.waitSeconds ? `${entry.waitSeconds}s` : s.label;
 
   const isPost = entry.type === "success" || entry.type === "failure" || entry.type === "flood";
   const accLabel = account ? `Account ${account.index} · ${account.name}` : entry.account || "Unknown account";
-  const accountTail = account?.digits || digitsKey(entry.account || entry.accountShort);
-  const accountRowLabel = account
-    ? `Account ${account.index} · ${account.name}`
-    : entry.accountShort || entry.account || "Account unavailable";
+  const accountRaw = account?.id || entry.account || entry.accountShort || "";
+  const accountNumber = account ? `Account ${account.index}` : accountRaw ? "Session" : "All accounts";
+  const accountName = account?.name || accountRaw || (isPost ? "Unknown session" : "Bot-wide event");
   const hasAccount = !!account || !!entry.account || !!entry.accountShort;
   const link = messageLink(entry);
   const response = entry.type === "success" ? "Message delivered successfully"
@@ -1088,8 +1161,12 @@ function LogTableRow({ entry, account, expanded, onToggle, botName }: {
       {/* Row (denser: py-2.5) */}
       <div
         onClick={onToggle}
-        className={`grid grid-cols-[1fr_auto] items-center gap-2 px-4 py-3.5 cursor-pointer transition-colors md:grid-cols-[130px_150px_1fr_28px] md:gap-3 md:px-5 ${expanded ? "" : "hover:bg-white/[0.025]"}`}
+        className={`grid grid-cols-[1fr_auto] items-center gap-2 px-4 py-3.5 cursor-pointer transition-colors md:grid-cols-[180px_120px_150px_1fr_28px] md:gap-3 md:px-5 ${expanded ? "" : "hover:bg-white/[0.025]"}`}
       >
+        <div className="hidden min-w-0 md:block">
+          <p className="truncate text-[13px] font-semibold text-dark-100">{accountNumber}</p>
+          <p className="truncate text-[11px] text-dark-500" title={accountName}>{accountName}</p>
+        </div>
         <span className="hidden md:flex items-center gap-1.5">
           <span className={`h-2 w-2 rounded-full ${s.dot}`} />
           <span className={`text-[13px] font-medium ${s.text}`}>{statusLabel}</span>
@@ -1097,16 +1174,13 @@ function LogTableRow({ entry, account, expanded, onToggle, botName }: {
         <span className="hidden md:block text-[13px] font-mono text-dark-400 tabular-nums">{timeShort}</span>
         <div className="min-w-0">
           <div className="flex items-center gap-2 md:hidden mb-0.5">
+            <span className="max-w-[48%] truncate text-[11px] font-semibold text-dark-200">{accountNumber} · {accountName}</span>
             <span className={`h-2 w-2 rounded-full ${s.dot}`} />
             <span className={`text-[11px] font-medium ${s.text}`}>{statusLabel}</span>
             <span className="text-[11px] font-mono text-dark-600 tabular-nums">{timeShort}</span>
           </div>
           <p className="text-sm font-semibold text-dark-100 truncate">{groupPrimary}</p>
-          <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
-            <span className="truncate font-medium text-accent-300">{accountRowLabel}</span>
-            {accountTail && <span className="font-mono text-dark-600">•••{accountTail}</span>}
-            {groupSecondary && <span className="truncate font-mono text-dark-600">{groupSecondary}</span>}
-          </div>
+          {groupSecondary && <p className="mt-0.5 truncate text-[11px] text-dark-500" title={groupSecondary}>{groupSecondary}</p>}
         </div>
         <ChevronRight className={`h-4 w-4 shrink-0 justify-self-end transition-transform ${expanded ? "rotate-90 text-accent" : "text-dark-600"}`} />
       </div>
@@ -1157,6 +1231,9 @@ function LogTableRow({ entry, account, expanded, onToggle, botName }: {
                 <div className="min-w-0 flex-1">
                   <p className="text-[10px] font-bold uppercase tracking-wider text-dark-500">Information</p>
                   <p className="text-sm font-semibold text-dark-100 mt-0.5">{entry.message || s.action}</p>
+                  {entry.detail && entry.detail !== entry.message && (
+                    <p className="mt-1 text-[12px] leading-relaxed text-dark-400">{entry.detail}</p>
+                  )}
                   <div className="mt-3 grid sm:grid-cols-2 gap-x-8 gap-y-2.5">
                     <Field label="Event" value={s.action} />
                     {hasAccount && <Field label="Account" value={accLabel} copy={entry.account} />}
