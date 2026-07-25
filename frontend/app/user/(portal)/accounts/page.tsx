@@ -158,6 +158,32 @@ function cacheDiag(health?: string, details?: string | null): DiagResult | null 
   };
 }
 
+function temporaryLimitTiming(details: string | null | undefined, nowMs: number) {
+  if (!details) return null;
+  const parsed = Date.parse(details);
+  if (!Number.isFinite(parsed)) {
+    return { exact: details, local: details, remaining: null, expired: false };
+  }
+  const remainingMs = parsed - nowMs;
+  const expired = nowMs > 0 && remainingMs <= 0;
+  const totalMinutes = Math.max(0, Math.ceil(remainingMs / 60_000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  const remaining = expired
+    ? "Limit end time passed — check again"
+    : [days ? `${days}d` : "", hours ? `${hours}h` : "", !days && minutes ? `${minutes}m` : ""].filter(Boolean).join(" ");
+  return {
+    exact: details,
+    local: new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(parsed)),
+    remaining,
+    expired,
+  };
+}
+
 const AVATAR_COLORS = [
   "from-violet-500 to-purple-700", "from-emerald-400 to-teal-700",
   "from-amber-400 to-orange-700", "from-sky-400 to-blue-700",
@@ -238,7 +264,14 @@ export default function AccountsPage() {
   const [statusFilter, setStatusFilter] = useState<"all" | "healthy" | "attention" | "critical">("all");
   const [openMenu, setOpenMenu] = useState<string | null>(null); // per-card "Manage" dropdown
   const [page, setPage] = useState(1);
+  const [nowMs, setNowMs] = useState(0);
   const PAGE_SIZE = 12;
+
+  useEffect(() => {
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const copyPhone = useCallback((phone?: string | null) => {
     if (!phone) return;
@@ -1057,6 +1090,7 @@ export default function AccountsPage() {
           const liveDiag = diagResults[file];
           const diag = liveDiag || cacheDiag(sess.health, sess.spam_details);
           const diagCfg = diag ? STATUS_CFG[diag.status] || STATUS_CFG.UNKNOWN : null;
+          const tempTiming = diag?.status === "TEMP_LIMITED" ? temporaryLimitTiming(diag.details, nowMs) : null;
           const tier = tierByFile[file];
           const pendingEntry = pendingByFile.get(file);
           const processing = Boolean(pendingEntry && pendingEntry.status !== "pending_payment");
@@ -1085,7 +1119,9 @@ export default function AccountsPage() {
                   : "border-white/[0.08] bg-white/[0.04] text-dark-400";
 
           return (
-            <article key={`mobile-${file}`} className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#171723] shadow-lg shadow-black/10">
+            <article key={`mobile-${file}`} className={`overflow-hidden rounded-2xl border bg-[#171723] shadow-lg shadow-black/10 ${
+              sess.disabled ? "border-slate-500/20" : "border-white/[0.07]"
+            }`}>
               <div className="p-4">
                 <div className="flex items-start gap-3">
                   <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br text-[17px] font-bold text-white ${AVATAR_COLORS[idx % AVATAR_COLORS.length]}`}>
@@ -1104,6 +1140,15 @@ export default function AccountsPage() {
                   </div>
                 </div>
 
+                {sess.disabled && (
+                  <div className="mt-3 flex items-center justify-between rounded-xl border border-slate-400/15 bg-slate-400/[0.05] px-3 py-2">
+                    <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-slate-300">
+                      <Power className="h-3 w-3" /> Account disabled
+                    </span>
+                    <span className="text-[9px] text-slate-500">Not used by AdBot</span>
+                  </div>
+                )}
+
                 <div className="mt-4 grid grid-cols-3 overflow-hidden rounded-xl border border-[#203044] bg-[#08131F]">
                   {[
                     { label: "Sent", value: sent.toLocaleString(), icon: Send, tone: "text-emerald-400" },
@@ -1120,8 +1165,26 @@ export default function AccountsPage() {
                   ))}
                 </div>
 
-                {tier !== "healthy" && diag?.reason && !processing && (
+                {tier !== "healthy" && diag?.reason && !processing && !(diag.status === "TEMP_LIMITED" && tempTiming) && (
                   <p className="mt-3 line-clamp-2 text-[11px] leading-relaxed text-dark-400">{diag.reason}</p>
+                )}
+                {tempTiming && !processing && (
+                  <div className={`mt-3 flex items-start gap-2 rounded-xl border px-3 py-2.5 ${
+                    tempTiming.expired ? "border-sky-500/20 bg-sky-500/[0.05]" : "border-amber-500/20 bg-amber-500/[0.05]"
+                  }`}>
+                    <Timer className={`mt-0.5 h-4 w-4 shrink-0 ${tempTiming.expired ? "text-sky-400" : "text-amber-400"}`} />
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-semibold text-dark-200">
+                        {tempTiming.expired ? "Recovery time reached" : `Available ${tempTiming.local}`}
+                      </p>
+                      <p className={`mt-0.5 text-[9px] ${tempTiming.expired ? "text-sky-400" : "text-amber-400"}`}>
+                        {tempTiming.remaining || `Telegram time: ${tempTiming.exact}`}
+                      </p>
+                    </div>
+                  </div>
+                )}
+                {sess.disabled && (
+                  <p className="mt-3 text-[10px] leading-relaxed text-slate-400">Paused · this account is excluded from campaigns while its Telegram health remains visible.</p>
                 )}
                 {processing && <p className="mt-3 text-[11px] font-medium text-accent">Replacement is running in the background</p>}
 
@@ -1129,6 +1192,15 @@ export default function AccountsPage() {
                   <button type="button" onClick={() => openEdit(file)}
                     className="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-xl border border-[#203044] bg-[#122131] text-[12px] font-semibold text-[#F5F7FA] active:bg-[#182b3e]">
                     <Eye className="h-4 w-4 text-accent" /> View details
+                  </button>
+                  <button type="button" onClick={() => setAccountEnabled(file, Boolean(sess.disabled))}
+                    aria-label={sess.disabled ? `Enable ${name}` : `Disable ${name}`}
+                    className={`inline-flex h-11 items-center justify-center gap-1.5 rounded-xl border px-3 text-[11px] font-semibold ${
+                      sess.disabled
+                        ? "border-emerald-500/20 bg-emerald-500/[0.07] text-emerald-400"
+                        : "border-slate-400/15 bg-slate-400/[0.05] text-slate-300"
+                    }`}>
+                    <Power className="h-4 w-4" /> {sess.disabled ? "Enable" : "Disable"}
                   </button>
                   {canReplace && (
                     <button type="button" onClick={() => openReplace([file])}
@@ -1153,6 +1225,7 @@ export default function AccountsPage() {
           const liveDiag = diagResults[file];                 // in-session "Check health" result
           const diag = liveDiag || cacheDiag(sess.health, sess.spam_details);    // else the persisted cache status
           const diagCfg = diag ? STATUS_CFG[diag.status] || STATUS_CFG.UNKNOWN : null;
+          const tempTiming = diag?.status === "TEMP_LIMITED" ? temporaryLimitTiming(diag.details, nowMs) : null;
           const tier = tierByFile[file];
           const pendingEntry = pendingByFile.get(file);
           const isPendingRepl = Boolean(pendingEntry);
@@ -1173,7 +1246,7 @@ export default function AccountsPage() {
                        return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.floor(m / 60)}h ago` : `${Math.floor(m / 1440)}d ago`; })()
             : null;
 
-          const dotTone = isReplacementProcessing ? "bg-accent" : tier === "critical" ? "bg-red-500" : tier === "attention" ? "bg-amber-400" : tier === "healthy" ? "bg-emerald-400" : "bg-dark-600";
+          const dotTone = isReplacementProcessing ? "bg-accent" : sess.disabled ? "bg-slate-400" : tier === "critical" ? "bg-red-500" : tier === "attention" ? "bg-amber-400" : tier === "healthy" ? "bg-emerald-400" : "bg-dark-600";
           const pctTone = pct >= 70 ? "text-emerald-400" : pct >= 40 ? "text-amber-400" : "text-red-400";
 
           let badgeLabel: string, badgeCls: string, BadgeIcon: any, badgeSpin = false;
@@ -1185,7 +1258,9 @@ export default function AccountsPage() {
           else { badgeLabel = "Unchecked"; badgeCls = "bg-dark-700/30 border-white/[0.06] text-dark-400"; BadgeIcon = HelpCircle; }
 
           return (
-            <div key={file} className="flex h-full flex-col rounded-2xl border border-white/[0.07] bg-[#171723] p-4 shadow-[0_8px_24px_rgba(0,0,0,0.12)] transition-colors hover:border-white/[0.14]">
+            <div key={file} className={`flex h-full flex-col rounded-2xl border bg-[#171723] p-4 shadow-[0_8px_24px_rgba(0,0,0,0.12)] transition-colors ${
+              sess.disabled ? "border-slate-500/20" : "border-white/[0.07] hover:border-white/[0.14]"
+            }`}>
               {/* Row 1 — avatar + identity + status */}
               <div className="flex items-start gap-3">
                 <div className="relative shrink-0">
@@ -1200,6 +1275,7 @@ export default function AccountsPage() {
                       <span className="text-[13px] font-bold text-white truncate max-w-[9rem]">{name}</span>
                       {sess.username ? <span className="text-[10px] text-sky-400/80 truncate">@{sess.username}</span> : null}
                       {planLabel && <span className="text-[9px] font-semibold rounded-md px-1.5 py-0.5 bg-white/[0.06] border border-white/[0.06] text-dark-300 whitespace-nowrap">{planLabel}</span>}
+                      {sess.disabled && <span className="inline-flex items-center gap-1 rounded-md border border-slate-400/20 bg-slate-400/[0.07] px-1.5 py-0.5 text-[8px] font-semibold text-slate-300"><Power className="h-2.5 w-2.5" /> Disabled</span>}
                     </div>
                     <span className={`inline-flex items-center gap-1 text-[10px] font-semibold rounded-full border px-2 py-0.5 whitespace-nowrap shrink-0 ${badgeCls}`}>
                       <BadgeIcon className={`h-2.5 w-2.5 ${badgeSpin ? "animate-spin" : ""}`} /> {badgeLabel}
@@ -1246,8 +1322,22 @@ export default function AccountsPage() {
               </div>
 
               {/* Reason line for non-healthy states */}
-              {diag && diagCfg && tier !== "healthy" && !isReplacementProcessing && (
+              {diag && diagCfg && tier !== "healthy" && !isReplacementProcessing && !(diag.status === "TEMP_LIMITED" && tempTiming) && (
                 <p className="mt-2 text-[10.5px] text-dark-400 leading-snug line-clamp-2">{diag.reason}</p>
+              )}
+              {tempTiming && !isReplacementProcessing && (
+                <div className={`mt-2 flex items-center gap-2 rounded-lg border px-2.5 py-2 ${
+                  tempTiming.expired ? "border-sky-500/20 bg-sky-500/[0.05]" : "border-amber-500/20 bg-amber-500/[0.05]"
+                }`}>
+                  <Timer className={`h-3.5 w-3.5 shrink-0 ${tempTiming.expired ? "text-sky-400" : "text-amber-400"}`} />
+                  <div className="min-w-0">
+                    <p className="truncate text-[9.5px] font-semibold text-dark-200">{tempTiming.expired ? "Recovery time reached" : `Available ${tempTiming.local}`}</p>
+                    <p className={`text-[8.5px] ${tempTiming.expired ? "text-sky-400" : "text-amber-400"}`}>{tempTiming.remaining || `Telegram time: ${tempTiming.exact}`}</p>
+                  </div>
+                </div>
+              )}
+              {sess.disabled && !isReplacementProcessing && (
+                <p className="mt-2 inline-flex items-center gap-1 text-[9.5px] font-medium text-slate-400"><Power className="h-3 w-3" /> Paused · excluded from campaigns</p>
               )}
               {isReplacementProcessing && (
                 <p className="mt-2 inline-flex items-center gap-1 text-[10.5px] text-accent font-medium"><Clock className="h-3 w-3" /> Replacement in progress</p>
