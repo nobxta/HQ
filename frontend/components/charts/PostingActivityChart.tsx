@@ -1,7 +1,7 @@
 "use client";
 import {
-  ResponsiveContainer, ComposedChart, Area, Bar, XAxis, YAxis,
-  CartesianGrid, Tooltip,
+  ResponsiveContainer, ComposedChart, Line, Bar, XAxis, YAxis,
+  CartesianGrid, Tooltip, Legend,
 } from "recharts";
 import type { BotAnalytics } from "@/lib/hooks/useAdbots";
 import ChartTooltip from "./ChartTooltip";
@@ -52,15 +52,9 @@ export default function PostingActivityChart({ analytics, loading }: {
   const tickGap = Math.max(1, Math.ceil(data.length / 8));
 
   return (
-    <div className="h-[220px] sm:h-[300px]">
+    <div className="h-[240px] sm:h-[320px]">
       <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={data} margin={{ top: 4, right: 4, left: -18, bottom: 0 }}>
-          <defs>
-            <linearGradient id="sentFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={COLORS.sent} stopOpacity={0.18} />
-              <stop offset="100%" stopColor={COLORS.sent} stopOpacity={0.02} />
-            </linearGradient>
-          </defs>
+        <ComposedChart data={data} margin={{ top: 8, right: 12, left: 8, bottom: 4 }}>
           <CartesianGrid stroke={COLORS.grid} strokeOpacity={0.5} vertical={false} strokeDasharray="0" />
           <XAxis
             dataKey="label"
@@ -71,12 +65,15 @@ export default function PostingActivityChart({ analytics, loading }: {
             minTickGap={16}
           />
           <YAxis
+            yAxisId="volume"
             tick={{ fill: COLORS.axis, fontSize: 11 }}
             axisLine={false}
             tickLine={false}
             allowDecimals={false}
-            width={44}
+            width={48}
           />
+          <YAxis yAxisId="rate" orientation="right" domain={[0, 100]} tickFormatter={(v) => `${v}%`} tick={{ fill: COLORS.axis, fontSize: 11 }} axisLine={false} tickLine={false} width={42} />
+          <Legend iconType="circle" iconSize={7} wrapperStyle={{ fontSize: 11, color: COLORS.axis, paddingTop: 8 }} />
           <Tooltip
             cursor={{ stroke: COLORS.grid, strokeWidth: 1 }}
             isAnimationActive={false}
@@ -89,24 +86,24 @@ export default function PostingActivityChart({ analytics, loading }: {
                   rows={[
                     { label: "Sent", value: p.sent.toLocaleString(), color: COLORS.sent },
                     { label: "Failed", value: p.failed.toLocaleString(), color: COLORS.failed },
+                    { label: "Attempted", value: (p.sent + p.failed).toLocaleString(), color: COLORS.axis },
                     { label: "Success", value: p.rate === null ? "—" : `${p.rate}%`, color: "#22C55E" },
                   ]}
                 />
               );
             }}
           />
-          <Area
-            type="monotone"
+          <Bar
+            yAxisId="volume"
             dataKey="sent"
-            name="Sent"
-            stroke={COLORS.sent}
-            strokeWidth={1.75}
-            fill="url(#sentFill)"
-            dot={false}
-            activeDot={{ r: 3, strokeWidth: 0, fill: COLORS.sent }}
+            name="Delivered"
+            fill={COLORS.sent}
+            stackId="volume"
+            maxBarSize={28}
             animationDuration={300}
           />
-          <Bar dataKey="failed" name="Failed" fill={COLORS.failed} maxBarSize={6} radius={[2, 2, 0, 0]} animationDuration={300} />
+          <Bar yAxisId="volume" dataKey="failed" name="Failed" fill={COLORS.failed} stackId="volume" maxBarSize={28} radius={[3, 3, 0, 0]} animationDuration={300} />
+          <Line yAxisId="rate" type="linear" dataKey="rate" name="Success rate" stroke="#22C55E" strokeWidth={2} dot={false} activeDot={{ r: 3 }} connectNulls={false} animationDuration={300} />
         </ComposedChart>
       </ResponsiveContainer>
     </div>

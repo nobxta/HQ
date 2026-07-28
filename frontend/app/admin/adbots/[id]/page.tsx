@@ -4,7 +4,6 @@ import { useParams, useRouter } from "next/navigation";
 import { getSession } from "next-auth/react";
 import { useAdbot, useAdbotStats, useAdbotLogs, useSessionsOverview, useAdbotAnalytics, useAdbotFailureReasons, type AnalyticsRange } from "@/lib/hooks/useAdbots";
 import ChartCard from "@/components/charts/ChartCard";
-import TimeRangeTabs from "@/components/charts/TimeRangeTabs";
 import PostingActivityChart from "@/components/charts/PostingActivityChart";
 import SessionPerformanceChart, { maskAccount, type SessionPerfRow } from "@/components/charts/SessionPerformanceChart";
 import DeliveryBreakdownCard from "@/components/charts/DeliveryBreakdownCard";
@@ -41,11 +40,10 @@ const tabs = [
   { id: "sessions", label: "Sessions", icon: Smartphone },
   { id: "groups", label: "Groups", icon: Users },
   { id: "content", label: "Content", icon: FileText },
-  { id: "logs", label: "Logs", icon: Terminal },
-  { id: "payments", label: "Payments", icon: CreditCard },
+  { id: "logs", label: "Activity", icon: Activity },
+  { id: "payments", label: "Billing", icon: CreditCard },
   { id: "access", label: "Access", icon: KeyRound },
-  { id: "settings", label: "Settings", icon: Settings },
-  { id: "actions", label: "Actions", icon: Wrench },
+  { id: "settings", label: "Configuration", icon: Settings },
 ];
 
 export default function BotDetailPage() {
@@ -97,8 +95,8 @@ export default function BotDetailPage() {
         background: "radial-gradient(ellipse 80% 50% at 70% -10%, rgba(124,92,255,0.10) 0%, transparent 60%), radial-gradient(ellipse 40% 30% at 10% 80%, rgba(0,212,255,0.05) 0%, transparent 50%)",
       }} />
 
-      {/* Sticky bot header */}
-      <header className="sticky top-0 z-20 px-4 sm:px-6 py-4" style={{ background: "rgba(9,9,11,0.85)", backdropFilter: "blur(20px)", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+      {/* Bot identity header */}
+      <header className="relative z-20 px-4 sm:px-6 py-4 border-b border-hq-border bg-hq-bg">
         <div className="flex items-center gap-4 flex-wrap">
           <button onClick={() => router.push("/admin/adbots")} className="w-9 h-9 rounded-[12px] border border-hq-border bg-hq-card text-hq-sub hover:text-hq-text hover:bg-hq-elev transition-colors flex items-center justify-center shrink-0" title="Back to bots">
             <ArrowLeft className="h-4.5 w-4.5" strokeWidth={1.75} />
@@ -125,12 +123,20 @@ export default function BotDetailPage() {
               <span className="flex items-center gap-1.5"><User size={11} />Owner: {String(bot.owner_id || "admin")}</span>
               <span className="flex items-center gap-1.5"><Calendar size={11} />{dLeft !== null ? (dLeft >= 0 ? `${dLeft}d left · ` : `expired · `) : ""}{formatDate(bot.valid_till)}</span>
               <span className="flex items-center gap-1.5"><Smartphone size={11} />{bot.sessions_count || 0} sessions</span>
-              <span className="flex items-center gap-1.5"><Timer size={11} />Cycle {bot.cycle}s</span>
+              <span className="flex items-center gap-1.5"><CreditCard size={11} />{bot.plan_name || "Plan not tracked"}</span>
             </div>
           </div>
           {/* Global actions — the full set lives in the More menu / Actions tab */}
           <div className="flex items-center gap-2 shrink-0">
-            <HqBtn tone="secondary" onClick={() => setActiveTab("actions")} icon={Wrench} className="hidden sm:inline-flex">Manage</HqBtn>
+            <HqBtn
+              tone={bot.running ? "danger" : "primary"}
+              onClick={() => doAction(bot.running ? "stop" : "start")}
+              loading={actionLoading === (bot.running ? "stop" : "start")}
+              icon={bot.running ? Square : Play}
+            >
+              {bot.running ? "Stop bot" : "Start bot"}
+            </HqBtn>
+            <HqBtn tone="secondary" onClick={() => setActiveTab("settings")} icon={Settings} className="hidden sm:inline-flex">Edit configuration</HqBtn>
             <ActionMenu
               items={[
                 bot.running
@@ -510,16 +516,18 @@ const RANGE_LABELS: Record<AnalyticsRange, string> = {
 function rangeLabel(r: AnalyticsRange): string { return RANGE_LABELS[r]; }
 
 function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavigate: (tab: string) => void }) {
-  const { data: stats } = useAdbotStats(name);
+  const { data: stats, mutate: refreshStats } = useAdbotStats(name);
   const { data: overview } = useSessionsOverview(name, "all");
   const [range, setRange] = useState<AnalyticsRange>("7d");
-  const { data: analytics, isLoading: aLoading } = useAdbotAnalytics(name, range);
-  const { data: failures, isLoading: fLoading } = useAdbotFailureReasons(name, range);
+  const { data: analytics, isLoading: aLoading, isValidating: aRefreshing, mutate: refreshAnalytics } = useAdbotAnalytics(name, range);
+  const { data: failures, isLoading: fLoading, mutate: refreshFailures } = useAdbotFailureReasons(name, range);
+  const { data: recentLogs } = useAdbotLogs(name, 80);
 
-  const sent = stats?.lifetime_sent || 0;
-  const failed = stats?.lifetime_failed || 0;
-  const totalPosts = sent + failed;
-  const successRate = totalPosts ? Math.round((sent / totalPosts) * 100) : null;
+  const sent = analytics?.range_sent;
+  const failed = analytics?.range_failed;
+  const hasPeriodData = sent != null && failed != null;
+  const totalPosts = hasPeriodData ? sent + failed : null;
+  const successRate = totalPosts ? Math.round((sent! / totalPosts) * 1000) / 10 : null;
   const cycles = stats?.cycles || 0;
 
   const summary = overview?.summary;
@@ -527,7 +535,6 @@ function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavi
   const deadCount = summary?.dead ?? 0;
   const disabledCount = summary?.disabled ?? 0;
 
-  const daysLeft = daysUntil(bot.valid_till);
   const lastCycleTs = stats?.last_cycle_ts || 0;
 
   const sessionStats: Record<string, any> = stats?.session_stats || {};
@@ -577,22 +584,42 @@ function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavi
     ["Last session used", fmt(stats?.last_cycle_session?.replace(".session", ""), "Not tracked")],
   ];
 
+  const refreshAll = async () => {
+    await Promise.all([refreshStats(), refreshAnalytics(), refreshFailures()]);
+  };
+  const incidents = (recentLogs?.lines || [])
+    .filter((line) => /fail|banned|payment|required|stopped|cycle completed|inaccessible/i.test(line))
+    .slice(-6)
+    .reverse();
+
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2 rounded-[14px] border border-hq-border bg-hq-card px-3 py-2.5">
+        <label className="sr-only" htmlFor="analytics-range">Analytics time range</label>
+        <select id="analytics-range" value={range} onChange={(e) => setRange(e.target.value as AnalyticsRange)}
+          className="h-9 rounded-[10px] border border-hq-border bg-hq-bg px-3 text-[12px] font-medium text-hq-text focus:outline-none focus:ring-2 focus:ring-hq-accent/40">
+          <option value="24h">Last 24 hours</option>
+          <option value="7d">Last 7 days</option>
+          <option value="30d">Last 30 days</option>
+          <option value="lifetime">Lifetime</option>
+        </select>
+        <span className="inline-flex h-9 items-center rounded-[10px] border border-hq-border bg-hq-bg px-3 text-[12px] text-hq-sub">
+          <Globe className="mr-2 h-3.5 w-3.5" />Asia/Kolkata
+        </span>
+        <span className="ml-auto text-[11px] text-hq-muted">{aRefreshing ? "Refreshing analytics…" : "Analytics up to date"}</span>
+        <HqBtn tone="secondary" icon={RefreshCw} onClick={refreshAll} loading={aRefreshing}>Refresh</HqBtn>
+      </div>
+
       {/* Metric cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-        <MetricCard label="Delivery" icon={Send} tone={successRate !== null && successRate < 50 ? "danger" : "success"}
-          value={sent.toLocaleString()}
-          sub={totalPosts ? `${failed.toLocaleString()} failed · ${successRate}% success` : "No posts yet"} />
-        <MetricCard label="Sessions" icon={Server} tone={deadCount > 0 ? "warning" : "accent"}
-          value={activeCount}
-          sub={`${deadCount} dead · ${disabledCount} disabled`} />
-        <MetricCard label="Cycle" icon={Timer} tone="accent"
-          value={bot.cycle != null ? `${bot.cycle}s` : "—"}
-          sub={`Gap ${bot.gap ?? "—"}s · ${cap(fmt(bot.mode, "—"))} mode`} />
-        <MetricCard label="Validity" icon={Calendar} tone={daysLeft !== null && daysLeft <= 3 ? "danger" : "accent"}
-          value={daysLeft === null ? "—" : `${Math.max(daysLeft, 0)}d`}
-          sub={bot.valid_till ? `Expires ${formatDate(bot.valid_till)}` : "Not set"} />
+        <MetricCard label="Delivered" icon={Send} tone="success" value={sent == null ? "—" : sent.toLocaleString()}
+          sub={hasPeriodData ? rangeLabel(range) : "Analytics unavailable"} />
+        <MetricCard label="Failed" icon={AlertOctagon} tone="danger" value={failed == null ? "—" : failed.toLocaleString()}
+          sub={totalPosts ? `${Math.round((failed! / totalPosts) * 1000) / 10}% failure rate` : hasPeriodData ? "No attempts in this period" : "Analytics unavailable"} />
+        <MetricCard label="Success rate" icon={TrendingUp} tone={successRate !== null && successRate < 50 ? "danger" : "success"}
+          value={successRate == null ? "—" : `${successRate}%`} sub={hasPeriodData ? rangeLabel(range) : "Analytics unavailable"} />
+        <MetricCard label="Active sessions" icon={Server} tone={deadCount > 0 ? "warning" : "accent"}
+          value={`${activeCount} / ${summary?.total ?? bot.sessions_count ?? activeCount}`} sub={`${deadCount} dead · ${disabledCount} disabled`} />
       </div>
 
       {/* Operational health strip */}
@@ -607,32 +634,47 @@ function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavi
       {/* Posting activity — bucketed sent/failed series parsed from the real log */}
       <ChartCard
         title="Posting activity"
-        subtitle="Sent, failed and success rate over the selected range"
-        right={<TimeRangeTabs value={range} onChange={setRange} />}
+        subtitle={`${sent?.toLocaleString() ?? "—"} delivered · ${failed?.toLocaleString() ?? "—"} failed · ${successRate ?? "—"}% success rate`}
       >
         <PostingActivityChart analytics={analytics} loading={aLoading} />
       </ChartCard>
 
       {/* Analytics grid — session comparison left, breakdown/failures/timing right */}
-      <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-5 lg:grid-rows-[auto_auto_auto]">
-        <ChartCard title="Delivery breakdown" subtitle={rangeLabel(range)} className="lg:col-start-4 lg:col-span-2 lg:row-start-1">
-          <DeliveryBreakdownCard sent={analytics?.range_sent || 0} failed={analytics?.range_failed || 0} loading={aLoading} />
-        </ChartCard>
-        <ChartCard title="Session performance" subtitle="Messages sent and failed by account (lifetime)" className="lg:col-start-1 lg:col-span-3 lg:row-start-1 lg:row-span-3">
-          <SessionPerformanceChart rows={perfRows} loading={!overview} onViewAll={() => onNavigate("sessions")} totalCount={summary?.total ?? perfRows.length} />
-        </ChartCard>
-        <ChartCard title="Failure reasons" subtitle={rangeLabel(range)} className="lg:col-start-4 lg:col-span-2 lg:row-start-2">
-          <FailureReasonsChart data={failures} loading={fLoading} />
-        </ChartCard>
-        <ChartCard title="Cycle timing" subtitle="Posting cadence" className="lg:col-start-4 lg:col-span-2 lg:row-start-3">
-          <CycleTimingCard lastCycleTs={stats?.last_cycle_ts || 0} cycleSec={bot.cycle || 0} gapSec={bot.gap || 0} avgDurationSec={avgCycleDuration} running={!!bot.running} />
-        </ChartCard>
+      <div className="grid min-w-0 grid-cols-1 items-start gap-3.5 xl:grid-cols-[minmax(0,2fr)_minmax(320px,.9fr)]">
+        <div className="min-w-0 space-y-3.5">
+          <ChartCard title="Session performance" subtitle="Independent account performance">
+            <SessionPerformanceChart rows={perfRows} loading={!overview} onViewAll={() => onNavigate("sessions")} totalCount={summary?.total ?? perfRows.length} />
+          </ChartCard>
+          <ChartCard title="Recent incidents" subtitle="Latest actionable bot events">
+            {incidents.length ? <div className="divide-y divide-hq-border/50">
+              {incidents.map((line, index) => (
+                <button key={`${line}-${index}`} onClick={() => onNavigate("logs")} className="flex w-full items-center gap-3 py-2.5 text-left hover:bg-white/[0.02]">
+                  <AlertTriangle className="h-4 w-4 shrink-0 text-hq-warning" />
+                  <span className="min-w-0 flex-1 truncate text-[12px] text-hq-sub">{line}</span>
+                  <ChevronRight className="h-3.5 w-3.5 text-hq-muted" />
+                </button>
+              ))}
+              <button onClick={() => onNavigate("logs")} className="pt-3 text-[12px] font-medium text-hq-accent hover:underline">View all activity</button>
+            </div> : <EmptyState icon={CheckCircle2} title="No recent incidents" hint={`Nothing requiring attention in ${rangeLabel(range).toLowerCase()}.`} />}
+          </ChartCard>
+        </div>
+        <div className="min-w-0 space-y-3.5">
+          <ChartCard title="Delivery breakdown" subtitle={`${rangeLabel(range)} · attempted = delivered + failed`}>
+            <DeliveryBreakdownCard sent={analytics?.range_sent || 0} failed={analytics?.range_failed || 0} loading={aLoading} />
+          </ChartCard>
+          <ChartCard title="Failure reasons" subtitle={rangeLabel(range)}>
+            <FailureReasonsChart data={failures} loading={fLoading} />
+          </ChartCard>
+          <ChartCard title="Cycle state" subtitle="Live posting cadence">
+            <CycleTimingCard lastCycleTs={stats?.last_cycle_ts || 0} cycleSec={bot.cycle || 0} gapSec={bot.gap || 0} avgDurationSec={avgCycleDuration} running={!!bot.running} />
+          </ChartCard>
+        </div>
       </div>
 
       {/* Details + System state */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3.5">
         <HqCard className="p-5 lg:col-span-2">
-          <h3 className="text-[15px] font-semibold text-hq-text mb-2">Details</h3>
+          <h3 className="text-[15px] font-semibold text-hq-text mb-2">Configuration</h3>
           <DetailGrid rows={details} />
         </HqCard>
         <HqCard className="p-5">
