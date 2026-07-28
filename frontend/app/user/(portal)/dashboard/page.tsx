@@ -708,10 +708,10 @@ export default function UserDashboard() {
         <div className="grid grid-cols-2 gap-3 mb-4 stagger-children">
           <MobileStatCard icon={<Send className="h-5 w-5" />} accent="accent" label="Messages Sent"
             value={totalSent}
-            footer={<span className="flex items-center gap-1 text-[12px] font-medium text-success"><ArrowUpRight className="h-3.5 w-3.5" />{totalSent.toLocaleString()} sent in {rangeCaption}</span>} />
+            footer={<span className={`flex items-center gap-1 text-[12px] font-medium ${totalSent > 0 ? "text-success" : "text-dark-400"}`}><ArrowUpRight className="h-3.5 w-3.5" />{totalSent > 0 ? `${totalSent.toLocaleString()} sent in ${rangeCaption}` : `No records in ${rangeCaption}`}</span>} />
           <MobileStatCard icon={<XCircle className="h-5 w-5" />} accent="danger" label="Failed" highlight
             value={totalFailed}
-            footer={<span className={`flex items-center gap-1 text-[12px] font-medium ${totalFailed > 0 ? "text-danger" : "text-dark-400"}`}><ArrowUpRight className="h-3.5 w-3.5" />{totalFailed.toLocaleString()} failed in {rangeCaption}</span>} />
+            footer={<span className={`flex items-center gap-1 text-[12px] font-medium ${totalFailed > 0 ? "text-danger" : "text-dark-400"}`}><ArrowUpRight className="h-3.5 w-3.5" />{totalFailed > 0 ? `${totalFailed.toLocaleString()} failed in ${rangeCaption}` : `No records in ${rangeCaption}`}</span>} />
           <MobileStatCard icon={<Users className="h-5 w-5" />} accent="accent" label="Accounts"
             value={sessions.length}
             footer={<span className="flex items-center gap-1.5 text-[12px] font-medium text-success"><span className="h-1.5 w-1.5 rounded-full bg-success" />{healthySessions} healthy</span>} />
@@ -902,9 +902,9 @@ export default function UserDashboard() {
       {/* ═══════════ STAT CARDS ROW ═══════════ */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4 stagger-children">
         <GlassStatCard icon={<Send className="h-[18px] w-[18px]" />} accent="accent" label="Messages Sent" value={totalSent}
-          footer={<span className="flex items-center gap-1 text-[13px] font-medium text-success"><ArrowUpRight className="h-4 w-4" />{totalSent.toLocaleString()} sent in {rangeCaption}</span>} />
+          footer={<span className={`flex items-center gap-1 text-[13px] font-medium ${totalSent > 0 ? "text-success" : "text-dark-400"}`}><ArrowUpRight className="h-4 w-4" />{totalSent > 0 ? `${totalSent.toLocaleString()} sent in ${rangeCaption}` : `No records in ${rangeCaption}`}</span>} />
         <GlassStatCard icon={<XCircle className="h-[18px] w-[18px]" />} accent="danger" label="Failed" value={totalFailed} highlight
-          footer={<span className={`flex items-center gap-1 text-[13px] font-medium ${totalFailed > 0 ? "text-danger" : "text-dark-400"}`}><ArrowUpRight className="h-4 w-4" />{totalFailed.toLocaleString()} failed in {rangeCaption}</span>} />
+          footer={<span className={`flex items-center gap-1 text-[13px] font-medium ${totalFailed > 0 ? "text-danger" : "text-dark-400"}`}><ArrowUpRight className="h-4 w-4" />{totalFailed > 0 ? `${totalFailed.toLocaleString()} failed in ${rangeCaption}` : `No records in ${rangeCaption}`}</span>} />
         <GlassStatCard icon={<Users className="h-[18px] w-[18px]" />} accent="accent" label="Accounts" value={sessions.length}
           footer={<div className="flex items-center gap-3 text-[13px] font-medium">
             <span className="flex items-center gap-1.5 text-success"><span className="h-1.5 w-1.5 rounded-full bg-success" />{healthySessions} healthy</span>
