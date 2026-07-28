@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable, Optional
 from telethon import TelegramClient, events, Button
 from telethon import errors as tl_errors
 from telethon.tl.functions.messages import ForwardMessagesRequest
+from telethon.tl.types import User
 
 try:
     from telethon.errors.rpcerrorlist import MessageNotModifiedError
@@ -784,6 +785,32 @@ def compose_autoreply(custom: str | None, footer: str | None = None) -> str:
     if not ft or ft in body:
         return body
     return f"{body}\n\n{ft}"
+
+
+async def _get_eligible_dm_sender(
+    event: events.NewMessage.Event,
+    client: TelegramClient,
+) -> User | None:
+    """Return the human sender for an incoming 1:1 DM, otherwise ``None``."""
+    if getattr(event, "out", False):
+        return None
+    if not getattr(event, "is_private", False):
+        return None
+    if getattr(event, "is_group", False) or getattr(event, "is_channel", False):
+        return None
+    if not getattr(event, "sender_id", None):
+        return None
+    try:
+        sender = await event.get_sender()
+        if sender is None:
+            sender = await client.get_entity(event.sender_id)
+    except Exception:
+        return None
+    if not isinstance(sender, User):
+        return None
+    if getattr(sender, "bot", False) or getattr(sender, "is_self", False):
+        return None
+    return sender
 
 
 # Short-TTL disk cache so a portal/control-bot toggle of dm_autoreply reaches the
@@ -2505,16 +2532,12 @@ async def _async_session_loop(
         cfg: dict = {}
 
         async def _on_incoming_dm(event: events.NewMessage.Event) -> None:
-            # Only private (1:1) DMs: skip own messages, groups, and channels
-            if event.out:
+            # Validate before doing any work. Ineligible events stay completely
+            # invisible to both auto-reply and the owner's DM inbox.
+            user = await _get_eligible_dm_sender(event, client)
+            if user is None:
                 return
-            if not getattr(event, "is_private", False):
-                return
-            if getattr(event, "is_group", False) or getattr(event, "is_channel", False):
-                return
-            user_id = event.sender_id
-            if not user_id:
-                return
+            user_id = int(user.id)
             # Catch-up guard: ignore messages that arrived before this worker started
             # listening (stale updates replayed on reconnect). 5s grace for clock skew.
             try:
@@ -2527,19 +2550,10 @@ async def _async_session_loop(
             # Prefer event.get_sender() — it resolves from the update's own context and, unlike
             # client.get_entity(id), doesn't fail with "Could not find the input entity" right
             # after receiving a DM (which is why senders were showing as "Unknown User").
-            display_name = ""
-            sender_username = ""
-            try:
-                user = await event.get_sender()
-                if user is None:
-                    user = await client.get_entity(event.sender_id)
-                if user:
-                    first = (getattr(user, "first_name", None) or "").strip()
-                    last = (getattr(user, "last_name", None) or "").strip()
-                    sender_username = (getattr(user, "username", None) or "").strip()
-                    display_name = (first + " " + last).strip() or (f"@{sender_username}" if sender_username else "")
-            except Exception:
-                pass
+            first = (getattr(user, "first_name", None) or "").strip()
+            last = (getattr(user, "last_name", None) or "").strip()
+            sender_username = (getattr(user, "username", None) or "").strip()
+            display_name = (first + " " + last).strip() or (f"@{sender_username}" if sender_username else "")
             if not display_name:
                 display_name = f"@{sender_username}" if sender_username else f"User {user_id}"
             # Resolve this account's own name/@username/user_id once (for the "Account:" line,
