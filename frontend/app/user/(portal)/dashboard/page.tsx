@@ -255,15 +255,8 @@ export default function UserDashboard() {
   /* exact sent/failed totals for the selected range (from the same log parse) */
   const rangeTotals = { sent: analytics?.range_sent || 0, failed: analytics?.range_failed || 0 };
   const selectedSuccessRate: number | null = analytics?.success_rate ?? null;
-  const accountRangeStats = useMemo(() => {
-    const bySession = new Map<string, any>();
-    for (const item of analytics?.accounts || []) {
-      bySession.set(item.id, item);
-      bySession.set(`${item.id}.session`, item);
-    }
-    return bySession;
-  }, [analytics]);
   const perfTitle = PERF_RANGES.find(r => r.val === perfPeriod)?.label || "";
+  const rangeCaption = perfTitle.toLowerCase();
 
   /* ─── loading / error ─── */
   if (isLoading) return (
@@ -376,8 +369,6 @@ export default function UserDashboard() {
   const totalFailed = rangeTotals.failed;
   const total = totalSent + totalFailed;
   const lifetimeSuccessRate = total > 0 ? Math.round((totalSent / total) * 100) : 0;
-  const todaySent = totalSent;
-  const todayFailed = totalFailed;
 
   const validTill = bot.valid_till ? parseFlexibleDate(bot.valid_till) : null;
   const daysLeft = validTill && !isNaN(validTill.getTime()) ? Math.ceil((validTill.getTime() - Date.now()) / 86400000) : null;
@@ -717,10 +708,10 @@ export default function UserDashboard() {
         <div className="grid grid-cols-2 gap-3 mb-4 stagger-children">
           <MobileStatCard icon={<Send className="h-5 w-5" />} accent="accent" label="Messages Sent"
             value={totalSent}
-            footer={<span className="flex items-center gap-1 text-[12px] font-medium text-success"><ArrowUpRight className="h-3.5 w-3.5" />{todaySent > 0 ? `+${todaySent}` : "0"} selected range</span>} />
+            footer={<span className="flex items-center gap-1 text-[12px] font-medium text-success"><ArrowUpRight className="h-3.5 w-3.5" />{totalSent.toLocaleString()} sent in {rangeCaption}</span>} />
           <MobileStatCard icon={<XCircle className="h-5 w-5" />} accent="danger" label="Failed" highlight
             value={totalFailed}
-            footer={<span className={`flex items-center gap-1 text-[12px] font-medium ${todayFailed > 0 ? "text-danger" : "text-dark-400"}`}><ArrowUpRight className="h-3.5 w-3.5" />{todayFailed > 0 ? `+${todayFailed}` : "0"} selected range</span>} />
+            footer={<span className={`flex items-center gap-1 text-[12px] font-medium ${totalFailed > 0 ? "text-danger" : "text-dark-400"}`}><ArrowUpRight className="h-3.5 w-3.5" />{totalFailed.toLocaleString()} failed in {rangeCaption}</span>} />
           <MobileStatCard icon={<Users className="h-5 w-5" />} accent="accent" label="Accounts"
             value={sessions.length}
             footer={<span className="flex items-center gap-1.5 text-[12px] font-medium text-success"><span className="h-1.5 w-1.5 rounded-full bg-success" />{healthySessions} healthy</span>} />
@@ -911,9 +902,9 @@ export default function UserDashboard() {
       {/* ═══════════ STAT CARDS ROW ═══════════ */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4 stagger-children">
         <GlassStatCard icon={<Send className="h-[18px] w-[18px]" />} accent="accent" label="Messages Sent" value={totalSent}
-          footer={<span className="flex items-center gap-1 text-[13px] font-medium text-success"><ArrowUpRight className="h-4 w-4" />{todaySent > 0 ? `+${todaySent}` : "0"} selected range</span>} />
+          footer={<span className="flex items-center gap-1 text-[13px] font-medium text-success"><ArrowUpRight className="h-4 w-4" />{totalSent.toLocaleString()} sent in {rangeCaption}</span>} />
         <GlassStatCard icon={<XCircle className="h-[18px] w-[18px]" />} accent="danger" label="Failed" value={totalFailed} highlight
-          footer={<span className={`flex items-center gap-1 text-[13px] font-medium ${todayFailed > 0 ? "text-danger" : "text-dark-400"}`}><ArrowUpRight className="h-4 w-4" />{todayFailed > 0 ? `+${todayFailed}` : "0"} selected range</span>} />
+          footer={<span className={`flex items-center gap-1 text-[13px] font-medium ${totalFailed > 0 ? "text-danger" : "text-dark-400"}`}><ArrowUpRight className="h-4 w-4" />{totalFailed.toLocaleString()} failed in {rangeCaption}</span>} />
         <GlassStatCard icon={<Users className="h-[18px] w-[18px]" />} accent="accent" label="Accounts" value={sessions.length}
           footer={<div className="flex items-center gap-3 text-[13px] font-medium">
             <span className="flex items-center gap-1.5 text-success"><span className="h-1.5 w-1.5 rounded-full bg-success" />{healthySessions} healthy</span>
@@ -986,6 +977,7 @@ export default function UserDashboard() {
               <div className="p-1.5 rounded-xl bg-accent/10"><Target className="h-4 w-4 text-accent" /></div>
               <span className="text-sm font-bold text-dark-100">Accounts</span>
               <span className="text-[10px] text-dark-400 bg-dark-800/50 rounded-full px-2.5 py-0.5 font-semibold">{sessions.length}</span>
+              <span className="text-[9px] text-accent bg-accent/10 border border-accent/15 rounded-full px-2 py-0.5 font-semibold">Last cycle</span>
               {failingCount > 0 && (
                 <span className="text-[10px] text-danger bg-danger/10 border border-danger/15 rounded-full px-2.5 py-0.5 font-semibold flex items-center gap-1">
                   <span className="h-1 w-1 rounded-full bg-danger animate-pulse" />{failingCount} failing
@@ -1007,16 +999,15 @@ export default function UserDashboard() {
               <div className="stagger-children">
                 {sessions.map((sess: any, idx: number) => {
                   const key = typeof sess === "string" ? sess : (sess.file || "");
-                  const lifetime: any = stats?.session_stats?.[key] || null;
-                  const s: any = accountRangeStats.get(key) || null;
-                  const sent = s?.sent || 0;
-                  const failed = s?.failed || 0;
-                  const t = sent + failed;
-                  const pct: number | null = s?.success_rate ?? null;
+                  const cycle: any = stats?.session_stats?.[key] || null;
                   const failing = failingFiles.has(key);
                   const name = (sess.real_name || key).replace(".session", "");
-                  const lastSent = lifetime?.last_cycle_success || 0;
-                  const lastAttempted = lifetime?.last_cycle_attempted || 0;
+                  const lastSent = cycle?.last_cycle_success || 0;
+                  const lastFailed = cycle?.last_cycle_failed || 0;
+                  const lastAttempts = lastSent + lastFailed;
+                  const pct: number | null = lastAttempts > 0
+                    ? Math.round((lastSent / lastAttempts) * 1000) / 10
+                    : null;
 
                   const avatarColors = [
                     "from-accent-400 to-accent-700",
@@ -1046,10 +1037,17 @@ export default function UserDashboard() {
                             {failing ? "Issue" : "Healthy"}
                           </span>
                         </div>
-                        <div className="flex items-center gap-2.5 mt-0.5">
-                          {lastAttempted > 0 && <span className="text-[10px] text-dark-500 font-medium">Last: {lastSent}/{lastAttempted}</span>}
-                          <span className="h-0.5 w-0.5 rounded-full bg-dark-600" />
-                          <span className="text-[10px] text-dark-600">{sent.toLocaleString()} sent</span>
+                        <div className="flex items-center gap-1.5 mt-0.5 text-[10px] font-medium">
+                          <span className="text-dark-500">Last cycle:</span>
+                          {lastAttempts > 0 ? (
+                            <>
+                              <span className="text-success">{lastSent.toLocaleString()} sent</span>
+                              <span className="text-dark-600">·</span>
+                              <span className={lastFailed > 0 ? "text-danger" : "text-dark-500"}>{lastFailed.toLocaleString()} failed</span>
+                            </>
+                          ) : (
+                            <span className="text-dark-600">No activity</span>
+                          )}
                         </div>
                       </div>
 
