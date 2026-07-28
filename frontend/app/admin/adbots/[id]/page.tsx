@@ -42,7 +42,6 @@ const tabs = [
   { id: "content", label: "Content", icon: FileText },
   { id: "logs", label: "Activity", icon: Activity },
   { id: "payments", label: "Billing", icon: CreditCard },
-  { id: "access", label: "Access", icon: KeyRound },
   { id: "settings", label: "Configuration", icon: Settings },
 ];
 
@@ -515,6 +514,41 @@ const RANGE_LABELS: Record<AnalyticsRange, string> = {
 };
 function rangeLabel(r: AnalyticsRange): string { return RANGE_LABELS[r]; }
 
+function humanDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds} second${seconds === 1 ? "" : "s"}`;
+  if (seconds < 3600) {
+    const minutes = Math.round(seconds / 60);
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+  const hours = Math.round((seconds / 3600) * 10) / 10;
+  return `${hours} hour${hours === 1 ? "" : "s"}`;
+}
+
+function toIncident(raw: string) {
+  const parsed = parseLogLine(raw);
+  const account = raw.match(/\baccount=([^\s]+)/i)?.[1]?.replace(".session", "") || "System";
+  const event =
+    /payment required/i.test(raw) ? "Payment required" :
+    /banned/i.test(raw) ? "Session banned" :
+    /posting stopped|stopped posting/i.test(raw) ? "Posting stopped" :
+    /cycle completed/i.test(raw) ? "Cycle completed" :
+    /inaccessible/i.test(raw) ? "Group inaccessible" :
+    "Message failed";
+  const reason =
+    /payment required/i.test(raw) ? "Payment required" :
+    /banned/i.test(raw) ? "Banned" :
+    parsed.extra || (/manual stop/i.test(raw) ? "Manual stop" : "—");
+  return {
+    raw,
+    time: parsed.time ? parsed.time.slice(0, 5) : "—",
+    session: account,
+    event,
+    group: parsed.group || parsed.groupId || "—",
+    reason,
+    failed: parsed.tag === "POST_FAILURE" || /fail|banned|payment required|inaccessible/i.test(raw),
+  };
+}
+
 function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavigate: (tab: string) => void }) {
   const { data: stats, mutate: refreshStats } = useAdbotStats(name);
   const { data: overview } = useSessionsOverview(name, "all");
@@ -522,6 +556,7 @@ function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavi
   const { data: analytics, isLoading: aLoading, isValidating: aRefreshing, mutate: refreshAnalytics } = useAdbotAnalytics(name, range);
   const { data: failures, isLoading: fLoading, mutate: refreshFailures } = useAdbotFailureReasons(name, range);
   const { data: recentLogs } = useAdbotLogs(name, 80);
+  const [autoRefreshSeconds, setAutoRefreshSeconds] = useState(30);
 
   const sent = analytics?.range_sent;
   const failed = analytics?.range_failed;
@@ -549,6 +584,7 @@ function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavi
       sent: s.stats.sent,
       failed: s.stats.failed,
       successRate: s.stats.success_rate,
+      lastUsed: s.last_active_at,
     }))
     .sort((a, b) => (b.sent + b.failed) - (a.sent + a.failed));
 
@@ -558,20 +594,26 @@ function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavi
     .filter((d: number) => d > 0);
   const avgCycleDuration = durations.length ? durations.reduce((a, b) => a + b, 0) / durations.length : null;
 
-  const botToken = bot.bot_username ? "Connected" : "Not configured";
-  const details: [string, ReactNode][] = [
-    ["Mode", cap(fmt(bot.mode))],
-    ["Plan", fmt(bot.plan_name)],
-    ["Owner", fmt(bot.owner_id, "Admin")],
-    ["Cycle", bot.cycle != null ? `${bot.cycle}s` : "Not set"],
-    ["Gap", bot.gap != null ? `${bot.gap}s` : "Not set"],
-    ["Group file", fmt(bot.group_file, "Not configured")],
-    ["Created", bot.created_at ? formatDate(bot.created_at) : "Not tracked"],
-    ["Valid until", bot.valid_till ? formatDate(bot.valid_till) : "Not set"],
-    ["Bot token", <span className={bot.bot_username ? "text-hq-success" : "text-hq-warning"}>{botToken}{bot.bot_username ? ` · @${bot.bot_username}` : ""}</span>],
-    ["Log group", bot.log_group
-      ? <a href={bot.log_group} target="_blank" rel="noreferrer" className="text-hq-accent hover:underline inline-flex items-center gap-1 justify-end">Open <ExternalLink className="w-3 h-3" /></a>
-      : "Not set"],
+  const configurationGroups: Array<{ title: string; rows: [string, ReactNode][] }> = [
+    { title: "General", rows: [
+      ["Mode", cap(fmt(bot.mode))],
+      ["Plan", fmt(bot.plan_name)],
+      ["Owner", fmt(bot.owner_id, "Admin")],
+      ["Created", bot.created_at ? formatDate(bot.created_at) : "Unknown"],
+      ["Valid until", bot.valid_till ? formatDate(bot.valid_till) : "Not set"],
+    ] },
+    { title: "Posting", rows: [
+      ["Cycle", bot.cycle != null ? humanDuration(bot.cycle) : "Not set"],
+      ["Gap", bot.gap != null ? humanDuration(bot.gap) : "Not set"],
+      ["Group source", fmt(bot.group_file, "Not configured")],
+    ] },
+    { title: "Integrations", rows: [
+      ["Telegram bot", <span className={bot.bot_username ? "text-hq-success" : "text-hq-warning"}>{bot.bot_username ? `Connected · @${bot.bot_username}` : "Not configured"}</span>],
+      ["Log group", bot.log_group
+        ? <a href={bot.log_group} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-hq-success hover:underline">Connected <ExternalLink className="h-3 w-3" /></a>
+        : "Not configured"],
+      ["Web access", <span className={bot.web_token ? "text-hq-success" : "text-hq-muted"}>{bot.web_token ? "Enabled" : "Disabled"}</span>],
+    ] },
   ];
 
   const systemRows: [string, ReactNode][] = [
@@ -579,7 +621,7 @@ function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavi
     ["Active sessions", activeCount],
     ["Disabled sessions", disabledCount],
     ["Dead sessions", <span className={deadCount > 0 ? "text-hq-danger" : ""}>{deadCount}</span>],
-    ["Total cycles", cycles > 0 ? cycles.toLocaleString() : "No cycles yet"],
+    ["Total cycles", cycles > 0 ? cycles.toLocaleString() : lastCycleTs ? "Unknown" : "No cycles recorded"],
     ["Last cycle", lastCycleTs ? relTime(lastCycleTs) : "Not tracked"],
     ["Last session used", fmt(stats?.last_cycle_session?.replace(".session", ""), "Not tracked")],
   ];
@@ -587,10 +629,18 @@ function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavi
   const refreshAll = async () => {
     await Promise.all([refreshStats(), refreshAnalytics(), refreshFailures()]);
   };
+  useEffect(() => {
+    if (!autoRefreshSeconds) return;
+    const timer = window.setInterval(() => {
+      void Promise.all([refreshStats(), refreshAnalytics(), refreshFailures()]);
+    }, autoRefreshSeconds * 1000);
+    return () => window.clearInterval(timer);
+  }, [autoRefreshSeconds, refreshAnalytics, refreshFailures, refreshStats]);
   const incidents = (recentLogs?.lines || [])
     .filter((line) => /fail|banned|payment|required|stopped|cycle completed|inaccessible/i.test(line))
     .slice(-6)
-    .reverse();
+    .reverse()
+    .map(toIncident);
 
   return (
     <div className="space-y-4">
@@ -606,7 +656,20 @@ function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavi
         <span className="inline-flex h-9 items-center rounded-[10px] border border-hq-border bg-hq-bg px-3 text-[12px] text-hq-sub">
           <Globe className="mr-2 h-3.5 w-3.5" />Asia/Kolkata
         </span>
-        <span className="ml-auto text-[11px] text-hq-muted">{aRefreshing ? "Refreshing analytics…" : "Analytics up to date"}</span>
+        <span className="inline-flex h-9 items-center rounded-[10px] border border-hq-border bg-hq-bg px-3 text-[12px] text-hq-muted" title="Comparison analytics are not provided by the current API">
+          Compare: Off
+        </span>
+        <label className="sr-only" htmlFor="auto-refresh">Auto refresh</label>
+        <select id="auto-refresh" value={autoRefreshSeconds} onChange={(e) => setAutoRefreshSeconds(Number(e.target.value))}
+          className="ml-auto h-9 rounded-[10px] border border-hq-border bg-hq-bg px-3 text-[12px] font-medium text-hq-text focus:outline-none focus:ring-2 focus:ring-hq-accent/40">
+          <option value={0}>Auto refresh: Off</option>
+          <option value={30}>Auto refresh: 30s</option>
+          <option value={60}>Auto refresh: 1m</option>
+          <option value={300}>Auto refresh: 5m</option>
+        </select>
+        <span className="text-[11px] text-hq-muted">
+          {aRefreshing ? "Refreshing…" : analytics?.generated_at ? `Updated ${relTime(analytics.generated_at)}` : "Waiting for analytics"}
+        </span>
         <HqBtn tone="secondary" icon={RefreshCw} onClick={refreshAll} loading={aRefreshing}>Refresh</HqBtn>
       </div>
 
@@ -632,33 +695,43 @@ function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavi
       </div>
 
       {/* Posting activity — bucketed sent/failed series parsed from the real log */}
-      <ChartCard
-        title="Posting activity"
-        subtitle={`${sent?.toLocaleString() ?? "—"} delivered · ${failed?.toLocaleString() ?? "—"} failed · ${successRate ?? "—"}% success rate`}
-      >
-        <PostingActivityChart analytics={analytics} loading={aLoading} />
-      </ChartCard>
-
       {/* Analytics grid — session comparison left, breakdown/failures/timing right */}
-      <div className="grid min-w-0 grid-cols-1 items-start gap-3.5 xl:grid-cols-[minmax(0,2fr)_minmax(320px,.9fr)]">
+      <div className="grid min-w-0 grid-cols-1 items-start gap-3.5 xl:grid-cols-[minmax(0,1.85fr)_minmax(390px,1fr)]">
+        <div className="min-w-0 space-y-3.5">
+          <ChartCard
+            title="Posting activity"
+            subtitle={`${sent?.toLocaleString() ?? "—"} delivered · ${failed?.toLocaleString() ?? "—"} failed · ${successRate ?? "—"}% success rate`}
+          >
+            <PostingActivityChart analytics={analytics} loading={aLoading} />
+          </ChartCard>
+          <ChartCard title="Recent incidents" subtitle="Latest actionable bot events">
+            {incidents.length ? (
+              <div className="overflow-x-auto">
+                <div className="min-w-[650px]">
+                  <div className="grid grid-cols-[70px_1fr_1.2fr_1.2fr_76px_1fr] gap-3 border-b border-hq-border pb-2 text-[10px] font-semibold uppercase tracking-wide text-hq-muted">
+                    <span>Time</span><span>Session</span><span>Event</span><span>Group</span><span>Status</span><span>Reason</span>
+                  </div>
+                  {incidents.slice(0, 5).map((incident, index) => (
+                    <button key={`${incident.raw}-${index}`} onClick={() => onNavigate("logs")}
+                      className="grid w-full grid-cols-[70px_1fr_1.2fr_1.2fr_76px_1fr] gap-3 border-b border-hq-border/50 py-2.5 text-left text-[12px] last:border-0 hover:bg-white/[0.02]">
+                      <span className="tabular-nums text-hq-muted">{incident.time}</span>
+                      <span className="truncate text-hq-sub">{incident.session}</span>
+                      <span className="truncate text-hq-text">{incident.event}</span>
+                      <span className="truncate text-hq-sub">{incident.group}</span>
+                      <span className={incident.failed ? "text-hq-danger" : "text-hq-warning"}>{incident.failed ? "Failed" : "System"}</span>
+                      <span className="truncate text-hq-muted">{incident.reason}</span>
+                    </button>
+                  ))}
+                  <button onClick={() => onNavigate("logs")} className="pt-3 text-[12px] font-medium text-hq-accent hover:underline">View all activity</button>
+                </div>
+              </div>
+            ) : <EmptyState icon={CheckCircle2} title="No recent incidents" hint={`Nothing requiring attention in ${rangeLabel(range).toLowerCase()}.`} />}
+          </ChartCard>
+        </div>
         <div className="min-w-0 space-y-3.5">
           <ChartCard title="Session performance" subtitle="Independent account performance">
             <SessionPerformanceChart rows={perfRows} loading={!overview} onViewAll={() => onNavigate("sessions")} totalCount={summary?.total ?? perfRows.length} />
           </ChartCard>
-          <ChartCard title="Recent incidents" subtitle="Latest actionable bot events">
-            {incidents.length ? <div className="divide-y divide-hq-border/50">
-              {incidents.map((line, index) => (
-                <button key={`${line}-${index}`} onClick={() => onNavigate("logs")} className="flex w-full items-center gap-3 py-2.5 text-left hover:bg-white/[0.02]">
-                  <AlertTriangle className="h-4 w-4 shrink-0 text-hq-warning" />
-                  <span className="min-w-0 flex-1 truncate text-[12px] text-hq-sub">{line}</span>
-                  <ChevronRight className="h-3.5 w-3.5 text-hq-muted" />
-                </button>
-              ))}
-              <button onClick={() => onNavigate("logs")} className="pt-3 text-[12px] font-medium text-hq-accent hover:underline">View all activity</button>
-            </div> : <EmptyState icon={CheckCircle2} title="No recent incidents" hint={`Nothing requiring attention in ${rangeLabel(range).toLowerCase()}.`} />}
-          </ChartCard>
-        </div>
-        <div className="min-w-0 space-y-3.5">
           <ChartCard title="Delivery breakdown" subtitle={`${rangeLabel(range)} · attempted = delivered + failed`}>
             <DeliveryBreakdownCard sent={analytics?.range_sent || 0} failed={analytics?.range_failed || 0} loading={aLoading} />
           </ChartCard>
@@ -675,7 +748,21 @@ function OverviewTab({ name, bot, onNavigate }: { name: string; bot: any; onNavi
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3.5">
         <HqCard className="p-5 lg:col-span-2">
           <h3 className="text-[15px] font-semibold text-hq-text mb-2">Configuration</h3>
-          <DetailGrid rows={details} />
+          <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
+            {configurationGroups.map((group) => (
+              <section key={group.title} className="min-w-0">
+                <h4 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-hq-accent">{group.title}</h4>
+                <div className="space-y-1">
+                  {group.rows.map(([label, value]) => (
+                    <div key={label} className="flex items-start justify-between gap-3 py-1.5">
+                      <span className="shrink-0 text-[12px] text-hq-muted">{label}</span>
+                      <span className="min-w-0 truncate text-right text-[12px] font-medium text-hq-text">{value}</span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
         </HqCard>
         <HqCard className="p-5">
           <h3 className="text-[15px] font-semibold text-hq-text mb-2">System state</h3>
