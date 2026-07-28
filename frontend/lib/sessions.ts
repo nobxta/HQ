@@ -27,6 +27,7 @@ export interface ValidateResult {
   active: number;
   dead: number;
   busy: number;
+  missing: number;
   dead_moved: string[];
   skipped: Array<{ filename: string; code: string; message: string }>;
 }

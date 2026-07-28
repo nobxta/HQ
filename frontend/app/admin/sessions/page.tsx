@@ -351,7 +351,12 @@ export default function SessionsPage() {
     const ready = sessions.filter((s) => s.pool === "free").map((s) => s.filename);
     if (!ready.length) { toast.error("No ready sessions"); return; }
     toast.loading("Validating ready sessions…", { id: "vall" });
-    try { const r = await validateSessions(ready); toast.success(`${r.active} active · ${r.dead} dead`, { id: "vall" }); await mutate(); }
+    try {
+      const r = await validateSessions(ready);
+      const missing = r.missing ? ` · ${r.missing} missing` : "";
+      toast.success(`${r.active} active · ${r.dead} dead${missing}`, { id: "vall" });
+      await mutate();
+    }
     catch (e) { toast.error(errMsg(e, "Validate failed"), { id: "vall" }); }
   };
   const spambotReady = async () => {

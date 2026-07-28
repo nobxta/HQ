@@ -736,6 +736,19 @@ def _source_bucket_for(fn: str) -> str:
     return "free"
 
 
+def _validation_path_for(fn: str, pool: dict) -> tuple[Path, str]:
+    """Resolve an unassigned session from the filesystem bucket that owns it."""
+    from code.config import resolve_session_path
+
+    normalized = fn.replace("\\", "/")
+    if normalized.startswith("users/"):
+        return resolve_session_path(fn), "free"
+    for bucket, key in _BUCKET_KEYS.items():
+        if fn in (pool.get(key) or []):
+            return _bucket_dir(bucket) / Path(fn).name, bucket
+    return resolve_session_path(fn), "free"
+
+
 # ─────────────────────────── validate ───────────────────────────
 
 def _reconcile_dead(fn: str) -> None:
@@ -753,7 +766,6 @@ async def validate_sessions(body: dict = None):
     (/api/bots/{name}/sessions/{file}/validate). Busy sessions (held by a running worker)
     are reported as ``busy`` and left untouched.
     """
-    from code.config import resolve_session_path
     from code.utils import (validate_session_with_reason, probe_session_identity,
                             record_session_meta, is_inconclusive_validation_reason)
 
@@ -773,12 +785,10 @@ async def validate_sessions(body: dict = None):
             skipped.append({"filename": fn, **conflict})
             continue
 
-        path = resolve_session_path(fn)
+        path, source_bucket = _validation_path_for(fn, pool)
         if not path.is_file():
-            results.append({"file": fn, "status": "dead", "reason": "Session file missing"})
-            await asyncio.to_thread(record_session_meta, fn, None, validation_status="invalid")
-            await asyncio.to_thread(_reconcile_dead, fn)
-            dead_moved.append(fn)
+            # Missing local storage is not proof that Telegram rejected the auth key.
+            results.append({"file": fn, "status": "missing", "reason": "Session file missing"})
             continue
 
         try:
@@ -789,11 +799,35 @@ async def validate_sessions(body: dict = None):
 
         low = (reason or "").lower()
         if valid:
-            results.append({"file": fn, "status": "active", "reason": ""})
             # Session is authorized+reachable — capture fresh identity into the cache.
             probe = await probe_session_identity(path)
             if probe.get("status") != "busy":
-                await asyncio.to_thread(record_session_meta, fn, probe, validation_status="valid")
+                cached_spam = str(
+                    ((pool.get("session_meta") or {}).get(fn) or {}).get("spam_status") or ""
+                ).lower()
+                await asyncio.to_thread(
+                    record_session_meta,
+                    fn,
+                    probe,
+                    validation_status="valid",
+                    validation_reason="",
+                    spam_status="" if cached_spam in ("dead", "unauthorized") else None,
+                )
+
+            # A successful authorization check rehabilitates sessions from
+            # authorization quarantine into active/ and the ready pool.
+            if source_bucket in ("dead", "unauth"):
+                moved, move_reason = await asyncio.to_thread(
+                    _locked_session_move, fn, source_bucket, "free"
+                )
+                if not moved:
+                    results.append({
+                        "file": fn,
+                        "status": "error",
+                        "reason": f"Session is active, but restoring it to ready failed: {move_reason}",
+                    })
+                    continue
+            results.append({"file": fn, "status": "active", "reason": ""})
         elif is_inconclusive_validation_reason(reason):
             state = "busy" if ("in use" in low or "busy" in low or "locked" in low) else "error"
             results.append({"file": fn, "status": state, "reason": reason})
@@ -813,6 +847,7 @@ async def validate_sessions(body: dict = None):
         "active": sum(1 for r in results if r["status"] == "active"),
         "dead": sum(1 for r in results if r["status"] == "dead"),
         "busy": sum(1 for r in results if r["status"] == "busy"),
+        "missing": sum(1 for r in results if r["status"] == "missing"),
         "dead_moved": dead_moved,
         "skipped": skipped,
     }
