@@ -19,6 +19,8 @@ from code.utils import name_to_filename
 
 # range key -> (bucket_seconds, bucket_count)
 RANGE_CONFIG: dict[str, tuple[int, int]] = {
+    "3m": (30, 6),
+    "15m": (150, 6),
     "1h": (600, 6),      # 6 × 10 min
     "6h": (3600, 6),     # 6 × 1 hour
     "24h": (3600, 24),   # 24 × 1 hour
@@ -31,12 +33,14 @@ DEFAULT_RANGE = "7d"
 _SUMMARY_WINDOWS = {"h1": 3600, "h6": 6 * 3600, "h24": 86400, "d7": 7 * 86400}
 
 _LINE_RE = re.compile(
-    r"^\s*(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})\s+.*?\[(POST_SUCCESS|POST_FAILURE)\]"
+    r"^\s*(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})\s+.*?\[(POST_SUCCESS|POST_FAILURE)\]\s*(.*)$"
 )
 
 # Small TTL cache so rapid polls (multiple clients / SWR intervals) don't re-parse an
 # unchanged file. Keyed by bot_name -> (log_mtime, log_size, parsed_events).
-_events_cache: dict[str, tuple[float, int, list[tuple[float, bool]]]] = {}
+_EVENT_ACCOUNT_RE = re.compile(r"(?:^|\s)account=([^\s]+)")
+
+_events_cache: dict[str, tuple[float, int, list[tuple[float, bool, str]]]] = {}
 _cache_lock = threading.Lock()
 
 
@@ -47,8 +51,8 @@ def _resolve_log_path(bot_name: str) -> Path | None:
     return None
 
 
-def _parse_events(path: Path) -> list[tuple[float, bool]]:
-    """Return [(unix_ts, is_success)] for every POST_SUCCESS/FAILURE line in the file.
+def _parse_events(path: Path) -> list[tuple[float, bool, str]]:
+    """Return timestamp, outcome and account for every delivery line in the file.
 
     Cached by (mtime, size) so an unchanged log is parsed at most once until it grows.
     """
@@ -62,7 +66,7 @@ def _parse_events(path: Path) -> list[tuple[float, bool]]:
         if cached and cached[0] == mtime and cached[1] == size:
             return cached[2]
 
-    events: list[tuple[float, bool]] = []
+    events: list[tuple[float, bool, str]] = []
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
@@ -75,7 +79,9 @@ def _parse_events(path: Path) -> list[tuple[float, bool]]:
                     dt = datetime.strptime(f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
                 except ValueError:
                     continue
-                events.append((dt.timestamp(), m.group(3) == "POST_SUCCESS"))
+                account_match = _EVENT_ACCOUNT_RE.search(m.group(4))
+                account = account_match.group(1) if account_match else ""
+                events.append((dt.timestamp(), m.group(3) == "POST_SUCCESS", account))
     except OSError:
         return events
 
@@ -94,39 +100,58 @@ def compute_analytics(bot_name: str, range_key: str) -> dict:
     if range_key == "lifetime":
         path = _resolve_log_path(bot_name)
         events = _parse_events(path) if path is not None else []
-        first_ts = min((ts for ts, _ in events), default=now)
+        first_ts = min((ts for ts, _, _ in events), default=now)
         bucket_seconds = _pick_bucket(max(now - first_ts, 3600))
         count = int(now // bucket_seconds) - int(first_ts // bucket_seconds) + 1
     else:
         bucket_seconds, count = RANGE_CONFIG.get(range_key, RANGE_CONFIG[DEFAULT_RANGE])
-    start_index = int(now // bucket_seconds) - (count - 1)
+    effective_range = range_key if range_key in RANGE_CONFIG or range_key == "lifetime" else DEFAULT_RANGE
+    window_seconds = None if effective_range == "lifetime" else RANGE_CONFIG[effective_range][0] * RANGE_CONFIG[effective_range][1]
+    exact_start_ts = first_ts if effective_range == "lifetime" else now - window_seconds
+    start_index = int(exact_start_ts // bucket_seconds)
     range_start_ts = start_index * bucket_seconds
+    count = int(now // bucket_seconds) - start_index + 1
 
     points = [{"ts": range_start_ts + i * bucket_seconds, "sent": 0, "failed": 0} for i in range(count)]
     summary = {k: {"sent": 0, "failed": 0} for k in _SUMMARY_WINDOWS}
     range_sent = range_failed = 0
+    account_totals: dict[str, dict[str, int]] = {}
 
     path = _resolve_log_path(bot_name)
     if path is not None:
-        for ts, ok in _parse_events(path):
+        for ts, ok, account in _parse_events(path):
             idx = int(ts // bucket_seconds) - start_index
-            if 0 <= idx < count:
+            if exact_start_ts <= ts <= now and 0 <= idx < count:
                 if ok:
                     points[idx]["sent"] += 1
                     range_sent += 1
                 else:
                     points[idx]["failed"] += 1
                     range_failed += 1
+                if account:
+                    totals = account_totals.setdefault(account, {"sent": 0, "failed": 0})
+                    totals["sent" if ok else "failed"] += 1
             for k, win in _SUMMARY_WINDOWS.items():
-                if ts >= now - win:
+                if now - win <= ts <= now:
                     summary[k]["sent" if ok else "failed"] += 1
 
+    accounts = []
+    for account, totals in account_totals.items():
+        attempts = totals["sent"] + totals["failed"]
+        accounts.append({"id": account, "sent": totals["sent"], "failed": totals["failed"], "attempts": attempts, "success_rate": round(totals["sent"] / attempts * 100, 1) if attempts else None})
+    accounts.sort(key=lambda item: item["attempts"], reverse=True)
+    attempts = range_sent + range_failed
     return {
-        "range": range_key if (range_key in RANGE_CONFIG or range_key == "lifetime") else DEFAULT_RANGE,
+        "range": effective_range,
+        "from": datetime.fromtimestamp(exact_start_ts, timezone.utc).isoformat(),
+        "to": datetime.fromtimestamp(now, timezone.utc).isoformat(),
         "bucket_seconds": bucket_seconds,
         "points": points,
         "range_sent": range_sent,
         "range_failed": range_failed,
+        "range_attempts": attempts,
+        "success_rate": round(range_sent / attempts * 100, 1) if attempts else None,
+        "accounts": accounts,
         "summary": summary,
         "generated_at": now,
     }
@@ -171,7 +196,7 @@ def compute_range_analytics(bot_names: list[str], start_ts: float, end_ts: float
         if path is None:
             continue
         b_sent = b_failed = 0
-        for ts, ok in _parse_events(path):
+        for ts, ok, _account in _parse_events(path):
             if ts < start_ts or ts > end_ts:
                 continue
             idx = int((ts - first_bucket) // bucket_seconds)

@@ -148,10 +148,12 @@ function CircleProgress({ value, size = 120, stroke = 8, color = "accent", delay
 
 /* ──────────────── Performance ranges + series builders ──────────────── */
 
-type PerfRange = "1h" | "6h" | "24h" | "7d" | "30d";
+type PerfRange = "3m" | "15m" | "1h" | "6h" | "24h" | "7d" | "30d";
 type AnalyticsPoint = { ts: number; sent: number; failed: number };
 
 const PERF_RANGES: { val: PerfRange; label: string }[] = [
+  { val: "3m", label: "Last 3 minutes" },
+  { val: "15m", label: "Last 15 minutes" },
   { val: "1h", label: "Last 1 hour" },
   { val: "6h", label: "Last 6 hours" },
   { val: "24h", label: "Last 24 hours" },
@@ -174,7 +176,7 @@ export default function UserDashboard() {
   const { data: stats } = usePortalStats();
   const { data: logData } = usePortalLogs(50);
   const [perfPeriod, setPerfPeriod] = useState<PerfRange>("7d");
-  const { data: analytics } = usePortalAnalytics(perfPeriod);
+  const { data: analytics, isLoading: analyticsLoading } = usePortalAnalytics(perfPeriod);
   const session = getPortalSession();
   const [actionLoading, setActionLoading] = useState("");
   const [controlSteps, setControlSteps] = useState<ControlStep[]>([]);
@@ -252,6 +254,15 @@ export default function UserDashboard() {
 
   /* exact sent/failed totals for the selected range (from the same log parse) */
   const rangeTotals = { sent: analytics?.range_sent || 0, failed: analytics?.range_failed || 0 };
+  const selectedSuccessRate: number | null = analytics?.success_rate ?? null;
+  const accountRangeStats = useMemo(() => {
+    const bySession = new Map<string, any>();
+    for (const item of analytics?.accounts || []) {
+      bySession.set(item.id, item);
+      bySession.set(`${item.id}.session`, item);
+    }
+    return bySession;
+  }, [analytics]);
   const perfTitle = PERF_RANGES.find(r => r.val === perfPeriod)?.label || "";
 
   /* ─── loading / error ─── */
@@ -361,14 +372,12 @@ export default function UserDashboard() {
   const controlBusy = !!actionLoading || preStartLoading;
   const controlLabel = preStartLoading ? "Checking…" : starting ? "Starting…" : stopping ? "Stopping…" : active ? "Stop Bot" : "Start Bot";
   const status = running ? "running" : activating ? "activating" : bot.frozen ? "frozen" : bot.suspended ? "suspended" : "stopped";
-  const totalSent = stats?.lifetime_sent || 0;
-  const totalFailed = stats?.lifetime_failed || 0;
+  const totalSent = rangeTotals.sent;
+  const totalFailed = rangeTotals.failed;
   const total = totalSent + totalFailed;
-  const successRate = total > 0 ? Math.round((totalSent / total) * 100) : 0;
-  // "today" = last 24h, from the log-derived analytics (reliable) with stats as fallback.
-  const todaySent = analytics?.summary?.h24?.sent ?? stats?.last24h_sent ?? 0;
-  const todayFailed = analytics?.summary?.h24?.failed ?? stats?.last24h_failed ?? 0;
-  const todayTotal = todaySent + todayFailed;
+  const lifetimeSuccessRate = total > 0 ? Math.round((totalSent / total) * 100) : 0;
+  const todaySent = totalSent;
+  const todayFailed = totalFailed;
 
   const validTill = bot.valid_till ? parseFlexibleDate(bot.valid_till) : null;
   const daysLeft = validTill && !isNaN(validTill.getTime()) ? Math.ceil((validTill.getTime() - Date.now()) / 86400000) : null;
@@ -708,10 +717,10 @@ export default function UserDashboard() {
         <div className="grid grid-cols-2 gap-3 mb-4 stagger-children">
           <MobileStatCard icon={<Send className="h-5 w-5" />} accent="accent" label="Messages Sent"
             value={totalSent}
-            footer={<span className="flex items-center gap-1 text-[12px] font-medium text-success"><ArrowUpRight className="h-3.5 w-3.5" />{todaySent > 0 ? `+${todaySent}` : "0"} today</span>} />
+            footer={<span className="flex items-center gap-1 text-[12px] font-medium text-success"><ArrowUpRight className="h-3.5 w-3.5" />{todaySent > 0 ? `+${todaySent}` : "0"} selected range</span>} />
           <MobileStatCard icon={<XCircle className="h-5 w-5" />} accent="danger" label="Failed" highlight
             value={totalFailed}
-            footer={<span className={`flex items-center gap-1 text-[12px] font-medium ${todayFailed > 0 ? "text-danger" : "text-dark-400"}`}><ArrowUpRight className="h-3.5 w-3.5" />{todayFailed > 0 ? `+${todayFailed}` : "0"} today</span>} />
+            footer={<span className={`flex items-center gap-1 text-[12px] font-medium ${todayFailed > 0 ? "text-danger" : "text-dark-400"}`}><ArrowUpRight className="h-3.5 w-3.5" />{todayFailed > 0 ? `+${todayFailed}` : "0"} selected range</span>} />
           <MobileStatCard icon={<Users className="h-5 w-5" />} accent="accent" label="Accounts"
             value={sessions.length}
             footer={<span className="flex items-center gap-1.5 text-[12px] font-medium text-success"><span className="h-1.5 w-1.5 rounded-full bg-success" />{healthySessions} healthy</span>} />
@@ -726,6 +735,7 @@ export default function UserDashboard() {
             <div className="flex items-center gap-2 min-w-0">
               <TrendingUp className="h-[18px] w-[18px] text-accent shrink-0" />
               <span className="text-[15px] font-bold text-white truncate">Performance</span>
+              {analyticsLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-dark-500" aria-label="Loading selected range" />}
             </div>
             {/* working period dropdown */}
             <PerfRangeDropdown period={perfPeriod} open={perfOpen} setOpen={setPerfOpen} setPeriod={setPerfPeriod} title={perfTitle} />
@@ -734,10 +744,10 @@ export default function UserDashboard() {
           {perf.mode === "heatmap" ? (
             <div className="flex items-center justify-center gap-4">
               <div className="relative shrink-0">
-                <CircleProgress value={successRate} size={92} stroke={8}
-                  color={successRate >= 70 ? "success" : successRate >= 40 ? "warning" : "danger"} />
+                <CircleProgress value={selectedSuccessRate ?? 0} size={92} stroke={8}
+                  color={selectedSuccessRate == null ? "accent" : selectedSuccessRate >= 70 ? "success" : selectedSuccessRate >= 40 ? "warning" : "danger"} />
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <span className="text-[22px] font-bold text-white leading-none"><AnimatedNumber value={successRate} /><span className="text-sm text-dark-300">%</span></span>
+                  <span className="text-[22px] font-bold text-white leading-none">{selectedSuccessRate == null ? "N/A" : <><AnimatedNumber value={selectedSuccessRate} /><span className="text-sm text-dark-300">%</span></>}</span>
                 </div>
               </div>
               <ContribHeatmap cells={perf.cells} />
@@ -745,11 +755,11 @@ export default function UserDashboard() {
           ) : (
             <div className="flex items-center gap-3">
               <div className="relative shrink-0">
-                <CircleProgress value={successRate} size={110} stroke={9}
-                  color={successRate >= 70 ? "success" : successRate >= 40 ? "warning" : "danger"} />
+                <CircleProgress value={selectedSuccessRate ?? 0} size={110} stroke={9}
+                  color={selectedSuccessRate == null ? "accent" : selectedSuccessRate >= 70 ? "success" : selectedSuccessRate >= 40 ? "warning" : "danger"} />
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
                   <span className="text-[28px] font-bold text-white tracking-tighter leading-none">
-                    <AnimatedNumber value={successRate} /><span className="text-base text-dark-300">%</span>
+                    {selectedSuccessRate == null ? "N/A" : <><AnimatedNumber value={selectedSuccessRate} /><span className="text-base text-dark-300">%</span></>}
                   </span>
                   <span className="text-[9px] text-dark-500 font-semibold mt-0.5">Success Rate</span>
                 </div>
@@ -763,6 +773,7 @@ export default function UserDashboard() {
           <div className="space-y-2.5 mt-4">
             <PerfStatBar label="Sent" value={rangeTotals.sent} max={rangeTotals.sent + rangeTotals.failed || 1} color="bg-accent" />
             <PerfStatBar label="Failed" value={rangeTotals.failed} max={rangeTotals.sent + rangeTotals.failed || 1} color="bg-danger" />
+            {!analyticsLoading && selectedSuccessRate == null && <p className="text-center text-[11px] text-dark-500">No activity in this period</p>}
           </div>
         </div>
 
@@ -776,7 +787,7 @@ export default function UserDashboard() {
           <StatusCol icon={<Gem className="h-4 w-4" />} iconColor="text-accent" label="Plan" divider
             value={bot.plan_name || "—"} sub={expired ? "Expired" : "Active"} />
           <StatusCol icon={<Shield className="h-4 w-4" />} iconColor="text-info" label="Uptime" divider
-            value={`${successRate}%`} sub={failingCount > 0 ? `${failingCount} failing` : "No interruptions"} />
+            value={`${lifetimeSuccessRate}%`} sub={failingCount > 0 ? `${failingCount} failing` : "No interruptions"} />
         </div>
       </div>
 
@@ -900,9 +911,9 @@ export default function UserDashboard() {
       {/* ═══════════ STAT CARDS ROW ═══════════ */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4 stagger-children">
         <GlassStatCard icon={<Send className="h-[18px] w-[18px]" />} accent="accent" label="Messages Sent" value={totalSent}
-          footer={<span className="flex items-center gap-1 text-[13px] font-medium text-success"><ArrowUpRight className="h-4 w-4" />{todaySent > 0 ? `+${todaySent}` : "0"} today</span>} />
+          footer={<span className="flex items-center gap-1 text-[13px] font-medium text-success"><ArrowUpRight className="h-4 w-4" />{todaySent > 0 ? `+${todaySent}` : "0"} selected range</span>} />
         <GlassStatCard icon={<XCircle className="h-[18px] w-[18px]" />} accent="danger" label="Failed" value={totalFailed} highlight
-          footer={<span className={`flex items-center gap-1 text-[13px] font-medium ${todayFailed > 0 ? "text-danger" : "text-dark-400"}`}><ArrowUpRight className="h-4 w-4" />{todayFailed > 0 ? `+${todayFailed}` : "0"} today</span>} />
+          footer={<span className={`flex items-center gap-1 text-[13px] font-medium ${todayFailed > 0 ? "text-danger" : "text-dark-400"}`}><ArrowUpRight className="h-4 w-4" />{todayFailed > 0 ? `+${todayFailed}` : "0"} selected range</span>} />
         <GlassStatCard icon={<Users className="h-[18px] w-[18px]" />} accent="accent" label="Accounts" value={sessions.length}
           footer={<div className="flex items-center gap-3 text-[13px] font-medium">
             <span className="flex items-center gap-1.5 text-success"><span className="h-1.5 w-1.5 rounded-full bg-success" />{healthySessions} healthy</span>
@@ -924,6 +935,7 @@ export default function UserDashboard() {
             <div className="flex items-center gap-2">
               <TrendingUp className="h-5 w-5 text-accent" />
               <span className="text-[15px] font-bold text-white">Performance</span>
+              {analyticsLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-dark-500" aria-label="Loading selected range" />}
             </div>
             {/* working range dropdown */}
             <PerfRangeDropdown period={perfPeriod} open={perfOpen} setOpen={setPerfOpen} setPeriod={setPerfPeriod} title={perfTitle} wide />
@@ -932,11 +944,11 @@ export default function UserDashboard() {
           {perf.mode === "heatmap" ? (
             <div className="flex-1 flex flex-col items-center justify-center gap-4 py-2">
               <div className="relative shrink-0">
-                <CircleProgress value={successRate} size={120} stroke={9}
-                  color={successRate >= 70 ? "success" : successRate >= 40 ? "warning" : "danger"} />
+                <CircleProgress value={selectedSuccessRate ?? 0} size={120} stroke={9}
+                  color={selectedSuccessRate == null ? "accent" : selectedSuccessRate >= 70 ? "success" : selectedSuccessRate >= 40 ? "warning" : "danger"} />
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <span className="text-[28px] font-bold text-white tracking-tighter leading-none"><AnimatedNumber value={successRate} /><span className="text-base text-dark-300">%</span></span>
-                  <span className="text-[10px] text-dark-500 font-semibold mt-1">Success Rate</span>
+                  <span className="text-[28px] font-bold text-white tracking-tighter leading-none">{selectedSuccessRate == null ? "N/A" : <><AnimatedNumber value={selectedSuccessRate} /><span className="text-base text-dark-300">%</span></>}</span>
+                  <span className="text-[10px] text-dark-500 font-semibold mt-1" title={`Success rate for ${perfTitle.toLowerCase()}`}>Success Rate</span>
                 </div>
               </div>
               <ContribHeatmap cells={perf.cells} big />
@@ -944,13 +956,13 @@ export default function UserDashboard() {
           ) : (
             <div className="flex-1 flex items-center gap-4 py-2">
               <div className="relative shrink-0">
-                <CircleProgress value={successRate} size={140} stroke={10}
-                  color={successRate >= 70 ? "success" : successRate >= 40 ? "warning" : "danger"} />
+                <CircleProgress value={selectedSuccessRate ?? 0} size={140} stroke={10}
+                  color={selectedSuccessRate == null ? "accent" : selectedSuccessRate >= 70 ? "success" : selectedSuccessRate >= 40 ? "warning" : "danger"} />
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
                   <span className="text-[34px] font-bold text-white tracking-tighter leading-none">
-                    <AnimatedNumber value={successRate} /><span className="text-lg text-dark-300">%</span>
+                    {selectedSuccessRate == null ? "N/A" : <><AnimatedNumber value={selectedSuccessRate} /><span className="text-lg text-dark-300">%</span></>}
                   </span>
-                  <span className="text-[10px] text-dark-500 font-semibold mt-1">Success Rate</span>
+                  <span className="text-[10px] text-dark-500 font-semibold mt-1" title={`Success rate for ${perfTitle.toLowerCase()}`}>Success Rate</span>
                 </div>
               </div>
               <div className="flex-1 min-w-0">
@@ -963,6 +975,7 @@ export default function UserDashboard() {
           <div className="space-y-3 mt-3 pt-4 border-t border-white/[0.04]">
             <PerfStatBar label="Sent" value={rangeTotals.sent} max={rangeTotals.sent + rangeTotals.failed || 1} color="bg-accent" />
             <PerfStatBar label="Failed" value={rangeTotals.failed} max={rangeTotals.sent + rangeTotals.failed || 1} color="bg-danger" />
+            {!analyticsLoading && selectedSuccessRate == null && <p className="text-center text-[11px] text-dark-500">No activity in this period</p>}
           </div>
         </div>
 
@@ -994,15 +1007,16 @@ export default function UserDashboard() {
               <div className="stagger-children">
                 {sessions.map((sess: any, idx: number) => {
                   const key = typeof sess === "string" ? sess : (sess.file || "");
-                  const s: any = stats?.session_stats?.[key] || null;
-                  const sent = s?.lifetime_sent || 0;
-                  const failed = s?.lifetime_failed || 0;
+                  const lifetime: any = stats?.session_stats?.[key] || null;
+                  const s: any = accountRangeStats.get(key) || null;
+                  const sent = s?.sent || 0;
+                  const failed = s?.failed || 0;
                   const t = sent + failed;
-                  const pct = t > 0 ? Math.round((sent / t) * 100) : 0;
+                  const pct: number | null = s?.success_rate ?? null;
                   const failing = failingFiles.has(key);
                   const name = (sess.real_name || key).replace(".session", "");
-                  const lastSent = s?.last_cycle_success || 0;
-                  const lastAttempted = s?.last_cycle_attempted || 0;
+                  const lastSent = lifetime?.last_cycle_success || 0;
+                  const lastAttempted = lifetime?.last_cycle_attempted || 0;
 
                   const avatarColors = [
                     "from-accent-400 to-accent-700",
@@ -1043,17 +1057,17 @@ export default function UserDashboard() {
                       <div className="shrink-0 hidden sm:block">
                         <div className="relative">
                           <CircleProgress
-                            value={t > 0 ? pct : 0} size={38} stroke={3}
-                            color={failing ? "danger" : pct >= 70 ? "success" : pct >= 40 ? "warning" : "danger"}
+                            value={pct ?? 0} size={38} stroke={3}
+                            color={failing ? "danger" : pct != null && pct >= 70 ? "success" : pct != null && pct >= 40 ? "warning" : "danger"}
                           />
                           <span className={`absolute inset-0 flex items-center justify-center text-[9px] font-bold ${
-                            failing ? "text-danger" : pct >= 70 ? "text-success" : pct >= 40 ? "text-warning" : "text-danger"
-                          }`}>{t > 0 ? `${pct}%` : "—"}</span>
+                            failing ? "text-danger" : pct != null && pct >= 70 ? "text-success" : pct != null && pct >= 40 ? "text-warning" : "text-danger"
+                          }`}>{pct == null ? "N/A" : `${Number.isInteger(pct) ? pct.toFixed(0) : pct.toFixed(1)}%`}</span>
                         </div>
                       </div>
                       <span className={`sm:hidden text-xs font-bold ${
-                        failing ? "text-danger" : pct >= 70 ? "text-success" : pct >= 40 ? "text-warning" : "text-danger"
-                      }`}>{t > 0 ? `${pct}%` : "—"}</span>
+                        failing ? "text-danger" : pct != null && pct >= 70 ? "text-success" : pct != null && pct >= 40 ? "text-warning" : "text-danger"
+                      }`}>{pct == null ? "N/A" : `${Number.isInteger(pct) ? pct.toFixed(0) : pct.toFixed(1)}%`}</span>
                     </div>
                   );
                 })}
