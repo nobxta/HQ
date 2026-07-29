@@ -354,7 +354,10 @@ export default function SessionsPage() {
     try {
       const r = await validateSessions(ready);
       const missing = r.missing ? ` · ${r.missing} missing` : "";
-      toast.success(`${r.active} active · ${r.dead} dead${missing}`, { id: "vall" });
+      const busy = r.busy ? ` · ${r.busy} busy/skipped` : "";
+      const message = `${r.active} active · ${r.dead} dead${busy}${missing}`;
+      if (r.busy || r.missing) toast(message, { id: "vall", icon: "⚠️" });
+      else toast.success(message, { id: "vall" });
       await mutate();
     }
     catch (e) { toast.error(errMsg(e, "Validate failed"), { id: "vall" }); }

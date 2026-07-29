@@ -70,7 +70,7 @@ class SessionValidationTests(unittest.IsolatedAsyncioTestCase):
             ):
                 result = await sessions.validate_sessions({"filenames": ["alive.session"]})
 
-        validate.assert_awaited_once_with(session_path)
+        validate.assert_awaited_once_with(session_path, ignore_active_hint=True)
         move.assert_called_once_with("alive.session", "dead", "free")
         self.assertEqual(result["active"], 1)
         self.assertEqual(result["dead"], 0)

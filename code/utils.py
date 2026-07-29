@@ -1132,7 +1132,11 @@ def is_inconclusive_validation_reason(reason: str | None) -> bool:
     )
 
 
-async def validate_session_with_reason(session_path: Path) -> tuple[bool, str]:
+async def validate_session_with_reason(
+    session_path: Path,
+    *,
+    ignore_active_hint: bool = False,
+) -> tuple[bool, str]:
     """Validate a session without destructive guesses.
 
     Only explicit authorization/key/deactivation failures and invalid files are moved
@@ -1143,7 +1147,11 @@ async def validate_session_with_reason(session_path: Path) -> tuple[bool, str]:
     session_path = session_path.resolve()
     if not session_path.is_file():
         return False, "file missing"
-    if _session_active_callback and _session_active_callback(session_path):
+    if (
+        not ignore_active_hint
+        and _session_active_callback
+        and _session_active_callback(session_path)
+    ):
         return False, "in use by posting"
     busy = busy_message(session_path)
     if busy:

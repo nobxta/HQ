@@ -792,7 +792,15 @@ async def validate_sessions(body: dict = None):
             continue
 
         try:
-            valid, reason = await validate_session_with_reason(path)
+            # Assignment was checked immediately above. Ignore only the process-local
+            # posting hint here: it can retain a stale path after a worker exits and was
+            # causing ready, unassigned sessions to return "busy" in ~100 ms forever.
+            # The cross-process session guard below remains authoritative and still
+            # prevents opening a file that is genuinely in use.
+            valid, reason = await validate_session_with_reason(
+                path,
+                ignore_active_hint=True,
+            )
         except Exception as e:  # defensive — validator handles its own cleanup
             results.append({"file": fn, "status": "error", "reason": str(e)[:150]})
             continue
