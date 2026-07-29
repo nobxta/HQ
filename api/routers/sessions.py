@@ -801,18 +801,17 @@ async def validate_sessions(body: dict = None):
         if valid:
             # Session is authorized+reachable — capture fresh identity into the cache.
             probe = await probe_session_identity(path)
-            if probe.get("status") != "busy":
-                cached_spam = str(
-                    ((pool.get("session_meta") or {}).get(fn) or {}).get("spam_status") or ""
-                ).lower()
-                await asyncio.to_thread(
-                    record_session_meta,
-                    fn,
-                    probe,
-                    validation_status="valid",
-                    validation_reason="",
-                    spam_status="" if cached_spam in ("dead", "unauthorized") else None,
-                )
+            cached_spam = str(
+                ((pool.get("session_meta") or {}).get(fn) or {}).get("spam_status") or ""
+            ).lower()
+            await asyncio.to_thread(
+                record_session_meta,
+                fn,
+                probe if probe.get("status") != "busy" else None,
+                validation_status="valid",
+                validation_reason="",
+                spam_status="" if cached_spam in ("dead", "unauthorized") else None,
+            )
 
             # A successful authorization check rehabilitates sessions from
             # authorization quarantine into active/ and the ready pool.

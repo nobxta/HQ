@@ -78,6 +78,49 @@ class SessionValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record_meta.call_args.kwargs["validation_status"], "valid")
         self.assertEqual(record_meta.call_args.kwargs["validation_reason"], "")
 
+    async def test_valid_session_clears_invalid_cache_when_identity_probe_is_busy(self):
+        with tempfile.TemporaryDirectory() as td:
+            session_path = Path(td) / "alive.session"
+            session_path.write_bytes(b"session")
+            pool = {
+                "free_sessions": ["alive.session"],
+                "dead_sessions": [],
+                "session_meta": {
+                    "alive.session": {
+                        "validation_status": "invalid",
+                        "validation_reason": "old failure",
+                    }
+                },
+            }
+            record_meta = Mock()
+
+            with (
+                patch.object(sessions.wrappers, "load_pool", AsyncMock(return_value=pool)),
+                patch.object(sessions.wrappers, "log_admin_action", AsyncMock()),
+                patch.object(sessions, "_assignment_map", AsyncMock(return_value={})),
+                patch.object(
+                    sessions,
+                    "_validation_path_for",
+                    return_value=(session_path, "free"),
+                ),
+                patch(
+                    "code.utils.validate_session_with_reason",
+                    AsyncMock(return_value=(True, "")),
+                ),
+                patch(
+                    "code.utils.probe_session_identity",
+                    AsyncMock(return_value={"status": "busy"}),
+                ),
+                patch("code.utils.record_session_meta", record_meta),
+            ):
+                result = await sessions.validate_sessions({"filenames": ["alive.session"]})
+
+        self.assertEqual(result["sessions"][0]["status"], "active")
+        record_meta.assert_called_once()
+        self.assertIsNone(record_meta.call_args.args[1])
+        self.assertEqual(record_meta.call_args.kwargs["validation_status"], "valid")
+        self.assertEqual(record_meta.call_args.kwargs["validation_reason"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

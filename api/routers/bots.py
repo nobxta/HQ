@@ -1381,7 +1381,11 @@ async def validate_bot_session(name: str, session_file: str):
         raise HTTPException(404, f"Session '{session_file}' not assigned to '{name}'")
 
     from code.config import resolve_session_path
-    from code.utils import validate_session_with_reason, is_inconclusive_validation_reason
+    from code.utils import (
+        validate_session_with_reason,
+        is_inconclusive_validation_reason,
+        record_session_meta,
+    )
     path = resolve_session_path(session_file)
 
     valid, reason = await validate_session_with_reason(path)
@@ -1405,6 +1409,17 @@ async def validate_bot_session(name: str, session_file: str):
     entry["validation_reason"] = "" if valid else (reason or "")
     entry["last_validated_at"] = time.time()
     await wrappers.save_user_data(name, cfg)
+
+    # The global Sessions overview prefers this shared cache over the bot entry.
+    # Synchronize it so a stale invalid result cannot survive a successful check.
+    await asyncio.to_thread(
+        record_session_meta,
+        session_file,
+        None,
+        validation_status=status,
+        validation_reason="" if valid else (reason or ""),
+        spam_status="" if valid else None,
+    )
 
     return {"file": session_file, "status": status, "reason": reason}
 
