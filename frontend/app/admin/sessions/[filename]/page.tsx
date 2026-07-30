@@ -9,7 +9,6 @@ import {
   Lock, Eye, Users, PhoneForwarded, Image as ImageIcon,
   Loader2, CheckCheck, Clock, Globe, Smartphone,
   LogOut, X, Star, Hash, Search, Settings, RefreshCw,
-  Link2, KeyRound, Copy, CheckCircle2,
 } from "lucide-react";
 
 // ── Types ──
@@ -108,7 +107,6 @@ function formatFullTime(iso: string | null) {
 
 // ── Right panel content type ──
 type RightPanel = "none" | "profile" | "privacy" | "devices";
-type ToolDialog = "join" | "login" | null;
 
 export default function SessionClientPage() {
   const params = useParams();
@@ -149,13 +147,6 @@ export default function SessionClientPage() {
 
   const [error, setError] = useState<string | null>(null);
   const avatarRef = useRef<HTMLInputElement>(null);
-  const [toolDialog, setToolDialog] = useState<ToolDialog>(null);
-  const [joinLink, setJoinLink] = useState("");
-  const [joining, setJoining] = useState(false);
-  const [loginPhone, setLoginPhone] = useState("");
-  const [loginCode, setLoginCode] = useState("");
-  const [codeStatus, setCodeStatus] = useState<"idle" | "waiting" | "received" | "expired">("idle");
-  const [codeSeconds, setCodeSeconds] = useState(300);
 
   // ── Load: show localStorage cache instantly → single /init API call ──
   useEffect(() => {
@@ -327,63 +318,6 @@ export default function SessionClientPage() {
     catch { toast.error("Failed to delete avatar"); }
   };
 
-  const handleJoin = async () => {
-    if (!joinLink.trim()) return;
-    setJoining(true);
-    try {
-      const { data } = await api.post(`${base}/join`, { link: joinLink.trim() });
-      toast.success(data.message || "Joined successfully");
-      setJoinLink("");
-      setToolDialog(null);
-      await loadChats();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || "Could not join this chat");
-    }
-    setJoining(false);
-  };
-
-  const startLoginCode = async () => {
-    setLoginCode("");
-    setCodeStatus("idle");
-    try {
-      const { data } = await api.post(`${base}/login-code/start`);
-      setLoginPhone(data.phone || profile?.phone || "");
-      setCodeSeconds(data.expires_in || 300);
-      setCodeStatus("waiting");
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || "Could not start code viewer");
-    }
-  };
-
-  useEffect(() => {
-    if (toolDialog !== "login" || codeStatus !== "waiting") return;
-    const tick = window.setInterval(async () => {
-      try {
-        const { data } = await api.get(`${base}/login-code`);
-        if (data.status === "received") {
-          setLoginCode(data.code);
-          setCodeStatus("received");
-          toast.success("Login code received");
-        } else if (data.status === "expired") {
-          setCodeStatus("expired");
-        } else {
-          setCodeSeconds(data.expires_in ?? 0);
-        }
-      } catch (e: any) {
-        if (e?.response?.status !== 423) {
-          window.clearInterval(tick);
-          toast.error(e?.response?.data?.detail || "Could not check for the code");
-        }
-      }
-    }, 2000);
-    return () => window.clearInterval(tick);
-  }, [toolDialog, codeStatus, base]);
-
-  const copyText = async (value: string, label: string) => {
-    await navigator.clipboard.writeText(value);
-    toast.success(`${label} copied`);
-  };
-
   // Filter chats by search
   const filteredChats = useMemo(() => {
     if (!searchQuery.trim()) return chats;
@@ -468,16 +402,6 @@ export default function SessionClientPage() {
               placeholder="Search chats..."
               className="w-full pl-9 pr-3 py-2 rounded-xl bg-[#1e1e2e] text-sm text-[#e4e4f0] placeholder:text-[#4a4a5a] focus:outline-none focus:ring-1 focus:ring-blue-500/30 transition"
             />
-          </div>
-          <div className="grid grid-cols-2 gap-2 mt-2">
-            <button onClick={() => setToolDialog("join")}
-              className="flex items-center justify-center gap-2 rounded-xl border border-[#2a2a3a] bg-[#1e1e2e] py-2 text-[12px] font-medium text-[#b8b8c8] hover:border-blue-500/30 hover:text-blue-400 transition">
-              <Link2 className="h-3.5 w-3.5" /> Join group
-            </button>
-            <button onClick={() => { setToolDialog("login"); setCodeStatus("idle"); setLoginCode(""); }}
-              className="flex items-center justify-center gap-2 rounded-xl border border-[#2a2a3a] bg-[#1e1e2e] py-2 text-[12px] font-medium text-[#b8b8c8] hover:border-violet-500/30 hover:text-violet-400 transition">
-              <KeyRound className="h-3.5 w-3.5" /> Login code
-            </button>
           </div>
         </div>
 
@@ -826,90 +750,6 @@ export default function SessionClientPage() {
         </div>
       )}
 
-      {toolDialog && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm" onMouseDown={() => setToolDialog(null)}>
-          <div onMouseDown={e => e.stopPropagation()} className="w-full max-w-md overflow-hidden rounded-2xl border border-[#303044] bg-[#171722] shadow-2xl">
-            <div className="flex items-center justify-between border-b border-[#292938] px-5 py-4">
-              <div className="flex items-center gap-3">
-                <div className={`flex h-9 w-9 items-center justify-center rounded-xl ${toolDialog === "join" ? "bg-blue-500/10 text-blue-400" : "bg-violet-500/10 text-violet-400"}`}>
-                  {toolDialog === "join" ? <Link2 className="h-4.5 w-4.5" /> : <KeyRound className="h-4.5 w-4.5" />}
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-[#ededf5]">{toolDialog === "join" ? "Join a group or channel" : "Login on another device"}</p>
-                  <p className="text-[11px] text-[#69697d]">{profile?.first_name || filename}</p>
-                </div>
-              </div>
-              <button onClick={() => setToolDialog(null)} className="rounded-lg p-2 text-[#69697d] hover:bg-[#242432] hover:text-white"><X className="h-4 w-4" /></button>
-            </div>
-
-            {toolDialog === "join" ? (
-              <div className="p-5">
-                <label className="text-[10px] font-medium uppercase tracking-wider text-[#77778b]">Telegram link or username</label>
-                <input autoFocus value={joinLink} onChange={e => setJoinLink(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && handleJoin()}
-                  placeholder="https://t.me/+invite or @publicgroup"
-                  className="mt-2 w-full rounded-xl border border-[#303044] bg-[#101018] px-3.5 py-3 text-sm text-[#ededf5] placeholder:text-[#4d4d60] focus:border-blue-500/50 focus:outline-none" />
-                <p className="mt-2 text-[11px] leading-relaxed text-[#626276]">The selected Telegram account will join immediately. Private invite links and public group/channel usernames are supported.</p>
-                <div className="mt-5 flex gap-2">
-                  <button onClick={() => setToolDialog(null)} className="flex-1 rounded-xl bg-[#242432] py-2.5 text-sm text-[#aaaabc] hover:bg-[#2c2c3c]">Cancel</button>
-                  <button onClick={handleJoin} disabled={joining || !joinLink.trim()} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-blue-600 py-2.5 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-40">
-                    {joining && <Loader2 className="h-4 w-4 animate-spin" />} Join now
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="p-5">
-                {codeStatus === "idle" && (
-                  <>
-                    <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.06] p-3 text-[11px] leading-relaxed text-amber-200/80">
-                      This viewer waits for a new code from Telegram’s official service account. It never requests a code itself.
-                    </div>
-                    <ol className="mt-4 space-y-2 text-[12px] text-[#a5a5b6]">
-                      <li><span className="mr-2 text-violet-400">1.</span>Start the secure code viewer.</li>
-                      <li><span className="mr-2 text-violet-400">2.</span>Copy the phone number into Telegram on your device.</li>
-                      <li><span className="mr-2 text-violet-400">3.</span>The new code will appear here automatically.</li>
-                    </ol>
-                    <button onClick={startLoginCode} className="mt-5 w-full rounded-xl bg-violet-600 py-2.5 text-sm font-medium text-white hover:bg-violet-500">Start code viewer</button>
-                  </>
-                )}
-                {(codeStatus === "waiting" || codeStatus === "received") && (
-                  <div className="space-y-4">
-                    <div>
-                      <p className="text-[10px] uppercase tracking-wider text-[#69697d]">Phone number</p>
-                      <button onClick={() => copyText(loginPhone, "Phone number")} className="mt-1 flex w-full items-center justify-between rounded-xl border border-[#303044] bg-[#101018] px-4 py-3 text-left font-mono text-sm text-[#ededf5] hover:border-violet-500/40">
-                        +{loginPhone.replace(/^\+/, "")}<Copy className="h-4 w-4 text-[#69697d]" />
-                      </button>
-                    </div>
-                    {codeStatus === "waiting" ? (
-                      <div className="flex flex-col items-center rounded-xl border border-violet-500/20 bg-violet-500/[0.05] py-6">
-                        <Loader2 className="h-6 w-6 animate-spin text-violet-400" />
-                        <p className="mt-2 text-sm font-medium text-[#d8d8e5]">Waiting for Telegram code…</p>
-                        <p className="mt-1 text-[11px] text-[#69697d]">Expires in {Math.ceil(codeSeconds / 60)} min</p>
-                      </div>
-                    ) : (
-                      <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.06] p-4 text-center">
-                        <CheckCircle2 className="mx-auto h-5 w-5 text-emerald-400" />
-                        <p className="mt-1 text-[11px] font-medium text-emerald-300">Code received</p>
-                        <button onClick={() => copyText(loginCode, "Login code")} className="mt-2 inline-flex items-center gap-3 font-mono text-3xl font-bold tracking-[0.28em] text-white">
-                          {loginCode}<Copy className="h-4 w-4 tracking-normal text-[#77778b]" />
-                        </button>
-                        <p className="mt-3 text-[10px] text-[#626276]">Use it immediately and never share it with anyone.</p>
-                      </div>
-                    )}
-                  </div>
-                )}
-                {codeStatus === "expired" && (
-                  <div className="text-center">
-                    <Clock className="mx-auto h-7 w-7 text-amber-400" />
-                    <p className="mt-2 text-sm text-[#d8d8e5]">The viewer expired</p>
-                    <button onClick={startLoginCode} className="mt-4 w-full rounded-xl bg-violet-600 py-2.5 text-sm font-medium text-white hover:bg-violet-500">Try again</button>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

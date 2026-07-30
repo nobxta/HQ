@@ -2,7 +2,7 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  X, ExternalLink, Bot, ShieldCheck, Shield, Power, Repeat, Unlink, LinkIcon, Loader2, Activity, RefreshCw, SlidersHorizontal,
+  X, Bot, ShieldCheck, Shield, Power, Repeat, Unlink, LinkIcon, Loader2, Activity, RefreshCw, SlidersHorizontal,
 } from "lucide-react";
 import Link from "next/link";
 import type { SessionOverviewItem } from "@/lib/types";
@@ -11,6 +11,7 @@ import { timeAgo } from "@/lib/utils";
 import { HealthBadge, LocationBadge, StatusPill, Avatar, Copyable, accountName, isAssigned } from "./shared";
 import type { SessionActions } from "./SessionActionsMenu";
 import ActivityTimeline from "./ActivityTimeline";
+import SessionManagePanel from "./SessionManagePanel";
 
 type Tab = "overview" | "health" | "assignment" | "runtime" | "activity";
 const TABS: Array<{ key: Tab; label: string }> = [
@@ -54,7 +55,8 @@ export default function SessionDetailsDrawer({
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<Tab>("overview");
-  useEffect(() => { if (session) setTab("overview"); }, [session?.filename]);
+  const [managing, setManaging] = useState(false);
+  useEffect(() => { if (session) { setTab("overview"); setManaging(false); } }, [session?.filename]);
 
   const s = session;
   const now = Date.now() / 1000;
@@ -145,7 +147,7 @@ export default function SessionDetailsDrawer({
                       {validating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
                       {validating ? "Refreshing…" : "Refresh identity"}
                     </button>
-                    <button onClick={() => actions.onOpenClient(s)} className="inline-flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent/20">
+                    <button onClick={() => setManaging(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent/20">
                       <SlidersHorizontal className="h-3.5 w-3.5" /> Manage session
                     </button>
                     {s.starred
@@ -255,6 +257,7 @@ export default function SessionDetailsDrawer({
 
               {tab === "activity" && <ActivityTimeline session={s} entries={audit} />}
             </div>
+            {managing && <SessionManagePanel session={s} onClose={() => setManaging(false)} />}
           </motion.aside>
         </>
       )}
