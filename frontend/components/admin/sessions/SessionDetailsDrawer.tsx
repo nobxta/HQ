@@ -2,7 +2,7 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  X, ExternalLink, Bot, ShieldCheck, Shield, Power, Repeat, Unlink, LinkIcon, Loader2, Activity, RefreshCw,
+  X, ExternalLink, Bot, ShieldCheck, Shield, Power, Repeat, Unlink, LinkIcon, Loader2, Activity, RefreshCw, SlidersHorizontal,
 } from "lucide-react";
 import Link from "next/link";
 import type { SessionOverviewItem } from "@/lib/types";
@@ -145,8 +145,8 @@ export default function SessionDetailsDrawer({
                       {validating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
                       {validating ? "Refreshing…" : "Refresh identity"}
                     </button>
-                    <button onClick={() => actions.onOpenClient(s)} className="inline-flex items-center gap-1.5 rounded-lg border border-dark-700 bg-dark-800 px-3 py-1.5 text-xs text-dark-200 hover:bg-dark-700">
-                      <ExternalLink className="h-3.5 w-3.5" /> Open Telegram client
+                    <button onClick={() => actions.onOpenClient(s)} className="inline-flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent/20">
+                      <SlidersHorizontal className="h-3.5 w-3.5" /> Manage session
                     </button>
                     {s.starred
                       ? <button onClick={() => actions.onStar(s)} className="rounded-lg border border-dark-700 bg-dark-800 px-3 py-1.5 text-xs text-amber-400 hover:bg-dark-700">Unstar</button>

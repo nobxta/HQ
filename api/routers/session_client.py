@@ -10,6 +10,7 @@ Architecture (same as Telegram Desktop / AyuGram):
 import asyncio
 import base64
 import logging
+import re
 import time
 from io import BytesIO
 from pathlib import Path
@@ -127,6 +128,7 @@ CACHE_TTL_CHATS = 60        # 1 min
 CACHE_TTL_MESSAGES = 30     # 30 sec
 
 _cache: dict[str, dict] = {}  # { filename: { "profile": {...}, "profile_ts": float, ... } }
+_login_code_watchers: dict[str, dict] = {}
 
 
 def _get_cache(filename: str) -> dict:
@@ -537,6 +539,132 @@ async def send_message(filename: str, chat_id: int, body: SendMessage):
         except Exception as e:
             _evict(filename, pc)
             raise HTTPException(500, f"Telegram error: {e}")
+
+
+# ── Session tools ──
+
+class JoinChatRequest(BaseModel):
+    link: str
+
+
+def _parse_join_target(raw_link: str) -> tuple[str, str]:
+    """Return (kind, target) for Telegram public and private invite links."""
+    value = raw_link.strip()
+    if not value:
+        raise HTTPException(400, "Enter a Telegram group or channel link")
+
+    value = re.sub(r"^(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/", "", value, flags=re.I)
+    value = value.split("?", 1)[0].strip("/")
+    if value.startswith("+"):
+        return "invite", value[1:]
+    if value.lower().startswith("joinchat/"):
+        return "invite", value.split("/", 1)[1]
+    if value.startswith("@"):
+        value = value[1:]
+    if "/" in value or not re.fullmatch(r"[A-Za-z0-9_]{4,}", value):
+        raise HTTPException(400, "Use a valid t.me invite link or public @username")
+    return "public", value
+
+
+@router.post("/{filename}/join")
+async def join_chat(filename: str, body: JoinChatRequest):
+    from telethon.errors import UserAlreadyParticipantError
+    from telethon.tl.functions.channels import JoinChannelRequest
+    from telethon.tl.functions.messages import ImportChatInviteRequest
+
+    kind, target = _parse_join_target(body.link)
+    pc = await _get_pc(filename)
+    async with pc.lock:
+        try:
+            if kind == "invite":
+                result = await pc.client(ImportChatInviteRequest(target))
+                entities = getattr(result, "chats", [])
+            else:
+                entity = await pc.client.get_entity(target)
+                result = await pc.client(JoinChannelRequest(entity))
+                entities = getattr(result, "chats", []) or [entity]
+
+            cache = _get_cache(filename)
+            cache.pop("chats", None)
+            cache.pop("chats_ts", None)
+            joined = entities[0] if entities else None
+            return {
+                "status": "ok",
+                "message": "Joined successfully",
+                "chat": {
+                    "id": getattr(joined, "id", None),
+                    "name": getattr(joined, "title", None) or getattr(joined, "username", None),
+                },
+            }
+        except UserAlreadyParticipantError:
+            return {"status": "already_joined", "message": "This account is already a member"}
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(400, f"Could not join this chat: {e}")
+
+
+@router.post("/{filename}/login-code/start")
+async def start_login_code_watch(filename: str):
+    """Start watching Telegram's official service chat for a newly requested login code.
+
+    This endpoint does not request a code. The admin enters the returned phone number
+    in Telegram on the other device; Telegram then delivers the code to service user
+    777000, where the polling endpoint can display it.
+    """
+    pc = await _get_pc(filename)
+    async with pc.lock:
+        try:
+            me = await pc.client.get_me()
+            latest = await pc.client.get_messages(777000, limit=1)
+            baseline_id = latest[0].id if latest else 0
+            _login_code_watchers[filename] = {
+                "baseline_id": baseline_id,
+                "started_at": time.time(),
+                "expires_at": time.time() + 300,
+            }
+            return {
+                "status": "waiting",
+                "phone": me.phone or "",
+                "expires_in": 300,
+            }
+        except Exception as e:
+            raise HTTPException(500, f"Could not start login-code viewer: {e}")
+
+
+@router.get("/{filename}/login-code")
+async def get_login_code(filename: str):
+    watcher = _login_code_watchers.get(filename)
+    if not watcher:
+        raise HTTPException(409, "Start the login-code viewer first")
+    if time.time() >= watcher["expires_at"]:
+        _login_code_watchers.pop(filename, None)
+        return {"status": "expired"}
+
+    pc = await _get_pc(filename)
+    async with pc.lock:
+        try:
+            messages = await pc.client.get_messages(777000, limit=5)
+            for message in messages:
+                if message.id <= watcher["baseline_id"]:
+                    continue
+                text = message.raw_text or ""
+                # Telegram login codes are commonly five digits; accept six for
+                # compatibility while avoiding phone numbers and other long values.
+                match = re.search(r"(?<!\d)(\d{5,6})(?!\d)", text)
+                if match:
+                    _login_code_watchers.pop(filename, None)
+                    return {
+                        "status": "received",
+                        "code": match.group(1),
+                        "received_at": message.date.isoformat() if message.date else None,
+                    }
+            return {
+                "status": "waiting",
+                "expires_in": max(0, int(watcher["expires_at"] - time.time())),
+            }
+        except Exception as e:
+            raise HTTPException(500, f"Could not check for a login code: {e}")
 
 
 @router.post("/{filename}/chat/{chat_id}/read")
