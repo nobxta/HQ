@@ -17,6 +17,7 @@ Safety model (see the admin Sessions audit):
     validator (cross-process session lock aware) rather than duplicating the logic.
 """
 import asyncio
+import logging
 import shutil
 import tempfile
 import time
@@ -32,6 +33,7 @@ from api.services.serializers import serialize_session
 from api.services.events import emit_dashboard_event
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"], dependencies=[Depends(get_current_admin)])
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────── shared helpers ───────────────────────────
@@ -247,18 +249,36 @@ def _build_overview(range_key: str) -> dict:
         pool_label = "assigned" if assign else pool_bucket
         spam_status = meta.get("spam_status") or (entry.get("spam_status") if assign else None)
         health = _health_from(pool_bucket if not assign else "assigned", validation_status, spam_status)
-        # Resolve real file presence (assigned-but-missing is an attention state).
-        path = config.resolve_session_path(fn)
+        # Resolve the physical path from the bucket that owns the file. resolve_session_path()
+        # always points admin sessions at active/, which made every quarantined file appear
+        # absent even when it existed in dead/frozen/limited/unauth.
+        path = (
+            config.resolve_session_path(fn)
+            if assign or pool_bucket == "free" or fn.startswith("users/")
+            else _bucket_dir(pool_bucket) / Path(fn).name
+        )
         file_present = path.is_file()
+        display_validation_status = validation_status
+        display_validation_reason = (
+            meta.get("validation_reason")
+            or (entry.get("validation_reason") if assign else None)
+            or None
+        )
+        if not file_present:
+            # Missing storage is not evidence that Telegram revoked the account.
+            health = "unknown"
+            display_validation_status = "missing"
+            display_validation_reason = "Session file missing from local storage"
+            derived = "unknown"
 
         attention = (
             health in ("dead", "frozen", "limited", "unauthorized")
             or validation_status == "invalid"
-            or (assign is not None and not file_present)
+            or not file_present
         )
         attention_reason = None
-        if assign is not None and not file_present:
-            attention_reason = "assigned_missing_file"
+        if not file_present:
+            attention_reason = "assigned_missing_file" if assign is not None else "missing_file"
         elif health != "healthy" and health != "unknown":
             attention_reason = health
         elif validation_status == "invalid":
@@ -317,8 +337,8 @@ def _build_overview(range_key: str) -> dict:
             "disabled": disabled,
 
             "health": health,
-            "validation_status": validation_status or None,
-            "validation_reason": (meta.get("validation_reason") or (entry.get("validation_reason") if assign else None) or None),
+            "validation_status": display_validation_status or None,
+            "validation_reason": display_validation_reason,
             "last_validated_at": (meta.get("last_checked") or (entry.get("last_validated_at") if assign else None) or None),
             "last_checked": meta.get("last_checked") or None,
             "spam_status": spam_status or None,
@@ -788,6 +808,12 @@ async def validate_sessions(body: dict = None):
         path, source_bucket = _validation_path_for(fn, pool)
         if not path.is_file():
             # Missing local storage is not proof that Telegram rejected the auth key.
+            logger.warning(
+                "[SessionValidation] file=%s result=missing expected_path=%s pool=%s",
+                fn,
+                path,
+                source_bucket,
+            )
             results.append({"file": fn, "status": "missing", "reason": "Session file missing"})
             continue
 
@@ -835,11 +861,14 @@ async def validate_sessions(body: dict = None):
                     })
                     continue
             results.append({"file": fn, "status": "active", "reason": ""})
+            logger.info("[SessionValidation] file=%s result=active", fn)
         elif is_inconclusive_validation_reason(reason):
             state = "busy" if ("in use" in low or "busy" in low or "locked" in low) else "error"
             results.append({"file": fn, "status": state, "reason": reason})
+            logger.warning("[SessionValidation] file=%s result=%s reason=%s", fn, state, reason)
         else:
             results.append({"file": fn, "status": "dead", "reason": reason})
+            logger.warning("[SessionValidation] file=%s result=dead reason=%s", fn, reason)
             await asyncio.to_thread(record_session_meta, fn, None,
                                     validation_status="invalid", validation_reason=reason)
             # canonical validator already moved the file to dead/ — sync the pool
