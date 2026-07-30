@@ -7,6 +7,25 @@ from api.routers import sessions
 
 
 class SessionValidationTests(unittest.IsolatedAsyncioTestCase):
+    def test_physical_location_wins_over_stale_duplicate_pool_membership(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for bucket in ("free", "dead", "frozen", "limited", "unauth"):
+                (root / bucket).mkdir()
+            actual = root / "limited" / "alive.session"
+            actual.write_bytes(b"session")
+            pool = {
+                "free_sessions": ["alive.session"],
+                "dead_sessions": ["alive.session"],
+                "limited_sessions": ["alive.session"],
+            }
+
+            with patch.object(sessions, "_bucket_dir", side_effect=lambda b: root / b):
+                path, bucket = sessions._physical_pool_location("alive.session", pool)
+
+        self.assertEqual(path, actual)
+        self.assertEqual(bucket, "limited")
+
     async def test_missing_file_is_not_recorded_as_dead(self):
         pool = {
             "free_sessions": ["missing.session"],

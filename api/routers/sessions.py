@@ -108,6 +108,39 @@ def _assigned_conflict(fn: str, amap: dict[str, dict]) -> dict | None:
 
 # ─────────────────────────── read endpoints ───────────────────────────
 
+def _physical_pool_location(fn: str, pool: dict) -> tuple[Path, str]:
+    """Resolve an unassigned session by its actual file, not stale list order."""
+    from code.config import resolve_session_path
+
+    normalized = fn.replace("\\", "/")
+    if normalized.startswith("users/"):
+        return resolve_session_path(fn), "free"
+
+    memberships = [
+        bucket for bucket, key in _BUCKET_KEYS.items()
+        if fn in (pool.get(key) or [])
+    ]
+    candidates = memberships + [b for b in _BUCKET_KEYS if b not in memberships]
+    existing: list[tuple[Path, str]] = []
+    for bucket in candidates:
+        path = _bucket_dir(bucket) / Path(fn).name
+        if path.is_file():
+            existing.append((path, bucket))
+
+    if existing:
+        if len(existing) > 1:
+            logger.warning(
+                "[SessionInventory] file=%s exists_in_multiple_buckets=%s using=%s",
+                fn,
+                ",".join(bucket for _, bucket in existing),
+                existing[0][1],
+            )
+        return existing[0]
+
+    fallback = memberships[0] if memberships else "free"
+    return _bucket_dir(fallback) / Path(fn).name, fallback
+
+
 @router.get("")
 async def list_sessions(
     status: str = Query(None, description="Filter by bucket status"),
@@ -252,11 +285,7 @@ def _build_overview(range_key: str) -> dict:
         # Resolve the physical path from the bucket that owns the file. resolve_session_path()
         # always points admin sessions at active/, which made every quarantined file appear
         # absent even when it existed in dead/frozen/limited/unauth.
-        path = (
-            config.resolve_session_path(fn)
-            if assign or pool_bucket == "free" or fn.startswith("users/")
-            else _bucket_dir(pool_bucket) / Path(fn).name
-        )
+        path = config.resolve_session_path(fn) if assign else _physical_pool_location(fn, pool)[0]
         file_present = path.is_file()
         display_validation_status = validation_status
         display_validation_reason = (
@@ -399,12 +428,15 @@ def _build_overview(range_key: str) -> dict:
                                   activity=activity, stats=stats))
 
     # ── unassigned pool sessions ──
-    for bucket in ("free", "dead", "frozen", "limited", "unauth"):
-        for fn in pool.get(_BUCKET_KEYS[bucket], []) or []:
+    emitted_pool_files: set[str] = set()
+    for listed_bucket in ("free", "dead", "frozen", "limited", "unauth"):
+        for fn in pool.get(_BUCKET_KEYS[listed_bucket], []) or []:
             fn = (fn or "").strip()
-            if not fn or fn in assigned_files:
+            if not fn or fn in assigned_files or fn in emitted_pool_files:
                 continue
-            sessions.append(_emit(fn, pool_bucket=bucket, entry=None, assign=None,
+            emitted_pool_files.add(fn)
+            _, physical_bucket = _physical_pool_location(fn, pool)
+            sessions.append(_emit(fn, pool_bucket=physical_bucket, entry=None, assign=None,
                                   activity={}, stats={}))
 
     # ── summary ──
@@ -758,15 +790,7 @@ def _source_bucket_for(fn: str) -> str:
 
 def _validation_path_for(fn: str, pool: dict) -> tuple[Path, str]:
     """Resolve an unassigned session from the filesystem bucket that owns it."""
-    from code.config import resolve_session_path
-
-    normalized = fn.replace("\\", "/")
-    if normalized.startswith("users/"):
-        return resolve_session_path(fn), "free"
-    for bucket, key in _BUCKET_KEYS.items():
-        if fn in (pool.get(key) or []):
-            return _bucket_dir(bucket) / Path(fn).name, bucket
-    return resolve_session_path(fn), "free"
+    return _physical_pool_location(fn, pool)
 
 
 # ─────────────────────────── validate ───────────────────────────
