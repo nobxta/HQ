@@ -36,6 +36,7 @@ type PaymentInfo = {
   amount_usd: number;
   duration_days: number;
   invoice_expires_at: string;
+  invoice_expiry?: string;
 };
 
 export default function UserSettingsPage() {
@@ -166,6 +167,7 @@ export default function UserSettingsPage() {
         amount_usd: data.amount_usd,
         duration_days: data.duration_days,
         invoice_expires_at: data.invoice_expires_at,
+        invoice_expiry: data.invoice_expiry,
       });
       setRenewStep("paying");
 
@@ -562,7 +564,7 @@ export default function UserSettingsPage() {
                 {/* Valid for */}
                 <div className="flex items-center gap-1.5 text-xs text-dark-500">
                   <Clock className="h-3 w-3" />
-                  <span>Valid for 12 hours. After that, create a new order.</span>
+                  <span>Valid for {paymentInfo.invoice_expiry || "the configured invoice period"}. After that, create a new order.</span>
                 </div>
               </div>
 

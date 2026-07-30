@@ -988,6 +988,7 @@ async def portal_create_renewal(bot_name: str, telegram_id: int = Query(...), bo
         "pay_amount": invoice.get("pay_amount"),
         "pay_currency": (invoice.get("pay_currency") or body.currency).upper(),
         "pay_address": invoice.get("pay_address") or "",
+        "invoice_expiry": invoice.get("invoice_expiry") or "",
         "invoice_expires_at": invoice.get("invoice_expires_at") or "",
         "duration_days": body.duration_days,
     }

@@ -108,12 +108,14 @@ def _save_admin_settings(settings: dict) -> None:
 @router.get("/admin-settings")
 async def get_admin_settings():
     settings = await asyncio.to_thread(_load_admin_settings)
+    from code.shop.payment_constants import DEFAULT_INVOICE_LIFETIME_HOURS
     return {
         "chatlist_links": settings.get("chatlist_links", {
             "starter": ["", ""],
             "enterprise": ["", ""],
         }),
         "session_replacement_price": settings.get("session_replacement_price", 2.0),
+        "invoice_lifetime_hours": settings.get("invoice_lifetime_hours", DEFAULT_INVOICE_LIFETIME_HOURS),
     }
 
 
@@ -147,6 +149,25 @@ async def update_admin_settings(body: dict):
             settings["session_replacement_price"] = float(body["session_replacement_price"])
         except (ValueError, TypeError):
             pass
+
+    if "invoice_lifetime_hours" in body:
+        try:
+            from code.shop.payment_constants import (
+                MAX_INVOICE_LIFETIME_HOURS,
+                MIN_INVOICE_LIFETIME_HOURS,
+            )
+            raw_lifetime = body["invoice_lifetime_hours"]
+            if isinstance(raw_lifetime, bool) or float(raw_lifetime) != int(float(raw_lifetime)):
+                raise ValueError
+            lifetime = int(raw_lifetime)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail="Invoice lifetime must be a whole number of hours")
+        if not MIN_INVOICE_LIFETIME_HOURS <= lifetime <= MAX_INVOICE_LIFETIME_HOURS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invoice lifetime must be between {MIN_INVOICE_LIFETIME_HOURS} and {MAX_INVOICE_LIFETIME_HOURS} hours",
+            )
+        settings["invoice_lifetime_hours"] = lifetime
 
     await asyncio.to_thread(_save_admin_settings, settings)
     await wrappers.log_admin_action("web_admin", "update_admin_settings")

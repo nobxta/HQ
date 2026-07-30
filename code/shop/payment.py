@@ -266,14 +266,16 @@ def create_invoice(
     dev = _is_dev_mode()
     if dev and (not api_key or api_key == "your_api_key"):
         from datetime import timedelta
-        expires_dt = datetime.utcnow() + timedelta(hours=12)
+        from .payment_constants import get_invoice_lifetime_hours, format_invoice_lifetime
+        lifetime_hours = get_invoice_lifetime_hours()
+        expires_dt = datetime.utcnow() + timedelta(hours=lifetime_hours)
         return {
             "payment_id": f"stub_{order_id}",
             "invoice_url": f"https://example.com/pay/{order_id}",
             "pay_address": "STUB_ADDRESS",
             "pay_amount": amount_usd,
             "pay_currency": provider_currency.lower(),
-            "invoice_expiry": "12 hours",
+            "invoice_expiry": format_invoice_lifetime(lifetime_hours),
             "invoice_expires_at": expires_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "order_id": order_id,
         }
@@ -313,8 +315,9 @@ def create_invoice(
             )
             return {"_invoice_failed": True, "order_id": order_id}
         from datetime import datetime, timedelta
-        # Always 12h window so user can pay anytime; display "Valid for: 12 hours"
-        expires_dt = datetime.utcnow() + timedelta(hours=12)
+        from .payment_constants import get_invoice_lifetime_hours, format_invoice_lifetime
+        lifetime_hours = get_invoice_lifetime_hours()
+        expires_dt = datetime.utcnow() + timedelta(hours=lifetime_hours)
         invoice_expires_at = expires_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         result = {
             "payment_id": payment_id,
@@ -322,7 +325,7 @@ def create_invoice(
             "pay_amount": pay_amt,
             "pay_currency": pay_cur,
             "expiration_estimate_date": expiration_estimate_date,
-            "invoice_expiry": "12 hours",
+            "invoice_expiry": format_invoice_lifetime(lifetime_hours),
             "invoice_expires_at": invoice_expires_at,
             "order_id": order_id,
         }

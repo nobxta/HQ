@@ -315,7 +315,7 @@ def order_from_temppay_entry(entry: dict[str, Any], status: str = "confirming") 
     """
     order_id = entry.get("order_id") or str(uuid.uuid4())[:12]
     created_at = (entry.get("created_at") or "").strip() or datetime.utcnow().isoformat() + "Z"
-    expiry_time = (entry.get("expiry_time") or entry.get("expiry_at") or "").strip() or _expiry_from_created(created_at, 12)
+    expiry_time = (entry.get("expiry_time") or entry.get("expiry_at") or "").strip() or _expiry_from_created(created_at)
     return {
         "order_id": order_id,
         "user_id": entry.get("user_id"),
@@ -403,8 +403,11 @@ def update_order_status(order_id: str, status: str, **extra: Any) -> bool:
         return False
 
 
-def _expiry_from_created(created_at_iso: str, hours: int = 12) -> str:
+def _expiry_from_created(created_at_iso: str, hours: int | None = None) -> str:
     """Return expiry_time ISO string (created_at + hours)."""
+    if hours is None:
+        from .payment_constants import get_invoice_lifetime_hours
+        hours = get_invoice_lifetime_hours()
     try:
         s = (created_at_iso or "").replace("Z", "").strip().split(".")[0]
         dt = datetime.strptime(s, "%Y-%m-%dT%H:%M:%S")
@@ -424,7 +427,7 @@ def create_renewal_order(
     invoice_url: str | None = None,
     **metadata: Any,
 ) -> dict[str, Any]:
-    """Create a renewal order (status payment_waiting). Stores created_at, expiry_time (created_at + 12h), next_poll_at set by worker."""
+    """Create a renewal order using the global invoice lifetime."""
     order_id = str(uuid.uuid4())[:12]
     now = datetime.utcnow().isoformat() + "Z"
     order = {
@@ -438,7 +441,7 @@ def create_renewal_order(
         "currency": currency,
         "status": "payment_waiting",
         "created_at": now,
-        "expiry_time": _expiry_from_created(now, 12),
+        "expiry_time": _expiry_from_created(now),
         "paid_at": "",
         "invoice_url": invoice_url or "",
         "applied": False,
@@ -462,7 +465,7 @@ def create_order(
     currency: str,
     invoice_url: str | None = None,
 ) -> dict[str, Any]:
-    """Append a new order with status payment_waiting. Stores created_at, expiry_time (created_at + 12h). next_poll_at set by worker. Thread-safe."""
+    """Append a new order using the global invoice lifetime."""
     order_id = str(uuid.uuid4())[:12]
     now = datetime.utcnow().isoformat() + "Z"
     order = {
@@ -478,7 +481,7 @@ def create_order(
         "status": "payment_waiting",
         "bot_token": "",
         "created_at": now,
-        "expiry_time": _expiry_from_created(now, 12),
+        "expiry_time": _expiry_from_created(now),
         "paid_at": "",
         "created_bot_username": "",
         "invoice_url": invoice_url or "",

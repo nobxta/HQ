@@ -1123,6 +1123,8 @@ def _renewal_invoice_html_and_kb(order: dict, cfg: dict, note: str = ""):
     addr = _html.escape(order.get("pay_address") or "")
     duration_days = int(order.get("duration_days") or 0)
     amount_usd = order.get("amount_usd")
+    from .shop.payment_constants import format_invoice_lifetime
+    invoice_lifetime = order.get("invoice_expiry") or format_invoice_lifetime()
     if "_" in coin_code:
         coin_base, net_label = coin_code.split("_", 1)
     else:
@@ -1138,7 +1140,7 @@ def _renewal_invoice_html_and_kb(order: dict, cfg: dict, note: str = ""):
         f"Send exactly:\n<b>{pay_amt} {coin_base}</b>\n\n"
         f"{tg_emoji_html('crypto')} <b>Network:</b> {net_label}\n"
         f"{tg_emoji_html('link')} <b>Address:</b>\n<code>{addr}</code>\n\n"
-        f"{tg_emoji_html('invoice_clock')} <b>This payment request expires in 12 hours.</b>\n\n"
+        f"{tg_emoji_html('invoice_clock')} <b>This payment request expires in {_html.escape(str(invoice_lifetime))}.</b>\n\n"
         f"Send only {coin_base} through the {net_label} network. Payments made using another coin or network cannot be recovered.\n\n"
         f"Your payment will be detected automatically — once confirmed, <b>{duration_days} days</b> will be added to your subscription, including any remaining validity."
     )
@@ -5688,6 +5690,7 @@ async def create_user_bot(bot_token: str) -> None:
                 # it looks identical whether created here or restored later / from the web.
                 fresh = get_order(rev_order["order_id"]) or rev_order
                 if not await _render_renewal_invoice(bot_token, event.chat_id, event.message_id, fresh, cfg):
+                    from .shop.payment_constants import format_invoice_lifetime
                     coin_code = (invoice.get("pay_currency") or currency).upper()
                     coin_base = coin_code.split("_", 1)[0]
                     await event.edit(
@@ -5697,7 +5700,7 @@ async def create_user_bot(bot_token: str) -> None:
                         f"**Amount:** ${price['amount']}\n\n"
                         f"Send exactly `{invoice.get('pay_amount')}` {coin_base}\n\n"
                         f"`{invoice.get('pay_address')}`\n\n"
-                        "🕖 Valid for **12 hours**. Send /cancel to cancel.\n\n"
+                        f"🕖 Valid for **{invoice.get('invoice_expiry') or format_invoice_lifetime()}**. Send /cancel to cancel.\n\n"
                         "Payment is detected automatically — you'll get the next step here.",
                         parse_mode="md",
                     )
@@ -6072,6 +6075,7 @@ async def create_user_bot(bot_token: str) -> None:
                     pass
                 return
             inv = invoice_data["invoice"]
+            from .shop.payment_constants import format_invoice_lifetime
             pay_address = inv.get("pay_address", "")
             pay_amount = inv.get("pay_amount", 0)
             pay_currency = inv.get("pay_currency", currency).upper()
@@ -6085,7 +6089,7 @@ async def create_user_bot(bot_token: str) -> None:
                 f"<code>{pay_amount} {pay_currency}</code>\n\n"
                 f"To address:\n"
                 f"<code>{pay_address}</code>\n\n"
-                f"⏰ Valid for 12 hours.\n"
+                f"⏰ Valid for {inv.get('invoice_expiry') or format_invoice_lifetime()}.\n"
                 f"Payment will be detected automatically."
             )
             try:

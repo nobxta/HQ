@@ -34,6 +34,8 @@ export default function SettingsPage() {
   // Replacement settings
   const [repPrice, setRepPrice] = useState<number>(2.0);
   const [savingRepPrice, setSavingRepPrice] = useState(false);
+  const [invoiceLifetimeHours, setInvoiceLifetimeHours] = useState<number>(12);
+  const [savingInvoiceLifetime, setSavingInvoiceLifetime] = useState(false);
   // Replacement queue
   const [repQueue, setRepQueue] = useState<any>(null);
   const [processingQueue, setProcessingQueue] = useState(false);
@@ -55,6 +57,9 @@ export default function SettingsPage() {
     if (adminSettings?.session_replacement_price !== undefined) {
       setRepPrice(adminSettings.session_replacement_price);
     }
+    if (adminSettings?.invoice_lifetime_hours !== undefined) {
+      setInvoiceLifetimeHours(adminSettings.invoice_lifetime_hours);
+    }
   }, [adminSettings]);
 
   useEffect(() => { loadRepQueue(); }, []);
@@ -69,6 +74,18 @@ export default function SettingsPage() {
       toast.error(e?.response?.data?.detail || "Failed to save");
     }
     setSavingRepPrice(false);
+  };
+
+  const saveInvoiceLifetime = async () => {
+    setSavingInvoiceLifetime(true);
+    try {
+      await api.put("/api/system/admin-settings", { invoice_lifetime_hours: invoiceLifetimeHours });
+      toast.success("Invoice lifetime saved");
+      mutateSettings();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Failed to save invoice lifetime");
+    }
+    setSavingInvoiceLifetime(false);
   };
 
   const processQueue = async () => {
@@ -221,6 +238,42 @@ export default function SettingsPage() {
           <div className="flex justify-end pt-2 border-t border-dark-800">
             <Button size="sm" onClick={saveChatlistLinks} loading={savingLinks}>
               <Save className="h-3.5 w-3.5" /> Save Links
+            </Button>
+          </div>
+        </div>
+      </Card>
+
+      {/* Global invoice lifetime */}
+      <Card>
+        <CardHeader>
+          <CardTitle><Clock className="h-4 w-4 inline mr-2" />Invoice Lifetime</CardTitle>
+        </CardHeader>
+        <div className="space-y-4">
+          <p className="text-xs text-dark-500">
+            One global payment window for every newly generated invoice, including purchases,
+            renewals, replacements, the website, and Telegram shop flows.
+          </p>
+          <div className="flex items-end gap-3">
+            <div className="space-y-1.5 flex-1 max-w-xs">
+              <label className="block text-sm font-medium text-dark-300">Invoice valid for (hours)</label>
+              <input
+                type="number"
+                step="1"
+                min="1"
+                max="168"
+                className="w-full rounded-lg border border-dark-600 bg-dark-950 px-3 py-2 text-sm text-dark-200 focus:outline-none focus:ring-2 focus:ring-accent/40"
+                value={invoiceLifetimeHours}
+                onChange={(e) => setInvoiceLifetimeHours(Number(e.target.value))}
+              />
+              <p className="text-[11px] text-dark-600">Allowed range: 1–168 hours. Existing invoices keep their original deadline.</p>
+            </div>
+            <Button
+              size="sm"
+              onClick={saveInvoiceLifetime}
+              loading={savingInvoiceLifetime}
+              disabled={!Number.isInteger(invoiceLifetimeHours) || invoiceLifetimeHours < 1 || invoiceLifetimeHours > 168}
+            >
+              <Save className="h-3.5 w-3.5" /> Save
             </Button>
           </div>
         </div>

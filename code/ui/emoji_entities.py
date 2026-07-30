@@ -192,7 +192,7 @@ def build_payment_message_with_emojis(body_markdown: str) -> tuple[str, list[Mes
     """
     Payment message with the payment emoji at start and the countdown emoji on the validity line,
     each overlaid on a real Unicode fallback glyph.
-    body_markdown must contain PLACEHOLDER exactly once (the 'valid for 12 hours' line).
+    body_markdown must contain PLACEHOLDER exactly once (the invoice-validity line).
     Returns (text, entities) for edit_message_text(..., parse_mode="MarkdownV2", entities=entities).
     """
     ph = PLACEHOLDER

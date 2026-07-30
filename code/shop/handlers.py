@@ -116,11 +116,13 @@ def _invoice_expiry_hours(invoice: dict) -> tuple[int, str]:
     """
     Compute expiry in hours from invoice_expires_at - now.
     Returns (expiry_hours, display_str) e.g. (12, "12 hours"). Never "a limited time".
-    Orders are always 12h; fallback to "12 hours" if missing/failed parse.
+    Falls back to the single global admin setting when no timestamp is available.
     """
+    from .payment_constants import get_invoice_lifetime_hours, format_invoice_lifetime
+    configured = get_invoice_lifetime_hours()
     raw_at = (invoice.get("invoice_expires_at") or "").strip()
     if not raw_at:
-        return 12, "12 hours"
+        return configured, format_invoice_lifetime(configured)
     try:
         s = raw_at.replace("Z", "").strip()
         if "." in s:
@@ -130,12 +132,12 @@ def _invoice_expiry_hours(invoice: dict) -> tuple[int, str]:
         delta_sec = (expires - now).total_seconds()
         expiry_hours = max(0, round(delta_sec / 3600))
         if expiry_hours == 0:
-            return 12, "12 hours"
+            return configured, format_invoice_lifetime(configured)
         if expiry_hours == 1:
             return 1, "1 hour"
         return expiry_hours, f"{expiry_hours} hours"
     except ValueError:
-        return 12, "12 hours"
+        return configured, format_invoice_lifetime(configured)
 
 
 def build_invoice_message(plan_name, duration_days, amount_usd, invoice, currency):
@@ -192,8 +194,9 @@ def build_invoice_message(plan_name, duration_days, amount_usd, invoice, currenc
     emit_entity(pay_address, MessageEntity.CODE)
     emit("\n\n")
     emit_emoji("invoice_clock")
+    _, expiry_display = _invoice_expiry_hours(invoice)
     emit(" Valid for ")
-    emit_entity("12 hours", MessageEntity.BOLD)
+    emit_entity(expiry_display, MessageEntity.BOLD)
     emit(". After that, create a new order if needed.\n\n")
     emit("When the transaction is confirmed, you will receive the next step here.")
     return "".join(parts), entities
@@ -1146,7 +1149,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if not expiry_at:
             try:
                 created_dt = datetime.strptime(now_iso.replace("Z", "").split(".")[0], "%Y-%m-%dT%H:%M:%S")
-                expiry_dt = created_dt + timedelta(hours=12)
+                from .payment_constants import get_invoice_lifetime_hours
+                expiry_dt = created_dt + timedelta(hours=get_invoice_lifetime_hours())
                 expiry_at = expiry_dt.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
             except Exception:
                 expiry_at = now_iso
@@ -1255,7 +1259,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if not expiry_at:
             try:
                 created_dt = datetime.strptime(now_iso.replace("Z", "").split(".")[0], "%Y-%m-%dT%H:%M:%S")
-                expiry_dt = created_dt + timedelta(hours=12)
+                from .payment_constants import get_invoice_lifetime_hours
+                expiry_dt = created_dt + timedelta(hours=get_invoice_lifetime_hours())
                 expiry_at = expiry_dt.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
             except Exception:
                 expiry_at = now_iso

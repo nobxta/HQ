@@ -167,11 +167,10 @@ def build_payment_confirmation_screen(order: dict, payment_details: dict | None 
 # Payment polling: per-order next_poll_at. Fault-tolerant: API failure = retry next cycle, no state change.
 # Stage 1: first 30 min → poll every 2 min
 # Stage 2: after 30 min → poll every 10 min
-# Stage 3: after 12 hours → mark expired, edit message, stop polling
+# Stage 3: after the configured invoice lifetime → mark expired and stop polling
 POLL_LOOP_SLEEP_SEC = 60
 POLL_INTERVAL_FIRST_30_MIN = 120   # 2 min
 POLL_INTERVAL_AFTER_30_MIN = 600   # 10 min
-PAYMENT_WINDOW_HOURS = 12
 RENEWAL_CHECK_INTERVAL_SEC = 3600
 RENEWAL_HOURS_BEFORE = 48
 # After a plan's valid_till passes, the bot enters a grace window: posting is stopped and the
@@ -252,7 +251,7 @@ def _parse_iso(s: str) -> datetime | None:
 
 
 def _poll_interval_sec(elapsed_sec: float) -> int:
-    """Stage 1: ≤30 min → 2 min; Stage 2: >30 min → 10 min. After 12h order is expired."""
+    """Stage 1: ≤30 min → 2 min; Stage 2: >30 min → 10 min."""
     if elapsed_sec <= 30 * 60:
         return POLL_INTERVAL_FIRST_30_MIN
     return POLL_INTERVAL_AFTER_30_MIN
@@ -806,11 +805,12 @@ async def payment_polling_worker() -> None:
                 created_dt = _parse_iso((o.get("created_at") or "").strip())
                 if not created_dt:
                     continue
-                # Expiry: use expiry_time (created_at + 12h); fallback to created_at + 12h
+                # Expiry: use stored deadline; legacy rows use the current global lifetime.
                 expiry_iso = (o.get("expiry_time") or "").strip()
                 expiry_dt = _parse_iso(expiry_iso) if expiry_iso else None
                 if not expiry_dt:
-                    expiry_dt = created_dt + timedelta(hours=PAYMENT_WINDOW_HOURS)
+                    from .payment_constants import get_invoice_lifetime_hours
+                    expiry_dt = created_dt + timedelta(hours=get_invoice_lifetime_hours())
                     update_order(order_id, {"expiry_time": expiry_dt.strftime("%Y-%m-%dT%H:%M:%S") + "Z"})
                 elapsed_sec = (now_utc - created_dt).total_seconds()
 
